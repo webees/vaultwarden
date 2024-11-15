@@ -5,13 +5,14 @@
 	persist_config off
 
 	log {
+		level INFO
 		output stdout
 		format console
 	}
 }
 
 {$DOMAIN_NAME}:80 {
-	encode gzip
+	encode zstd gzip
 
 	header / {
 		# Enable HTTP Strict Transport Security (HSTS)
@@ -31,12 +32,6 @@
 		# Remove Last-Modified because etag is the same and is as effective
 		-Last-Modified
 	}
-
-	# The negotiation endpoint is also proxied to Rocket
-	reverse_proxy /notifications/hub/negotiate localhost:8080
-
-	# Notifications redirected to the websockets server
-	reverse_proxy /notifications/hub localhost:3012
 
 	# Proxy everything else to Rocket
 	reverse_proxy localhost:8080 {
