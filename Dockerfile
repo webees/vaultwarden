@@ -10,19 +10,7 @@ ENV TZ="Asia/Shanghai" \
     OVERMIND_CAN_DIE=crontab \
     OVERMIND_PROCFILE=/Procfile \
 
-    ROCKET_PORT=8080 \
-
-    SMTP_HOST=smtp.gmail.com \
-    SMTP_PORT=587 \
-    SMTP_USERNAME=88888888@gmail.com \
-    SMTP_PASSWORD=88888888 \
-    SMTP_FROM=88888888@gmail.com \
-    SMTP_TO= \
-
-    RESTIC_REPOSITORY=s3://88888888.r2.cloudflarestorage.com/vaultwarden \
-    RESTIC_PASSWORD= \
-    AWS_ACCESS_KEY_ID= \
-    AWS_SECRET_ACCESS_KEY=
+    ROCKET_PORT=8080
 
 COPY config/crontab \
      config/Procfile \
