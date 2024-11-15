@@ -15,6 +15,7 @@
 	encode zstd gzip
 
 	header / {
+		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https://*.xvx.cc; frame-ancestors 'self'"
 		# Enable HTTP Strict Transport Security (HSTS)
 		Strict-Transport-Security "max-age=31536000;"
 		# Enable cross-site filter (XSS) and tell browser to block detected attacks
