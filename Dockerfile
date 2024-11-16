@@ -7,6 +7,8 @@ ARG SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.
 
 ENV TZ="Asia/Shanghai" \
 
+    DOMAIN_NAME= \
+
     OVERMIND_CAN_DIE=crontab \
     OVERMIND_PROCFILE=/Procfile \
 
