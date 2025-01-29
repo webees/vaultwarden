@@ -1,8 +1,15 @@
 #!/bin/sh
 
-if [ -z "$RESTIC_PASSWORD" ]; then
-  exit 1
-fi
+# catch the error in case first pipe command fails (but second succeeds)
+set -o pipefail
+
+# turn on traces, useful while debugging but commented out by default
+# set -o xtrace
+
+EMAIL_SUBJECT_PREFIX="[Restic]"
+LOG="/var/log/restic/$(date +\%Y\%m\%d\%H\%M\%S).log"
+
+mkdir -p /var/log/restic/
 
 if [ -n "$SMTP_TO" ]; then
 cat << EOF > /etc/msmtprc
@@ -21,19 +28,8 @@ password $SMTP_PASSWORD
 EOF
 fi
 
-# catch the error in case first pipe command fails (but second succeeds)
-set -o pipefail
-# turn on traces, useful while debugging but commented out by default
-# set -o xtrace
-
-EMAIL_SUBJECT_PREFIX="[Restic]"
-LOG="/var/log/restic/$(date +\%Y\%m\%d_\%H\%M\%S).log"
-
-# create log dir
-mkdir -p /var/log/restic/
-
 # e-mail notification
-function notify() {
+function email() {
   if [ -n "$SMTP_TO" ]; then
       sed -e 's/\x1b\[[0-9;]*m//g' "${LOG}" | mail -s "${EMAIL_SUBJECT_PREFIX} ${1}" ${SMTP_TO}
   fi
@@ -41,10 +37,6 @@ function notify() {
 
 function log() {
     "$@" 2>&1 | tee -a "$LOG"
-}
-
-function run_silently() {
-    "$@" >/dev/null 2>&1
 }
 
 # ###############################################################################
@@ -60,7 +52,7 @@ COL_YELLOW=$ESC_SEQ"33;01m"
 COL_RESET=$ESC_SEQ"39;49;00m"
 
 function ok() {
-    log echo -e "$COL_GREEN[ok]$COL_RESET $1"
+    log echo -e "$COL_GREEN[OK]$COL_RESET $1"
 }
 
 function running() {
@@ -68,20 +60,19 @@ function running() {
 }
 
 function warn() {
-    log echo -e "$COL_YELLOW[warning]$COL_RESET $1"
+    log echo -e "$COL_YELLOW[WARNING]$COL_RESET $1"
 }
 
 function error() {
-    log echo -e "$COL_RED[error]$COL_RESET $1"
+    log echo -e "$COL_RED[ERROR]$COL_RESET $1"
     log echo -e "$2"
 }
 
-function notify_and_exit_on_error() {
+function email_and_exit_on_error() {
     output=$(eval $1 2>&1)
-
     if [ $? -ne 0 ]; then
         error "$2" "$output"
-        notify "$2"
+        email "$2"
         exit 2
     fi
 }
@@ -89,32 +80,35 @@ function notify_and_exit_on_error() {
 # ##############
 # backup steps #
 # ##############
+
 restic unlock
-
-running "checking restic config"
-
-run_silently restic cat config
+restic cat config
 
 if [ $? -ne 0 ]; then
-    warn "restic repo either not initialized or erroring out"
-    running "trying to initialize it"
-    notify_and_exit_on_error "restic init" "Repo init failed"
+    warn "Restic repo not ready"
+    running "Restic init"
+    email_and_exit_on_error "restic init" "Repo init failed"
+    ok
 fi
 
+running "Backup SQLite"
+email_and_exit_on_error "sqlite3 /data/db.sqlite3 '.backup /data/backup.bak'" "SQLite backup failed"
 ok
 
-running "backing up sqlite database"
-notify_and_exit_on_error "sqlite3 /data/db.sqlite3 '.backup /data/backup.bak'" "SQLite backup failed"
+running "SQLite Check"
+email_and_exit_on_error "sqlite3 /data/backup.bak 'PRAGMA integrity_check'" "SQLite check failed"
 ok
 
-running "restic backup"
-notify_and_exit_on_error "restic backup --verbose --exclude='db.*' /data" "Restic backup failed"
+running "Restic Backup"
+email_and_exit_on_error "restic backup --verbose --exclude='db.*' /data" "Restic backup failed"
 ok
 
-running "checking consistency of restic repository"
-notify_and_exit_on_error "restic check" "Restic check failed"
+running "Restic Check"
+email_and_exit_on_error "restic check" "Restic check failed"
 ok
 
-running "removing outdated snapshots"
-notify_and_exit_on_error "restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Restic forget failed"
+running "Restic Forget"
+email_and_exit_on_error "restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Restic forget failed"
 ok
+
+find /var/log/restic/ -name "*.log" -type f -mmin +600 -delete
