@@ -6,3 +6,5 @@ fly volumes create app_data --size 1
 fly deploy
 fly ssh console
 ```
+
+https://github.com/dani-garcia/vaultwarden
