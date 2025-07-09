@@ -19,43 +19,46 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           PACKAGE_NAME: adguard
         run: |
-          echo "📦 Repo: $REPO_NAME"
-          echo "📦 Package: $PACKAGE_NAME"
+          echo "🔍 REPO_NAME: $REPO_NAME"
+          echo "🔍 PACKAGE_NAME: $PACKAGE_NAME"
 
-          echo "🔍 Fetching versions..."
+          echo "🔍 Fetching all package versions for $PACKAGE_NAME..."
           VERSIONS_JSON=$(gh api -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             /user/packages/container/$PACKAGE_NAME/versions \
             --paginate)
 
           if [ -z "$VERSIONS_JSON" ]; then
-            echo "❌ No versions found."
+            echo "❌ No versions found or API request failed."
             exit 1
           fi
+
+          echo "📜 Raw versions JSON:"
+          echo "$VERSIONS_JSON" | jq .
 
           VERSIONS=$(echo "$VERSIONS_JSON" | jq -r 'sort_by(.created_at) | reverse | .[] | select(.name | startswith("sha256:")) | .id')
 
           if [ -z "$VERSIONS" ]; then
-            echo "✅ No SHA256 versions."
+            echo "✅ No SHA256-named versions found."
             exit 0
           fi
 
-          echo "🧹 Found versions:"
-          echo "$VERSIONS" | while read -r vid; do echo "  • $vid"; done
+          echo "📋 Found SHA256-named version IDs:"
+          echo "$VERSIONS" | while read -r vid; do echo "  - $vid"; done
 
           for vid in $VERSIONS; do
-            echo "🗑️ Deleting ID: $vid"
+            echo "🗑️ Attempting to delete version ID: $vid"
             if ! gh api -X DELETE \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
               /user/packages/container/$PACKAGE_NAME/versions/$vid 2> error.log; then
               if grep -q "You cannot delete the last tagged version" error.log; then
-                echo "⚠️ Skipped (last tagged): $vid"
+                echo "⚠️ Skipped version ID: $vid (last tagged version)"
               else
-                echo "❌ Error deleting $vid"
+                echo "❌ Failed to delete version ID: $vid (unexpected error)"
                 cat error.log
               fi
             else
-              echo "✅ Deleted: $vid"
+              echo "✅ Successfully deleted version ID: $vid"
             fi
           done
