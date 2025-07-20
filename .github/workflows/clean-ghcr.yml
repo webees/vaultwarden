@@ -1,4 +1,4 @@
-name: 🧹 Clean GHCR SHA256 Images
+name: 🧹 GHCR Cleanup
 
 on:
   workflow_dispatch:
@@ -6,56 +6,25 @@ on:
     - cron: '0 3 * * *'
 
 permissions:
-  packages: write
   contents: read
+  packages: write
 
 jobs:
-  clean:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: 🧾 Delete SHA256-named GHCR images
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO_NAME: ${{ github.repository }}
-        run: |
-          PACKAGE=$(basename "$REPO_NAME")
-          echo "📦 Repo: $REPO_NAME"
-          echo "📦 Package: $PACKAGE"
-
-          echo "🔍 Fetching versions..."
-          VERSIONS_JSON=$(gh api -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            /user/packages/container/$PACKAGE/versions \
-            --paginate)
-
-          if [ -z "$VERSIONS_JSON" ]; then
-            echo "❌ No versions found."
-            exit 1
-          fi
-
-          VERSIONS=$(echo "$VERSIONS_JSON" | jq -r 'sort_by(.created_at) | reverse | .[] | select(.name | startswith("sha256:")) | .id')
-
-          if [ -z "$VERSIONS" ]; then
-            echo "✅ No SHA256 versions."
-            exit 0
-          fi
-
-          echo "🧹 Found versions:"
-          echo "$VERSIONS" | while read -r vid; do echo "  • $vid"; done
-
-          for vid in $VERSIONS; do
-            echo "🗑️ Deleting ID: $vid"
-            if ! gh api -X DELETE \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              /user/packages/container/$PACKAGE/versions/$vid 2> error.log; then
-              if grep -q "You cannot delete the last tagged version" error.log; then
-                echo "⚠️ Skipped (last tagged): $vid"
-              else
-                echo "❌ Error deleting $vid"
-                cat error.log
-              fi
-            else
-              echo "✅ Deleted: $vid"
-            fi
-          done
+      - name: 🔍 Clean images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          packages: ${{ github.repository }}
+          delete-untagged: true
+          keep-n-untagged: 5
+          keep-n-tagged: 10
+          older-than: 30 days
+          delete-ghost-images: true
+          delete-partial-images: true
+          delete-orphaned-images: true
+          validate: true
+          log-level: info
+          dry-run: false
