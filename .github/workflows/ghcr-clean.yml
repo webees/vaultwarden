@@ -13,14 +13,12 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔍 Clean images
+      - name: 🔍 Cleanup GHCR
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           packages: ${{ github.repository }}
           delete-untagged: true
-          keep-n-untagged: 5
-          keep-n-tagged: 10
           older-than: 30 days
           delete-ghost-images: true
           delete-partial-images: true
