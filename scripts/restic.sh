@@ -11,6 +11,7 @@ set -o pipefail
 # =============================================================================
 # Config
 # =============================================================================
+APP_NAME="Vaultwarden"                        # App name (for notification)
 DATA="/data"                                  # Data directory
 DB="$DATA/db.sqlite3"                         # SQLite main database
 DB_BAK="$DATA/backup.bak"                     # SQLite hot backup
@@ -31,7 +32,7 @@ log() { "$@" 2>&1 | tee -a "$LOG"; }
 # Send email (strip ANSI colors)
 mail() {
     [ -z "${SMTP_TO:-}" ] && return
-    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | command mail -s "[Restic] $1" "$SMTP_TO"
+    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | command mail -s "[$APP_NAME] $1" "$SMTP_TO"
 }
 
 # Execute command and handle result
