@@ -1,1 +1,1 @@
-@hourly /restic.sh
+@hourly /restic.sh backup
