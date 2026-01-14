@@ -1,4 +1,4 @@
-app = "REDACTED"
+app = "vaultwarden"
 kill_signal = "SIGINT"
 kill_timeout = "5s"
 primary_region = "hkg"
