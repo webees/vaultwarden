@@ -11,7 +11,7 @@
 	}
 }
 
-{$CADDY_DOMAINS} {
+{$CADDY_DOMAINS::80} {
 	encode zstd gzip
 
 	header / {
