@@ -15,13 +15,28 @@ ENV WORKDIR=/app \
 WORKDIR $WORKDIR
 
 # Copy configs
-COPY config/crontab config/Procfile config/Caddyfile scripts/restic.sh /
+COPY config/crontab \
+    config/Procfile \
+    config/Caddyfile \
+    scripts/restic.sh \
+    /
 
 # Install dependencies
 RUN apk add --no-cache \
-    curl ca-certificates openssl tzdata \
-    caddy restic tmux sqlite msmtp mailx \
-    iptables ip6tables iputils-ping \
+    curl \
+    ca-certificates \
+    openssl \
+    tzdata \
+    openntpd \
+    caddy \
+    restic \
+    tmux \
+    sqlite \
+    msmtp \
+    mailx \
+    iptables \
+    ip6tables \
+    iputils-ping \
     && rm -rf /var/cache/apk/* \
     # Download binaries
     && curl -fsSL "$SUPERCRONIC_URL" -o /usr/local/bin/supercronic \
