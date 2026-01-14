@@ -57,7 +57,9 @@ fly volumes create app_data --region hkg --size 1
 
 ```bash
 # Required: Domain
-fly secrets set DOMAIN_NAME="vault.example.com"
+# Caddy domains (Catch-all: :80, Specific: example.com:80 example.org:80)
+fly secrets set CADDY_DOMAINS="vault.example.com:80"
+# Vaultwarden domain (full URL with protocol)
 fly secrets set DOMAIN="https://vault.example.com"
 
 # Required: Cloudflare R2 backup
@@ -165,8 +167,8 @@ tail -f /var/log/msmtp.log     # Email logs
 
 | Variable | Required | Description |
 | :--- | :--- | :--- |
-| `DOMAIN_NAME` | ✅ | Domain without protocol (e.g., `vault.example.com`) |
-| `DOMAIN` | ✅ | Full domain URL (e.g., `https://vault.example.com`) |
+| `CADDY_DOMAINS` | ✅ | Caddy domains (e.g., `:80`, `vault.example.com:80`) |
+| `DOMAIN` | ✅ | Vaultwarden URL (e.g., `https://vault.example.com`) |
 | `RESTIC_PASSWORD` | ✅ | Encryption password for backups |
 | `RESTIC_REPOSITORY` | ✅ | R2 URL: `s3:<account-id>.r2.cloudflarestorage.com/<bucket>` |
 | `AWS_ACCESS_KEY_ID` | ✅ | Cloudflare R2 Access Key ID |
