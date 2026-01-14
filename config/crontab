@@ -1,4 +1,4 @@
-# NTP sync (avoid R2 time drift)
+# NTP time sync
 @hourly ntpd -d -n -q -p pool.ntp.org >/dev/null 2>&1
 
 # Restic backup

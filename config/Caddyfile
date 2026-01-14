@@ -1,5 +1,9 @@
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ Caddy Reverse Proxy - Vaultwarden                                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# ── Global Options ────────────────────────────────────────────────────────────
 {
-	# HTTPS/TLS is handled by Fly or on your domain (eg: Cloudflare)
 	auto_https off
 	admin off
 	persist_config off
@@ -11,31 +15,24 @@
 	}
 }
 
+# ── Site Block ────────────────────────────────────────────────────────────────
 {$CADDY_DOMAINS::80} {
 	encode zstd gzip
 
+	# Security headers
 	header / {
-		# Enable HTTP Strict Transport Security (HSTS)
 		Strict-Transport-Security "max-age=31536000;"
-		# Enable cross-site filter (XSS) and tell browser to block detected attacks
 		X-XSS-Protection "1; mode=block"
-		# Disallow the site to be rendered within a frame (clickjacking protection)
 		X-Frame-Options "DENY"
-		# Prevent search engines from indexing
 		X-Robots-Tag "noindex, nofollow"
-		# Disallow sniffing of X-Content-Type-Options
 		X-Content-Type-Options "nosniff"
-		# Server name removing
 		-Server
-		# Remove X-Powered-By though this shouldn't be an issue, better opsec to remove
 		-X-Powered-By
-		# Remove Last-Modified because etag is the same and is as effective
 		-Last-Modified
 	}
 
-	# Proxy to Vaultwarden (Rocket)
+	# Reverse proxy
 	reverse_proxy localhost:8080 {
-		# Tiered IP: Cloudflare -> Fly.io -> Remote
 		header_up X-Real-IP {http.request.header.CF-Connecting-IP:{http.request.header.Fly-Client-IP:{remote_host}}}
 		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP:{http.request.header.Fly-Client-IP:{remote_host}}}
 	}
