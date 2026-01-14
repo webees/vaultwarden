@@ -35,11 +35,27 @@
 
 	# Proxy to Vaultwarden (Rocket)
 	reverse_proxy localhost:8080 {
+		# Match layers
 		@cf header CF-Connecting-IP *
-		header_up @cf X-Real-IP {http.request.header.CF-Connecting-IP}
-		header_up @cf X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		@fly {
+			not header CF-Connecting-IP *
+			header Fly-Client-IP *
+		}
+		@direct {
+			not header CF-Connecting-IP *
+			not header Fly-Client-IP *
+		}
 
-		header_up !@cf X-Real-IP {remote_host}
-		header_up !@cf X-Forwarded-For {remote_host}
+		# Layer 1: Cloudflare
+		header_up X-Real-IP @cf {header.CF-Connecting-IP}
+		header_up X-Forwarded-For @cf {header.CF-Connecting-IP}
+
+		# Layer 2: Fly.io
+		header_up X-Real-IP @fly {header.Fly-Client-IP}
+		header_up X-Forwarded-For @fly {header.Fly-Client-IP}
+
+		# Layer 3: Direct
+		header_up X-Real-IP @direct {remote_host}
+		header_up X-Forwarded-For @direct {remote_host}
 	}
 }
