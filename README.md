@@ -64,8 +64,8 @@ fly volumes create app_data --region hkg --size 1
 ### 2. Required Secrets Configuration
 
 ```bash
-# Domain configuration
-fly secrets set CADDY_DOMAINS="vault.example.com:80"
+# Domain configuration (Multiple domains: "a.com b.com")
+fly secrets set CADDY_DOMAINS="vault.example.com"
 fly secrets set DOMAIN="https://vault.example.com"
 
 # Restic / S3 backup settings
