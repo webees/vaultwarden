@@ -1,3 +1,8 @@
-vaultwarden: /start.sh
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ Overmind Process Configuration                                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# Application services
+vaultwarden: /vaultwarden
 caddy: caddy run --config /Caddyfile
 crontab: supercronic /crontab

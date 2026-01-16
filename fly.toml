@@ -7,7 +7,7 @@ primary_region = "hkg"
 image = "ghcr.io/webees/vaultwarden"
 
 [checks.health]
-grace_period = "30s"
+grace_period = "60s"
 interval = "15s"
 method = "get"
 path = "/alive"
