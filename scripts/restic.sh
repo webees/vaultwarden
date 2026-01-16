@@ -28,7 +28,10 @@ log() { "$@" 2>&1 | tee -a "$LOG"; }
 
 mail() {
     [ -z "${SMTP_TO:-}" ] && return
-    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | command mail -s "[$APP_NAME] $1" "$SMTP_TO"
+    # Strip ANSI codes, add UTF-8 header
+    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | command mail \
+        -a "Content-Type: text/plain; charset=UTF-8" \
+        -s "[$APP_NAME] $1" "$SMTP_TO"
 }
 
 run() {
@@ -69,6 +72,9 @@ EOF
 # └───────────────────────────────────────────────────────────────────────────┘
 
 cmdBackup() {
+    # Sync time to avoid R2/S3 signature mismatch
+    ntpdate -u pool.ntp.org 2>/dev/null || log echo -e "${Y}NTP sync skipped${X}"
+
     restic unlock 2>/dev/null || true
 
     if ! restic cat config >/dev/null 2>&1; then
