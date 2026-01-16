@@ -1,6 +1,5 @@
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║ Fly.io Deployment                                                         ║
-# ║ https://github.com/webees/vaultwarden                                     ║
+# ║ Vaultwarden Deployment                                                    ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 FROM vaultwarden/server:latest-alpine
 
@@ -14,7 +13,6 @@ ENV WORKDIR=/app \
     TZ="Asia/Shanghai" \
     OVERMIND_PROCFILE=/Procfile \
     OVERMIND_CAN_DIE=crontab \
-    # Vaultwarden settings
     ROCKET_PORT=8080
 
 WORKDIR $WORKDIR
@@ -49,9 +47,9 @@ RUN apk add --no-cache \
     # Symlink msmtp for mail commands
     && ln -sf /usr/bin/msmtp /usr/bin/sendmail \
     && ln -sf /usr/bin/msmtp /usr/sbin/sendmail \
-    # Cleanup
+    # Cleanup cache
     && rm -rf /var/cache/apk/*
 
-# Clear base image entrypoint to allow Overmind to manage processes
+# ── Startup ───────────────────────────────────────────────────────────────────
 ENTRYPOINT []
 CMD ["overmind", "start"]

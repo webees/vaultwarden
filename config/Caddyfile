@@ -27,9 +27,6 @@
 	handle /alive {
 		reverse_proxy 127.0.0.1:8080
 	}
-	handle /health {
-		respond "OK" 200
-	}
 
 	# Domain Access Control
 	@outside_domain {
