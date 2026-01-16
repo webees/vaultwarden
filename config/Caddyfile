@@ -25,17 +25,16 @@
 	# Always allow health checks bypass for Fly.io monitoring
 	# Vaultwarden uses /alive for health checks
 	handle /alive {
-		reverse_proxy localhost:8080
+		reverse_proxy 127.0.0.1:8080
 	}
 	handle /health {
 		respond "OK" 200
 	}
 
 	# Domain Access Control
-	# Block requests if CADDY_DOMAINS is set and host doesn't match
 	@outside_domain {
 		expression `{env.CADDY_DOMAINS} != ""`
-		not host {$CADDY_DOMAINS}
+		not host {$CADDY_DOMAINS:placeholder}
 	}
 	handle @outside_domain {
 		respond "Access Denied: Domain not allowed" 403
