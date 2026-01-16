@@ -29,8 +29,9 @@
 	}
 
 	# Domain Access Control
+	# For multiple domains, CADDY_DOMAINS should be a space-separated list
 	@outside_domain {
-		expression `{env.CADDY_DOMAINS} != ""`
+		expression {env.CADDY_DOMAINS} != ""
 		not host {$CADDY_DOMAINS:placeholder}
 	}
 	handle @outside_domain {
