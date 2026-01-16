@@ -1,5 +1,5 @@
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║ Caddy Reverse Proxy - Vaultwarden                                         ║
+# ║ Caddy Reverse Proxy                                                       ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 # ── Global Options ────────────────────────────────────────────────────────────
@@ -7,6 +7,11 @@
 	auto_https off
 	admin off
 	persist_config off
+
+	# Trust Fly.io private networking for accurate IP parsing
+	servers {
+		trusted_proxies static private_ranges
+	}
 
 	log {
 		level INFO
@@ -16,24 +21,53 @@
 }
 
 # ── Site Block ────────────────────────────────────────────────────────────────
-{$CADDY_DOMAINS::80} {
-	encode zstd gzip
-
-	# Security headers
-	header / {
-		Strict-Transport-Security "max-age=31536000;"
-		X-XSS-Protection "1; mode=block"
-		X-Frame-Options "DENY"
-		X-Robots-Tag "noindex, nofollow"
-		X-Content-Type-Options "nosniff"
-		-Server
-		-X-Powered-By
-		-Last-Modified
+:80 {
+	# Always allow health checks bypass for Fly.io monitoring
+	# Vaultwarden uses /alive for health checks
+	handle /alive {
+		reverse_proxy localhost:8080
+	}
+	handle /health {
+		respond "OK" 200
 	}
 
-	# Reverse proxy
-	reverse_proxy localhost:8080 {
-		header_up X-Real-IP {http.request.header.CF-Connecting-IP:{http.request.header.Fly-Client-IP:{remote_host}}}
-		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP:{http.request.header.Fly-Client-IP:{remote_host}}}
+	# Domain Access Control
+	# Block requests if CADDY_DOMAINS is set and host doesn't match
+	@outside_domain {
+		expression `{env.CADDY_DOMAINS} != ""`
+		not host {$CADDY_DOMAINS}
+	}
+	handle @outside_domain {
+		respond "Access Denied: Domain not allowed" 403
+	}
+
+	# Main Reverse Proxy Logic
+	handle {
+		encode zstd gzip
+
+		# Harden security posture
+		header {
+			# Infrastructure protection
+			Strict-Transport-Security "max-age=31536000;"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			X-XSS-Protection "1; mode=block"
+
+			# Privacy & Anti-tracking
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+			X-Robots-Tag "noindex, nofollow"
+
+			# Hide sensitive headers
+			-Server
+			-X-Powered-By
+			-Last-Modified
+		}
+
+		# Proxy to the application backend (Vaultwarden)
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Real-IP {http.request.header.Fly-Client-IP}
+			header_up X-Forwarded-For {http.request.header.Fly-Client-IP}
+		}
 	}
 }
