@@ -128,7 +128,7 @@ The Caddy configuration automatically applies the following security posture:
 
 ## 📝 License
 
-MIT
+Distributed under the [MIT License](LICENSE).
 
 ---
-Made with ❤️ for 🔐
+🚀 Optimized for Fly.io by **[WeBees](https://github.com/webees)**
