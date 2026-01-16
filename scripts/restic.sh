@@ -81,8 +81,12 @@ backup() {
         run "restic init" "Repo init"
     fi
 
-    # Core operations
-    run "restic backup --verbose '$DATA'" "Data backup"
+    # SQLite hot backup (ensures consistency)
+    run "sqlite3 '$DATA/db.sqlite3' '.backup $DATA/backup.bak'" "SQLite backup"
+    run "sqlite3 '$DATA/backup.bak' 'PRAGMA integrity_check'" "SQLite check"
+
+    # Core operations (exclude original db files, use backup.bak instead)
+    run "restic backup --verbose --exclude='db.*' '$DATA'" "Data backup"
     run "restic check" "Health check"
     run "restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
 
