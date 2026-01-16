@@ -23,48 +23,48 @@
 # ── Site Block ────────────────────────────────────────────────────────────────
 :80 {
 	# Always allow health checks bypass for Fly.io monitoring
-	# Vaultwarden uses /alive for health checks
 	handle /alive {
 		reverse_proxy 127.0.0.1:8080
 	}
 
 	# Domain Access Control
-	# For multiple domains, CADDY_DOMAINS should be a space-separated list
-	@outside_domain {
-		expression {env.CADDY_DOMAINS} != ""
-		not host {$CADDY_DOMAINS:placeholder}
-	}
-	handle @outside_domain {
-		respond "Access Denied: Domain not allowed" 403
+	@allowed_domain {
+		# If CADDY_DOMAINS is not set, allow all
+		expression {env.CADDY_DOMAINS} == ""
+		# Or if the host matches the allowed list
+		host {$CADDY_DOMAINS}
 	}
 
-	# Main Reverse Proxy Logic
+	# Deny everything else if CADDY_DOMAINS is set
+	handle @allowed_domain {
+		# Main Reverse Proxy Logic
+		handle {
+			encode zstd gzip
+
+			# Harden security posture
+			header {
+				Strict-Transport-Security "max-age=31536000;"
+				X-Content-Type-Options "nosniff"
+				X-Frame-Options "DENY"
+				X-XSS-Protection "1; mode=block"
+				Referrer-Policy "strict-origin-when-cross-origin"
+				Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+				X-Robots-Tag "noindex, nofollow"
+				-Server
+				-X-Powered-By
+				-Last-Modified
+			}
+
+			# Proxy to the application backend
+			reverse_proxy 127.0.0.1:8080 {
+				header_up X-Real-IP {http.request.header.Fly-Client-IP}
+				header_up X-Forwarded-For {http.request.header.Fly-Client-IP}
+			}
+		}
+	}
+
+	# Fallback for denied domains
 	handle {
-		encode zstd gzip
-
-		# Harden security posture
-		header {
-			# Infrastructure protection
-			Strict-Transport-Security "max-age=31536000;"
-			X-Content-Type-Options "nosniff"
-			X-Frame-Options "DENY"
-			X-XSS-Protection "1; mode=block"
-
-			# Privacy & Anti-tracking
-			Referrer-Policy "strict-origin-when-cross-origin"
-			Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
-			X-Robots-Tag "noindex, nofollow"
-
-			# Hide sensitive headers
-			-Server
-			-X-Powered-By
-			-Last-Modified
-		}
-
-		# Proxy to the application backend (Vaultwarden)
-		reverse_proxy 127.0.0.1:8080 {
-			header_up X-Real-IP {http.request.header.Fly-Client-IP}
-			header_up X-Forwarded-For {http.request.header.Fly-Client-IP}
-		}
+		respond "Access Denied: Domain not allowed" 403
 	}
 }
