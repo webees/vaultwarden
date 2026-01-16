@@ -28,36 +28,31 @@
 	}
 
 	# Domain Access Control
-	# Allow if CADDY_DOMAINS is empty OR host matches (using :localhost to avoid empty host error)
-	@allowed expression {env.CADDY_DOMAINS} == "" || host("{$CADDY_DOMAINS:localhost}")
+	@denied {
+		expression {env.CADDY_DOMAINS} != ""
+		not host {$CADDY_DOMAINS:localhost}
+	}
+	respond @denied "Access Denied: Domain not allowed" 403
 
-	# Main Application Logic (Only for allowed domains)
-	handle @allowed {
-		encode zstd gzip
+	encode zstd gzip
 
-		# Harden security posture
-		header {
-			Strict-Transport-Security "max-age=31536000;"
-			X-Content-Type-Options "nosniff"
-			X-Frame-Options "DENY"
-			X-XSS-Protection "1; mode=block"
-			Referrer-Policy "strict-origin-when-cross-origin"
-			Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
-			X-Robots-Tag "noindex, nofollow"
-			-Server
-			-X-Powered-By
-			-Last-Modified
-		}
-
-		# Proxy to the application backend
-		reverse_proxy 127.0.0.1:8080 {
-			header_up X-Real-IP {http.request.header.Fly-Client-IP}
-			header_up X-Forwarded-For {http.request.header.Fly-Client-IP}
-		}
+	# Harden security posture
+	header {
+		Strict-Transport-Security "max-age=31536000;"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+		-X-Powered-By
+		-Last-Modified
 	}
 
-	# Fallback for denied domains
-	handle {
-		respond "Access Denied: Domain not allowed" 403
+	# Proxy to the application backend
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Real-IP {http.request.header.Fly-Client-IP}
+		header_up X-Forwarded-For {http.request.header.Fly-Client-IP}
 	}
 }
