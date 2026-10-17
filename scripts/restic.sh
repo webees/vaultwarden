@@ -11,6 +11,7 @@ APP_NAME="${FLY_APP_NAME:-Vaultwarden}"
 DATA="/data"
 LOG_DIR="${RESTIC_LOG_DIR:-/data/restic-logs}"
 LOG="$LOG_DIR/$(date +%Y%m%d_%H%M%S).log"
+MAX_LOG_BYTES="${RESTIC_LOG_MAX_BYTES:-262144}"
 mkdir -p "$LOG_DIR"
 
 # ANSI colors
@@ -49,6 +50,10 @@ run() {
         return 0
     fi
     log echo -e "${R}✗${X}"
+    if [ "${#out}" -gt "$MAX_LOG_BYTES" ]; then
+        out=$(printf '%s' "$out" | tail -c "$MAX_LOG_BYTES")
+        out="[output truncated to the last ${MAX_LOG_BYTES} bytes]"$'\n'"$out"
+    fi
     log echo "$out"
     mail "Task Failed: $2"
     heartbeat fail
@@ -82,9 +87,26 @@ EOF
 
 # ── Business Logic ────────────────────────────────────────────────────────────
 
-# Drop backup logs older than 10 hours
+# Drop logs older than 10 hours and cap any oversized file left by an earlier run
+cap_log_file() {
+    local file="$1" size tmp
+    [ -f "$file" ] || return 0
+    size=$(wc -c < "$file" 2>/dev/null || echo 0)
+    [ "$size" -gt "$MAX_LOG_BYTES" ] || return 0
+    tmp="${file}.tmp.$$"
+    if tail -c "$MAX_LOG_BYTES" "$file" > "$tmp"; then
+        mv "$tmp" "$file"
+    else
+        rm -f "$tmp"
+    fi
+}
+
 cleanup_logs() {
     find "$LOG_DIR" -name "*.log" -type f -mmin +600 -delete
+    for file in "$LOG_DIR"/*.log; do
+        [ -e "$file" ] || continue
+        cap_log_file "$file"
+    done
 }
 
 # Backup, check and prune
@@ -140,6 +162,8 @@ verify() {
 }
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
+
+cleanup_logs
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
     echo "Error: RESTIC_PASSWORD not set"
