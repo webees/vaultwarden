@@ -31,6 +31,7 @@ WORKDIR $WORKDIR
 COPY config/crontab \
     config/Procfile \
     config/Caddyfile \
+    scripts/cronloop.sh \
     scripts/restic.sh \
     /
 
@@ -41,7 +42,7 @@ RUN set -eu; \
         arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_SHA256_arm64"; OVERMIND_SHA256="$OVERMIND_SHA256_arm64" ;; \
         *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    # bash is required by the shebang of scripts/restic.sh; tmux is used by overmind
+    # bash is required by the shebangs of scripts/*.sh; tmux is used by overmind
     apk add --no-cache \
         bash \
         curl \
@@ -60,7 +61,7 @@ RUN set -eu; \
     curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${OVERMIND_VERSION}/overmind-${OVERMIND_VERSION}-linux-${TARGETARCH}.gz" \
         | gunzip -c - > /usr/local/bin/overmind; \
     echo "${OVERMIND_SHA256}  /usr/local/bin/overmind" | sha256sum -c -; \
-    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /restic.sh; \
+    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /cronloop.sh /restic.sh; \
     # Symlink msmtp for mail commands
     ln -sf /usr/bin/msmtp /usr/bin/sendmail; \
     ln -sf /usr/bin/msmtp /usr/sbin/sendmail; \
