@@ -4,7 +4,7 @@ kill_timeout = "5s"
 primary_region = "sin"
 
 [build]
-image = "ghcr.io/webees/vaultwarden@sha256:5aeddf1f25dcfa60e6d8fa868ead7d7d046351d8a29fcdb36b46d105e875ab68"
+image = "ghcr.io/webees/vaultwarden@sha256:9181bb1323d8c65f65f6166ace6882f4c9bf3e6842c62f47840326bd93afdeec"
 
 [checks.health]
 grace_period = "60s"
