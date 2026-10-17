@@ -110,6 +110,8 @@ silently changes the Vaultwarden version. The GHCR workflow additionally runs we
 package (`caddy`, `restic`, `sqlite`) security updates. `fly.toml` pins the deployed amd64 image by digest,
 so update that digest deliberately after a successful workflow run.
 
+Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
+
 ```bash
 # Show the new amd64 digest, then replace the value in fly.toml
 docker buildx imagetools inspect ghcr.io/webees/vaultwarden:latest
