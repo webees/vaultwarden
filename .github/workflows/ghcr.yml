@@ -6,6 +6,10 @@ on:
     branches:
       - main
     tags: [ '*' ]
+    paths-ignore:
+      - fly.toml
+      - README.md
+      - LICENSE
   schedule:
     # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes flowing
     - cron: '0 4 * * 1'
