@@ -4,3 +4,6 @@
 
 # Restic backup schedule
 @hourly /restic.sh backup
+
+# Monthly integrity check that reads back a slice of the stored data
+0 3 1 * * /restic.sh verify

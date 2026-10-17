@@ -58,7 +58,7 @@ fly apps create vaultwarden
 cat .env | fly secrets import
 
 # Create storage volume
-fly volumes create app_data --region hkg --size 1
+fly volumes create app_data --region sin --size 1   # must match primary_region in fly.toml
 ```
 
 > The committed `.env` ships placeholders only (`vault.example.com`, `88888888`, ...). Replace every
@@ -87,6 +87,11 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
+
+# Optional tuning (defaults shown)
+fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
+fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
+fly secrets set CRON_RESTART_DELAY="5"   # seconds before the scheduler is restarted
 ```
 
 ### 3. Deploy
@@ -112,15 +117,16 @@ fly releases rollback   # roll back to the previous image
 
 | Item | Behaviour |
 | :--- | :--- |
-| Schedule | `@hourly`, defined in `config/crontab` |
-| Data | `/data` volume, excluding the live `db.*` SQLite files |
+| Schedule | `@hourly` backup plus a monthly integrity check, defined in `config/crontab` |
+| Data | `/data` volume, excluding the live `db.*` SQLite files and the rebuildable `icon_cache` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
-| Retention | `--keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
+| Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
 | Alerts | Email on failure (`SMTP_*`) and an optional `HEALTHCHECK_URL` ping on every run |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
 fly ssh console -C "/restic.sh snapshots"      # list snapshots
+fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
 fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 ```
 
@@ -128,12 +134,18 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 > restore into a scratch machine or a temporary path instead.
 >
 > Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
+>
+> To rotate it, add the new password as an extra key first (`restic key add`), then update the secret.
+> Replacing the secret without adding a key first locks you out of every existing snapshot.
 
 ## 🧯 Troubleshooting
 
 | Symptom | Cause / fix |
 | :--- | :--- |
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
+| Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
+| Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
+| Client IPs look like Cloudflare edge addresses | The domain is Cloudflare-proxied; Caddy now prefers `CF-Connecting-IP` over `Fly-Client-IP` |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
 | Backup logs disappear after a redeploy | `/var/log/restic` is container-local, not on the `/data` volume |
 
@@ -175,6 +187,10 @@ The Caddy configuration automatically applies the following security posture:
 - **Indexing**: `X-Robots-Tag noindex, nofollow`
 - **Permissions**: `Permissions-Policy` (camera, microphone, geolocation, payment disabled)
 - **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
+
+Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
+Fly health checks). The admin panel at `/admin` is reachable from the internet and is protected by
+`ADMIN_TOKEN` alone, so treat that token as a high-value secret.
 
 ## 📝 License
 
