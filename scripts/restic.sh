@@ -12,6 +12,7 @@ DATA="/data"
 LOG_DIR="${RESTIC_LOG_DIR:-/data/restic-logs}"
 LOG="$LOG_DIR/$(date +%Y%m%d_%H%M%S).log"
 MAX_LOG_BYTES="${RESTIC_LOG_MAX_BYTES:-262144}"
+MAX_LOG_DIR_BYTES="${RESTIC_LOG_DIR_MAX_BYTES:-10485760}"
 mkdir -p "$LOG_DIR"
 
 # ANSI colors
@@ -101,12 +102,35 @@ cap_log_file() {
     fi
 }
 
+log_dir_size() {
+    local file size total=0
+    for file in "$LOG_DIR"/*.log; do
+        [ -e "$file" ] || continue
+        size=$(wc -c < "$file" 2>/dev/null || echo 0)
+        total=$((total + size))
+    done
+    echo "$total"
+}
+
+trim_log_dir() {
+    local file total
+    total=$(log_dir_size)
+    [ "$total" -gt "$MAX_LOG_DIR_BYTES" ] || return 0
+    while IFS= read -r file; do
+        [ -e "$file" ] || continue
+        rm -f "$file"
+        total=$(log_dir_size)
+        [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && break
+    done < <(ls -1tr "$LOG_DIR"/*.log 2>/dev/null)
+}
+
 cleanup_logs() {
     find "$LOG_DIR" -name "*.log" -type f -mmin +600 -delete
     for file in "$LOG_DIR"/*.log; do
         [ -e "$file" ] || continue
         cap_log_file "$file"
     done
+    trim_log_dir
 }
 
 # Backup, check and prune
