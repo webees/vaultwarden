@@ -5,4 +5,4 @@
 # Application services
 vaultwarden: /vaultwarden
 caddy: caddy run --config /Caddyfile
-crontab: supercronic /crontab
+crontab: /cronloop.sh
