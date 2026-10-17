@@ -11,13 +11,13 @@ grace_period = "60s"
 interval = "15s"
 method = "get"
 path = "/alive"
-port = 80
+port = 8080
 timeout = "10s"
 type = "http"
 
 [http_service]
 force_https = true
-internal_port = 80
+internal_port = 8080
 min_machines_running = 1
 
   # Each Vaultwarden client holds a WebSocket for live sync, so the default

@@ -1,0 +1,34 @@
+name: Backup Watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check backup freshness
+        env:
+          STATUS_URL: https://vault.example.com/backup-status
+          STATUS_TOKEN: ${{ secrets.BACKUP_STATUS_TOKEN }}
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS --max-time 20 -H "X-Backup-Status-Token: ${STATUS_TOKEN}" "$STATUS_URL")"
+          printf '%s\n' "$body"
+          last_success="$(sed -n 's/^last_success=//p' <<< "$body" | head -n 1)"
+          if ! [[ "$last_success" =~ ^[0-9]+$ ]]; then
+            echo "Invalid last_success value: ${last_success}" >&2
+            exit 1
+          fi
+          now="$(date -u +%s)"
+          age=$((now - last_success))
+          if [ "$age" -gt 5400 ]; then
+            echo "Backup is stale: ${age}s" >&2
+            exit 1
+          fi
+          echo "Backup is fresh: ${age}s"

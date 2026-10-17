@@ -1,7 +1,7 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
-# ║ Usage: /restic.sh {backup|restore <id>|snapshots|verify|test}             ║
+# ║ Usage: /restic.sh {backup|restore <id>|restore-test [id]|snapshots|verify|test} ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 set -o pipefail
@@ -13,6 +13,12 @@ LOG_DIR="${RESTIC_LOG_DIR:-/data/restic-logs}"
 LOG="$LOG_DIR/$(date +%Y%m%d_%H%M%S).log"
 MAX_LOG_BYTES="${RESTIC_LOG_MAX_BYTES:-262144}"
 MAX_LOG_DIR_BYTES="${RESTIC_LOG_DIR_MAX_BYTES:-10485760}"
+QUICK_TIMEOUT="${RESTIC_QUICK_TIMEOUT:-60}"
+LONG_TIMEOUT="${RESTIC_LONG_TIMEOUT:-1800}"
+STATUS_FILE="/data/backup-status.txt"
+LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
+LAST_SUCCESS="${LAST_SUCCESS:-0}"
+UPDATE_BACKUP_STATUS=0
 mkdir -p "$LOG_DIR"
 
 # ANSI colors
@@ -22,6 +28,19 @@ R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
 
 # Log output to file and stdout
 log() { "$@" 2>&1 | tee -a "$LOG"; }
+
+# Persist a small freshness marker for the external watchdog
+write_status() {
+    local state="$1" message="${2:-}" now tmp
+    now="$(date -u +%s)"
+    tmp="${STATUS_FILE}.tmp.$$"
+    {
+        printf 'state=%s\n' "$state"
+        printf 'updated_at=%s\n' "$now"
+        printf 'last_success=%s\n' "$LAST_SUCCESS"
+        printf 'message=%s\n' "$message"
+    } > "$tmp" && mv "$tmp" "$STATUS_FILE"
+}
 
 # Optional dead-man's-switch ping (e.g. healthchecks.io). No-op when HEALTHCHECK_URL is unset.
 heartbeat() {
@@ -44,19 +63,41 @@ mail() {
 
 # Run command and log status
 run() {
-    log echo -en "${B}$2${X} "
-    local out
-    if out=$(eval "$1" 2>&1); then
+    local label="$1" timeout_seconds="$2" out_file raw_file
+    shift 2
+    out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" || {
+        log echo -e "${R}Unable to create temporary output file${X}"
+        exit 2
+    }
+    raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" || {
+        rm -f "$out_file"
+        log echo -e "${R}Unable to create temporary output file${X}"
+        exit 2
+    }
+    log echo -en "${B}${label}${X} "
+    # Hard-cap raw command output on disk at 8x the retained log size, so a
+    # runaway command cannot fill the volume before the tail truncation runs.
+    local raw_limit_kb=$(( (MAX_LOG_BYTES * 8 + 1023) / 1024 ))
+    local rc=0
+    (
+        ulimit -f "$((raw_limit_kb * 2))"
+        timeout -k 30 "$timeout_seconds" "$@"
+    ) > "$raw_file" 2>&1 || rc=$?
+    tail -c "$MAX_LOG_BYTES" "$raw_file" > "$out_file"
+    rm -f "$raw_file"
+    if [ "$rc" -eq 0 ]; then
         log echo -e "${G}✓${X}"
+        rm -f "$out_file"
         return 0
     fi
     log echo -e "${R}✗${X}"
-    if [ "${#out}" -gt "$MAX_LOG_BYTES" ]; then
-        out=$(printf '%s' "$out" | tail -c "$MAX_LOG_BYTES")
-        out="[output truncated to the last ${MAX_LOG_BYTES} bytes]"$'\n'"$out"
+    if [ -s "$out_file" ]; then
+        log echo "[output capped at ${MAX_LOG_BYTES} bytes]"
+        log cat "$out_file"
     fi
-    log echo "$out"
-    mail "Task Failed: $2"
+    rm -f "$out_file"
+    [ "$UPDATE_BACKUP_STATUS" = "1" ] && write_status failed "Task failed: $label"
+    mail "Task Failed: $label"
     heartbeat fail
     cleanup_logs
     exit 2
@@ -73,7 +114,7 @@ defaults
 auth on
 tls on
 tls_trust_file /etc/ssl/certs/ca-certificates.crt
-logfile /var/log/msmtp.log
+logfile /dev/stderr
 timeout ${SMTP_TIMEOUT:-15}
 account default
 host $SMTP_HOST
@@ -118,6 +159,7 @@ trim_log_dir() {
     [ "$total" -gt "$MAX_LOG_DIR_BYTES" ] || return 0
     while IFS= read -r file; do
         [ -e "$file" ] || continue
+        [ "$file" = "$LOG" ] && continue
         rm -f "$file"
         total=$(log_dir_size)
         [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && break
@@ -125,7 +167,7 @@ trim_log_dir() {
 }
 
 cleanup_logs() {
-    find "$LOG_DIR" -name "*.log" -type f -mmin +600 -delete
+    find "$LOG_DIR" -name "*.log" -type f -mmin +600 ! -path "$LOG" -delete
     for file in "$LOG_DIR"/*.log; do
         [ -e "$file" ] || continue
         cap_log_file "$file"
@@ -135,6 +177,9 @@ cleanup_logs() {
 
 # Backup, check and prune
 backup() {
+    UPDATE_BACKUP_STATUS=1
+    write_status running "Backup started"
+
     # Clock accuracy comes from the Fly.io host; Alpine provides no ntpdate binary
 
     # Skip instead of fighting over the repository when a manual run is already active
@@ -145,30 +190,39 @@ backup() {
     fi
 
     # Remove stale locks left behind by an interrupted run (active locks are kept)
-    restic unlock 2>/dev/null || true
+    timeout -k 30 "$QUICK_TIMEOUT" restic unlock 2>/dev/null || true
 
     # Initialise only when the repository really is missing (restic exit code 10).
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
     # otherwise "restic init" answers with a misleading "already initialized" error.
-    restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
+    timeout -k 30 "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
     case "$rc" in
         0)  ;;
         10) log echo -e "${Y}Repository not initialized, initializing...${X}"
-            run "restic init" "Repo init" ;;
-        *)  run "restic cat config" "Repository access" ;;
+            run "Repo init" "$QUICK_TIMEOUT" restic init ;;
+        *)  run "Repository access" "$QUICK_TIMEOUT" restic cat config ;;
     esac
 
     # SQLite hot backup (ensures consistency)
-    run "sqlite3 '$DATA/db.sqlite3' '.backup $DATA/backup.bak'" "SQLite backup"
-    run "sqlite3 '$DATA/backup.bak' 'PRAGMA integrity_check'" "SQLite check"
+    run "SQLite backup" "$QUICK_TIMEOUT" sqlite3 "$DATA/db.sqlite3" ".backup $DATA/backup.bak"
+    run "SQLite check" "$QUICK_TIMEOUT" sqlite3 "$DATA/backup.bak" "PRAGMA integrity_check"
 
     # Core operations (exclude live db files, rebuildable cache, and local logs)
-    run "restic backup --verbose --exclude='db.*' --exclude='icon_cache' --exclude='restic-logs' '$DATA'" "Data backup"
-    run "restic check" "Health check"
-    run "restic forget --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
+    local log_exclude=()
+    case "$LOG_DIR" in
+        "$DATA"/*) log_exclude=(--exclude="${LOG_DIR#"$DATA"/}") ;;
+    esac
+    run "Data backup" "$LONG_TIMEOUT" restic backup --verbose \
+        --exclude='db.*' --exclude='icon_cache' --exclude='backup-status.txt' \
+        "${log_exclude[@]}" "$DATA"
+    run "Health check" "$LONG_TIMEOUT" restic check
+    run "Snapshot prune" "$LONG_TIMEOUT" restic forget \
+        --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune
 
     cleanup_logs
 
+    LAST_SUCCESS="$(date -u +%s)"
+    write_status ok "Backup complete"
     log echo -e "${G}Backup process complete ✨${X}"
     heartbeat ok
 }
@@ -176,12 +230,27 @@ backup() {
 # Restore data from snapshot
 restore() {
     [ -z "${1:-}" ] && { echo "Usage: $0 restore <snapshot-id>"; exit 1; }
-    run "restic restore '$1' --target /" "Restore snapshot $1"
+    run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore "$1" --target /
+}
+
+# Restore a snapshot into a temporary directory and validate the important files
+restore_test() {
+    local snapshot="${1:-latest}" target
+    target="$(mktemp -d /tmp/restic-restore.XXXXXX)"
+    trap 'rm -rf "$target"' EXIT
+    run "Restore drill" "$LONG_TIMEOUT" restic restore "$snapshot" --target "$target"
+    if [ ! -f "$target/data/backup.bak" ] || [ ! -f "$target/data/rsa_key.pem" ]; then
+        log echo -e "${R}Restore drill is missing expected files${X}"
+        exit 2
+    fi
+    run "Restore SQLite check" "$QUICK_TIMEOUT" sqlite3 "$target/data/backup.bak" "PRAGMA integrity_check"
+    log echo -e "${G}Restore drill complete${X}"
+    heartbeat ok
 }
 
 # Read back a slice of the stored data to prove the repository is really readable
 verify() {
-    run "restic check --read-data-subset=${VERIFY_SUBSET:-10%}" "Repository data verification"
+    run "Repository data verification" "$LONG_TIMEOUT" restic check --read-data-subset="${VERIFY_SUBSET:-10%}"
     heartbeat ok
 }
 
@@ -190,6 +259,10 @@ verify() {
 cleanup_logs
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
+    if [ "${1:-}" = "backup" ]; then
+        UPDATE_BACKUP_STATUS=1
+        write_status failed "RESTIC_PASSWORD not set"
+    fi
     echo "Error: RESTIC_PASSWORD not set"
     heartbeat fail
     exit 1
@@ -200,8 +273,9 @@ initCfg
 case "${1:-}" in
     backup)    backup ;;
     restore)   restore "${2:-}" ;;
-    snapshots) restic snapshots ;;
+    restore-test) restore_test "${2:-}" ;;
+    snapshots) timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
     verify)    verify ;;
-    test)      echo "Test email from $APP_NAME backup system." | command mail -s "[$APP_NAME] Test Mail" "$SMTP_TO" && echo "Test mail sent to $SMTP_TO" ;;
-    *)         echo "Usage: $0 {backup|restore <id>|snapshots|verify|test}"; exit 1 ;;
+    test)      echo "Test email from $APP_NAME backup system." | timeout 45 mail -s "[$APP_NAME] Test Mail" "$SMTP_TO" && echo "Test mail sent to $SMTP_TO" ;;
+    *)         echo "Usage: $0 {backup|restore <id>|restore-test [id]|snapshots|verify|test}"; exit 1 ;;
 esac
