@@ -152,6 +152,7 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; update those ranges in `config/Caddyfile` if they change |
+| `/admin` returns 403 | Add the client public IP or CIDR to `ADMIN_ALLOWED_IPS`; use the direct Fly hostname rather than the Cloudflare-proxied hostname |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 
