@@ -1,0 +1,11 @@
+.git
+.gitignore
+.dockerignore
+.DS_Store
+*.log
+
+# Never ship local secrets or files that the Dockerfile does not COPY
+.env
+README.md
+LICENSE
+fly.toml
