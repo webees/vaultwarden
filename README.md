@@ -94,6 +94,7 @@ fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly v
 fly secrets set CRON_RESTART_DELAY="5"   # seconds before the scheduler is restarted
 fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
 fly secrets set RESTIC_LOG_MAX_BYTES="262144"       # cap each log file at 256 KiB
+fly secrets set RESTIC_LOG_DIR_MAX_BYTES="10485760" # cap the log directory at 10 MiB
 ```
 
 ### 3. Deploy
@@ -154,7 +155,7 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; update those ranges in `config/Caddyfile` if they change |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
-| Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB) and files older than 10 hours are removed |
+| Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
 
 ## 🛠️ Management & Operations
 
