@@ -93,7 +93,6 @@ fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
 fly secrets set CRON_RESTART_DELAY="5"   # seconds before the scheduler is restarted
 fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
-fly secrets set ADMIN_ALLOWED_IPS="203.0.113.10 198.51.100.0/24"  # /admin allowlist
 ```
 
 ### 3. Deploy
@@ -152,7 +151,6 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; update those ranges in `config/Caddyfile` if they change |
-| `/admin` returns 403 | Add the client public IP or CIDR to `ADMIN_ALLOWED_IPS`; use the direct Fly hostname rather than the Cloudflare-proxied hostname |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 
@@ -196,8 +194,8 @@ The Caddy configuration automatically applies the following security posture:
 - **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
 
 Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
-Fly health checks). The admin panel at `/admin` is deny-by-default and only accepts clients in
-`ADMIN_ALLOWED_IPS`; combine it with `ADMIN_TOKEN` and treat that token as a high-value secret.
+Fly health checks). The admin panel at `/admin` is served on allowed hosts and remains protected by
+`ADMIN_TOKEN`, so treat that token as a high-value secret.
 
 ## 📝 License
 

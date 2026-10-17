@@ -52,16 +52,6 @@
 			reverse_proxy 127.0.0.1:8080
 		}
 
-		# The admin panel is deny-by-default. Add trusted public IPs or CIDRs
-		# to ADMIN_ALLOWED_IPS to reach it.
-		@admin_denied {
-			path /admin /admin/*
-			not client_ip {$ADMIN_ALLOWED_IPS:127.0.0.1}
-		}
-		handle @admin_denied {
-			respond "Admin access denied" 403
-		}
-
 		# Domain Access Control (deny by default when CADDY_DOMAINS is unset)
 		@denied not host {$CADDY_DOMAINS:localhost}
 		handle @denied {
