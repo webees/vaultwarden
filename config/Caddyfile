@@ -57,15 +57,8 @@
 			respond "Access Denied: Domain not allowed" 403
 		}
 
-		# Preserve the real client address for Cloudflare-proxied requests.
-		@via_cloudflare header CF-Connecting-IP *
-		handle @via_cloudflare {
-			reverse_proxy 127.0.0.1:8080 {
-				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
-				header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
-			}
-		}
-
+		# Fly overwrites Fly-Client-IP at the edge. CF-Connecting-IP is not used
+		# here because direct clients can spoof it and bypass IP-based limits.
 		handle {
 			reverse_proxy 127.0.0.1:8080 {
 				header_up X-Real-IP {http.request.header.Fly-Client-IP}

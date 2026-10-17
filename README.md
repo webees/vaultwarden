@@ -145,7 +145,7 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | The domain is Cloudflare-proxied; Caddy now prefers `CF-Connecting-IP` over `Fly-Client-IP` |
+| Client IPs look like Cloudflare edge addresses | Expected while the Fly app is also directly reachable. Caddy uses the edge-controlled `Fly-Client-IP`; trusting `CF-Connecting-IP` directly would let direct clients spoof their address |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
 | Backup logs disappear after a redeploy | `/var/log/restic` is container-local, not on the `/data` volume |
 
