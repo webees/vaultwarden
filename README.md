@@ -92,6 +92,8 @@ fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
 fly secrets set CRON_RESTART_DELAY="5"   # seconds before the scheduler is restarted
+fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
+fly secrets set ADMIN_ALLOWED_IPS="203.0.113.10 198.51.100.0/24"  # /admin allowlist
 ```
 
 ### 3. Deploy
@@ -118,7 +120,7 @@ fly releases rollback   # roll back to the previous image
 | Item | Behaviour |
 | :--- | :--- |
 | Schedule | `@hourly` backup plus a monthly integrity check, defined in `config/crontab` |
-| Data | `/data` volume, excluding the live `db.*` SQLite files and the rebuildable `icon_cache` |
+| Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, and `restic-logs` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
 | Alerts | Email on failure (`SMTP_*`) and an optional `HEALTHCHECK_URL` ping on every run |
@@ -145,9 +147,9 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | Expected while the Fly app is also directly reachable. Caddy uses the edge-controlled `Fly-Client-IP`; trusting `CF-Connecting-IP` directly would let direct clients spoof their address |
+| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; update those ranges in `config/Caddyfile` if they change |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
-| Backup logs disappear after a redeploy | `/var/log/restic` is container-local, not on the `/data` volume |
+| Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 
 ## 🛠️ Management & Operations
 
@@ -172,7 +174,7 @@ fly apps restart               # Restart all instances
 ### Log Inspection
 
 ```bash
-cat /var/log/restic/*.log      # Check backup logs
+cat /data/restic-logs/*.log    # Check persisted backup logs
 tail -f /var/log/msmtp.log     # Monitor email logs
 ```
 
@@ -189,8 +191,8 @@ The Caddy configuration automatically applies the following security posture:
 - **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
 
 Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
-Fly health checks). The admin panel at `/admin` is reachable from the internet and is protected by
-`ADMIN_TOKEN` alone, so treat that token as a high-value secret.
+Fly health checks). The admin panel at `/admin` is deny-by-default and only accepts clients in
+`ADMIN_ALLOWED_IPS`; combine it with `ADMIN_TOKEN` and treat that token as a high-value secret.
 
 ## 📝 License
 
