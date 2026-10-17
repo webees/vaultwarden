@@ -1,7 +1,7 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
-# ║ Usage: /restic.sh {backup|restore <id>|snapshots|test}                    ║
+# ║ Usage: /restic.sh {backup|restore <id>|snapshots|verify|test}             ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 set -o pipefail
@@ -31,10 +31,11 @@ heartbeat() {
 }
 
 # Send email notification
+# The outer timeout keeps a stalled SMTP relay from blocking the whole backup run.
 mail() {
     [ -z "${SMTP_TO:-}" ] && return
     # Strip ANSI colors and set UTF-8
-    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | command mail \
+    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
         -a "Content-Type: text/plain; charset=UTF-8" \
         -s "[$APP_NAME] $1" "$SMTP_TO"
 }
@@ -60,12 +61,14 @@ initCfg() {
     [ -z "${SMTP_TO:-}" ] && return
     [ -z "${SMTP_HOST:-}" ] && return
 
-    cat > /etc/msmtprc << EOF
+    # umask 077: the file holds the SMTP password, so keep it root-only readable
+    ( umask 077; cat > /etc/msmtprc << EOF
 defaults
 auth on
 tls on
 tls_trust_file /etc/ssl/certs/ca-certificates.crt
 logfile /var/log/msmtp.log
+timeout ${SMTP_TIMEOUT:-15}
 account default
 host $SMTP_HOST
 port ${SMTP_PORT:-587}
@@ -73,6 +76,8 @@ from $SMTP_FROM
 user $SMTP_USERNAME
 password $SMTP_PASSWORD
 EOF
+    )
+    chmod 600 /etc/msmtprc
 }
 
 # ── Business Logic ────────────────────────────────────────────────────────────
@@ -86,23 +91,35 @@ cleanup_logs() {
 backup() {
     # Clock accuracy comes from the Fly.io host; Alpine provides no ntpdate binary
 
-    # Unlock repository
+    # Skip instead of fighting over the repository when a manual run is already active
+    exec 9>"$LOG_DIR/backup.lock"
+    if ! flock -n 9; then
+        log echo -e "${Y}Another backup is already running, skipping this run${X}"
+        exit 3
+    fi
+
+    # Remove stale locks left behind by an interrupted run (active locks are kept)
     restic unlock 2>/dev/null || true
 
-    # Initialize repository if needed
-    if ! restic cat config >/dev/null 2>&1; then
-        log echo -e "${Y}Repository not initialized, initializing...${X}"
-        run "restic init" "Repo init"
-    fi
+    # Initialise only when the repository really is missing (restic exit code 10).
+    # A wrong password (12) or an unreachable backend (1) must be reported as such,
+    # otherwise "restic init" answers with a misleading "already initialized" error.
+    restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
+    case "$rc" in
+        0)  ;;
+        10) log echo -e "${Y}Repository not initialized, initializing...${X}"
+            run "restic init" "Repo init" ;;
+        *)  run "restic cat config" "Repository access" ;;
+    esac
 
     # SQLite hot backup (ensures consistency)
     run "sqlite3 '$DATA/db.sqlite3' '.backup $DATA/backup.bak'" "SQLite backup"
     run "sqlite3 '$DATA/backup.bak' 'PRAGMA integrity_check'" "SQLite check"
 
-    # Core operations (exclude original db files, use backup.bak instead)
-    run "restic backup --verbose --exclude='db.*' '$DATA'" "Data backup"
+    # Core operations (exclude the live db files and the rebuildable icon cache)
+    run "restic backup --verbose --exclude='db.*' --exclude='icon_cache' '$DATA'" "Data backup"
     run "restic check" "Health check"
-    run "restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
+    run "restic forget --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
 
     cleanup_logs
 
@@ -114,6 +131,12 @@ backup() {
 restore() {
     [ -z "${1:-}" ] && { echo "Usage: $0 restore <snapshot-id>"; exit 1; }
     run "restic restore '$1' --target /" "Restore snapshot $1"
+}
+
+# Read back a slice of the stored data to prove the repository is really readable
+verify() {
+    run "restic check --read-data-subset=${VERIFY_SUBSET:-10%}" "Repository data verification"
+    heartbeat ok
 }
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
@@ -130,6 +153,7 @@ case "${1:-}" in
     backup)    backup ;;
     restore)   restore "${2:-}" ;;
     snapshots) restic snapshots ;;
+    verify)    verify ;;
     test)      echo "Test email from $APP_NAME backup system." | command mail -s "[$APP_NAME] Test Mail" "$SMTP_TO" && echo "Test mail sent to $SMTP_TO" ;;
-    *)         echo "Usage: $0 {backup|restore <id>|snapshots|test}"; exit 1 ;;
+    *)         echo "Usage: $0 {backup|restore <id>|snapshots|verify|test}"; exit 1 ;;
 esac
