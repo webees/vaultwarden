@@ -6,6 +6,9 @@ on:
     branches:
       - main
     tags: [ '*' ]
+  schedule:
+    # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes flowing
+    - cron: '0 4 * * 1'
 
 env:
   REGISTRY: ghcr.io

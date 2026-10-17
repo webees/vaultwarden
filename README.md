@@ -22,12 +22,12 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                      Fly.io Edge                        │
+│              Fly.io Edge (TLS termination)              │
 └───────────────────────────┬─────────────────────────────┘
                             │ :443
 ┌───────────────────────────▼─────────────────────────────┐
 │                        Caddy                            │
-│              (TLS termination, headers)                 │
+│          (reverse proxy, security headers)              │
 └───────────────────────────┬─────────────────────────────┘
                             │ :8080
 ┌───────────────────────────▼─────────────────────────────┐
@@ -61,6 +61,9 @@ cat .env | fly secrets import
 fly volumes create app_data --region hkg --size 1
 ```
 
+> The committed `.env` ships placeholders only (`vault.example.com`, `88888888`, ...). Replace every
+> value before importing, and never commit real credentials.
+
 ### 2. Required Secrets Configuration
 
 ```bash
@@ -81,6 +84,9 @@ fly secrets set SMTP_FROM="sender@example.com"
 fly secrets set SMTP_TO="admin@example.com"
 fly secrets set SMTP_USERNAME="sender@example.com"
 fly secrets set SMTP_PASSWORD="app-specific-password"
+
+# Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
+fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 ```
 
 ### 3. Deploy
@@ -88,6 +94,48 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 ```bash
 fly deploy
 ```
+
+## 🔢 Versions & Upgrades
+
+The base image is pinned with the `VAULTWARDEN_VERSION` build arg in the `Dockerfile`, so a rebuild never
+silently changes the Vaultwarden version. The GHCR workflow additionally runs weekly to pick up Alpine
+package (`caddy`, `restic`, `sqlite`) security updates.
+
+```bash
+# Bump VAULTWARDEN_VERSION, then rebuild and redeploy
+fly deploy
+fly releases            # list previous releases
+fly releases rollback   # roll back to the previous image
+```
+
+## 💾 Backup & Recovery
+
+| Item | Behaviour |
+| :--- | :--- |
+| Schedule | `@hourly`, defined in `config/crontab` |
+| Data | `/data` volume, excluding the live `db.*` SQLite files |
+| Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
+| Retention | `--keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
+| Alerts | Email on failure (`SMTP_*`) and an optional `HEALTHCHECK_URL` ping on every run |
+
+```bash
+fly ssh console -C "/restic.sh backup"         # manual backup
+fly ssh console -C "/restic.sh snapshots"      # list snapshots
+fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
+```
+
+> `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
+> restore into a scratch machine or a temporary path instead.
+>
+> Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
+
+## 🧯 Troubleshooting
+
+| Symptom | Cause / fix |
+| :--- | :--- |
+| Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
+| Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); check `/var/log/msmtp.log` |
+| Backup logs disappear after a redeploy | `/var/log/restic` is container-local, not on the `/data` volume |
 
 ## 🛠️ Management & Operations
 
@@ -125,6 +173,8 @@ The Caddy configuration automatically applies the following security posture:
 - **XSS Protection**: `X-XSS-Protection 1; mode=block`
 - **Privacy**: `Referrer-Policy strict-origin-when-cross-origin`
 - **Indexing**: `X-Robots-Tag noindex, nofollow`
+- **Permissions**: `Permissions-Policy` (camera, microphone, geolocation, payment disabled)
+- **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
 
 ## 📝 License
 

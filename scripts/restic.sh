@@ -21,6 +21,15 @@ R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
 # Log output to file and stdout
 log() { "$@" 2>&1 | tee -a "$LOG"; }
 
+# Optional dead-man's-switch ping (e.g. healthchecks.io). No-op when HEALTHCHECK_URL is unset.
+heartbeat() {
+    [ -z "${HEALTHCHECK_URL:-}" ] && return 0
+    local suffix=""
+    [ "${1:-ok}" = "fail" ] && suffix="/fail"
+    curl -fsS -m 10 --retry 3 "${HEALTHCHECK_URL}${suffix}" >/dev/null 2>&1 \
+        || log echo -e "${Y}Heartbeat ping failed${X}"
+}
+
 # Send email notification
 mail() {
     [ -z "${SMTP_TO:-}" ] && return
@@ -34,14 +43,15 @@ mail() {
 run() {
     log echo -en "${B}$2${X} "
     local out
-    out=$(eval "$1" 2>&1)
-    if [ $? -eq 0 ]; then
+    if out=$(eval "$1" 2>&1); then
         log echo -e "${G}✓${X}"
         return 0
     fi
     log echo -e "${R}✗${X}"
     log echo "$out"
     mail "Task Failed: $2"
+    heartbeat fail
+    cleanup_logs
     exit 2
 }
 
@@ -67,10 +77,14 @@ EOF
 
 # ── Business Logic ────────────────────────────────────────────────────────────
 
+# Drop backup logs older than 10 hours
+cleanup_logs() {
+    find "$LOG_DIR" -name "*.log" -type f -mmin +600 -delete
+}
+
 # Backup, check and prune
 backup() {
-    # Sync time for S3 requests
-    ntpdate -u pool.ntp.org 2>/dev/null || log echo -e "${Y}NTP sync skipped${X}"
+    # Clock accuracy comes from the Fly.io host; Alpine provides no ntpdate binary
 
     # Unlock repository
     restic unlock 2>/dev/null || true
@@ -90,10 +104,10 @@ backup() {
     run "restic check" "Health check"
     run "restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
 
-    # Cleanup logs older than 10 hours
-    find "$LOG_DIR" -name "*.log" -type f -mmin +600 -delete
+    cleanup_logs
 
     log echo -e "${G}Backup process complete ✨${X}"
+    heartbeat ok
 }
 
 # Restore data from snapshot
@@ -104,7 +118,11 @@ restore() {
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-[ -z "${RESTIC_PASSWORD:-}" ] && { echo "Error: RESTIC_PASSWORD not set"; exit 1; }
+if [ -z "${RESTIC_PASSWORD:-}" ]; then
+    echo "Error: RESTIC_PASSWORD not set"
+    heartbeat fail
+    exit 1
+fi
 
 initCfg
 
