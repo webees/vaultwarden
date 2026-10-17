@@ -18,6 +18,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+concurrency:
+  group: ghcr-build
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -29,6 +33,13 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v7
+
+      - name: 🌐 Refresh Cloudflare IP ranges
+        run: |
+          {
+            curl -fsSL https://www.cloudflare.com/ips-v4
+            curl -fsSL https://www.cloudflare.com/ips-v6
+          } | awk '{print "client_ip "$0}' > config/cloudflare-ips.caddy
 
       - name: ⚙️ Enable QEMU for cross-platform builds
         uses: docker/setup-qemu-action@v4

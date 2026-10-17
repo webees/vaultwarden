@@ -19,6 +19,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           packages: ${{ github.event.repository.name }}
           delete-untagged: true
+          use-regex: true
+          delete-tags: '^[0-9]{12}$'
           older-than: 30 days
           delete-ghost-images: true
           delete-partial-images: true
