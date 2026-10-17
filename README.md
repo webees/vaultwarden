@@ -106,9 +106,13 @@ fly deploy
 
 The base image is pinned with the `VAULTWARDEN_VERSION` build arg in the `Dockerfile`, so a rebuild never
 silently changes the Vaultwarden version. The GHCR workflow additionally runs weekly to pick up Alpine
-package (`caddy`, `restic`, `sqlite`) security updates.
+package (`caddy`, `restic`, `sqlite`) security updates. `fly.toml` pins the deployed amd64 image by digest,
+so update that digest deliberately after a successful workflow run.
 
 ```bash
+# Show the new amd64 digest, then replace the value in fly.toml
+docker buildx imagetools inspect ghcr.io/webees/vaultwarden:latest
+
 # Bump VAULTWARDEN_VERSION, then rebuild and redeploy
 fly deploy
 fly releases            # list previous releases
