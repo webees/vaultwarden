@@ -9,7 +9,7 @@ set -o pipefail
 # ── Configuration ─────────────────────────────────────────────────────────────
 APP_NAME="${FLY_APP_NAME:-Vaultwarden}"
 DATA="/data"
-LOG_DIR="/var/log/restic"
+LOG_DIR="${RESTIC_LOG_DIR:-/data/restic-logs}"
 LOG="$LOG_DIR/$(date +%Y%m%d_%H%M%S).log"
 mkdir -p "$LOG_DIR"
 
@@ -116,8 +116,8 @@ backup() {
     run "sqlite3 '$DATA/db.sqlite3' '.backup $DATA/backup.bak'" "SQLite backup"
     run "sqlite3 '$DATA/backup.bak' 'PRAGMA integrity_check'" "SQLite check"
 
-    # Core operations (exclude the live db files and the rebuildable icon cache)
-    run "restic backup --verbose --exclude='db.*' --exclude='icon_cache' '$DATA'" "Data backup"
+    # Core operations (exclude live db files, rebuildable cache, and local logs)
+    run "restic backup --verbose --exclude='db.*' --exclude='icon_cache' --exclude='restic-logs' '$DATA'" "Data backup"
     run "restic check" "Health check"
     run "restic forget --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune" "Snapshot prune"
 

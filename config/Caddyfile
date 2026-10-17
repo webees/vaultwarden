@@ -11,6 +11,7 @@
 	# Trust Fly.io private networking for accurate IP parsing
 	servers {
 		trusted_proxies static private_ranges
+		client_ip_headers Fly-Client-IP
 	}
 
 	log {
@@ -51,14 +52,41 @@
 			reverse_proxy 127.0.0.1:8080
 		}
 
+		# The admin panel is deny-by-default. Add trusted public IPs or CIDRs
+		# to ADMIN_ALLOWED_IPS to reach it.
+		@admin_denied {
+			path /admin /admin/*
+			not client_ip {$ADMIN_ALLOWED_IPS:127.0.0.1}
+		}
+		handle @admin_denied {
+			respond "Admin access denied" 403
+		}
+
 		# Domain Access Control (deny by default when CADDY_DOMAINS is unset)
 		@denied not host {$CADDY_DOMAINS:localhost}
 		handle @denied {
 			respond "Access Denied: Domain not allowed" 403
 		}
 
-		# Fly overwrites Fly-Client-IP at the edge. CF-Connecting-IP is not used
-		# here because direct clients can spoof it and bypass IP-based limits.
+		# Cloudflare publishes these origin-facing ranges. Fly overwrites
+		# Fly-Client-IP at the edge, so a direct client cannot impersonate one;
+		# only then is CF-Connecting-IP trusted.
+		@via_cloudflare {
+			client_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22
+			client_ip 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20
+			client_ip 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13
+			client_ip 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+			client_ip 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32
+			client_ip 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+			header CF-Connecting-IP *
+		}
+		handle @via_cloudflare {
+			reverse_proxy 127.0.0.1:8080 {
+				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+				header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+			}
+		}
+
 		handle {
 			reverse_proxy 127.0.0.1:8080 {
 				header_up X-Real-IP {http.request.header.Fly-Client-IP}
