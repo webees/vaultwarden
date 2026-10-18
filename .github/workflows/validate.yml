@@ -26,7 +26,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh tests/*.sh
 
       - name: 🧾 Workflow YAML
         run: |
@@ -37,6 +37,9 @@ jobs:
 
       - name: 🌐 Refresh the Cloudflare ranges
         run: scripts/refresh-cloudflare-ips.sh
+
+      - name: 🧪 Helper self tests
+        run: tests/selftest.sh
 
       - name: 🐳 Build and validate the image
         run: |
@@ -53,15 +56,21 @@ jobs:
             --env DOMAIN=https://example.com \
             --env I_REALLY_WANT_VOLATILE_STORAGE=true \
             validate:local /entrypoint.sh overmind start
+          alive=1
           for _ in $(seq 1 30); do
             if docker exec smoke wget -qO- http://127.0.0.1:8080/alive >/dev/null 2>&1; then
-              echo "/alive responded through Caddy"
-              docker rm --force smoke >/dev/null
-              exit 0
+              alive=0
+              break
             fi
             sleep 2
           done
-          echo "/alive never came up" >&2
-          docker logs smoke >&2
+          if [ "$alive" -ne 0 ]; then
+            echo "/alive never came up" >&2
+            docker logs smoke >&2
+            docker rm --force smoke >/dev/null
+            exit 1
+          fi
+          echo "/alive responded through Caddy"
+          docker cp tests/image-selftest.sh smoke:/tmp/image-selftest.sh
+          docker exec smoke sh /tmp/image-selftest.sh
           docker rm --force smoke >/dev/null
-          exit 1
