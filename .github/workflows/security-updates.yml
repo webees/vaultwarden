@@ -110,6 +110,30 @@ jobs:
           compare OVERMIND_SHA256_amd64 "$OVERMIND_SHA_AMD64"
           compare OVERMIND_SHA256_arm64 "$OVERMIND_SHA_ARM64"
 
+      - name: 📦 Compare Alpine packages
+        id: apk
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          BASE_IMAGE: ${{ steps.upstream.outputs.digest }}
+        run: |
+          set -euo pipefail
+          rows="$(docker run --rm "$BASE_IMAGE" sh -c \
+            'apk update >/dev/null 2>&1; apk version -v -l "<" 2>/dev/null' \
+            | awk 'NF == 3 {print $1, $3}')"
+          count="$(printf '%s\n' "$rows" | grep -c . || true)"
+          {
+            echo "count=${count}"
+            echo "rows<<APK_EOF"
+            printf '%s\n' "$rows"
+            echo "APK_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "upgradable packages: ${count}"
+          printf '%s\n' "$rows"
+
+      - name: 🐳 Validate the image builds
+        if: steps.compare.outputs.changed == 'true'
+        run: docker build -t dependency-check:local .
+
       - name: 🔧 Update pinned versions and checksums
         if: steps.compare.outputs.changed == 'true'
         env:
@@ -142,6 +166,8 @@ jobs:
           UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
           SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
           OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
+          APK_COUNT: ${{ steps.apk.outputs.count }}
+          APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
           set -euo pipefail
           branch="deps/upstream-${UPSTREAM_VERSION}"
@@ -158,8 +184,19 @@ jobs:
           body+="| vaultwarden/server | ${UPSTREAM_VERSION}-alpine @ ${UPSTREAM_DIGEST} |"$'\n'
           body+="| supercronic | ${SUPERCRONIC_VERSION} |"$'\n'
           body+="| overmind | ${OVERMIND_VERSION} |"$'\n\n'
-          body+="Alpine packages are refreshed whenever the base image digest changes; scheduled rebuilds also bypass the apk layer cache."$'\n\n'
-          body+="Merging this PR rebuilds and publishes a new timestamped image; pin the new digest in fly.toml afterwards."
+          body+="Alpine package updates available inside the base image (\`${APK_COUNT}\`):"$'\n\n'
+          if [ "${APK_COUNT:-0}" -gt 0 ]; then
+            body+="| Installed | Available |"$'\n'
+            body+="| :--- | :--- |"$'\n'
+            while read -r installed available; do
+              [ -n "$installed" ] || continue
+              body+="| \`${installed}\` | \`${available}\` |"$'\n'
+            done <<< "$APK_ROWS"
+          else
+            body+="_No package upgrades are pending in the pinned base image._"$'\n'
+          fi
+          body+=$'\n'
+          body+="Merging this PR rebuilds and publishes a new timestamped image; the deploy workflow then pins the digest and rolls it out automatically."
           gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
             --title "chore(deps): update pinned upstream dependencies" \
             --body "$body" \
