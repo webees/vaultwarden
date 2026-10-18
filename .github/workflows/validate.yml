@@ -28,12 +28,13 @@ jobs:
           sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh tests/*.sh
 
-      - name: 🧾 Workflow YAML
+      - name: 🧾 Workflow YAML and fly.toml
         run: |
-          for file in .github/workflows/*.yml; do
+          for file in .github/workflows/*.yml .github/dependabot.yml; do
             ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$file"
             echo "ok ${file}"
           done
+          python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
       - name: 🌐 Refresh the Cloudflare ranges
         run: scripts/refresh-cloudflare-ips.sh

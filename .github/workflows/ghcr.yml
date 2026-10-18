@@ -6,8 +6,10 @@ on:
     branches:
       - main
     tags: [ '*' ]
+    # fly.toml is a production input: it carries the machine config that only
+    # `flyctl deploy` applies. Ignoring it here meant a config-only commit built
+    # nothing and deployed nothing, so the change silently never reached Fly.
     paths-ignore:
-      - fly.toml
       - README.md
       - LICENSE
   schedule:
@@ -31,7 +33,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - name: 📥 Checkout repository
