@@ -13,14 +13,19 @@ readonly V4_URL="https://www.cloudflare.com/ips-v4"
 readonly V6_URL="https://www.cloudflare.com/ips-v6"
 # A truncated response must never overwrite the checked-in list.
 readonly MIN_RANGES=20
+readonly HTTP_TIMEOUT="${CF_HTTP_TIMEOUT:-30}"
+
+# Bounded fetch: a stalled request must not hold a CI job open for its full
+# six-hour limit.
+fetch() { curl -fsSL --max-time "$HTTP_TIMEOUT" --retry 2 --retry-delay 2 "$@"; }
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
 {
-    curl -fsSL "$V4_URL"
+    fetch "$V4_URL"
     printf '\n'
-    curl -fsSL "$V6_URL"
+    fetch "$V6_URL"
     printf '\n'
 } | awk 'NF {print "client_ip "$0}' > "$tmp"
 
