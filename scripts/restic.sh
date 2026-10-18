@@ -1,8 +1,8 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
-# ║ Usage: /restic.sh {backup|restore <id>|restore-test [id]|snapshots|verify} ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
+# Usage: /restic.sh {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}
 
 set -uo pipefail
 
@@ -58,6 +58,9 @@ heartbeat() {
         || log echo -e "${Y}Heartbeat ping failed${X}"
 }
 
+# Log an error and abort; used when the scratch files below cannot be created.
+die() { log echo -e "${R}$1${X}"; exit 2; }
+
 # Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
 send_mail() {
     [ -z "${SMTP_TO:-}" ] && return
@@ -84,15 +87,10 @@ run() {
     local label="$1" timeout_seconds="$2" out_file raw_file rc
     shift 2
     CURRENT_STEP="$label"
-    out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" || {
-        log echo -e "${R}Unable to create temporary output file${X}"
-        exit 2
-    }
-    raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" || {
-        rm -f "$out_file"
-        log echo -e "${R}Unable to create temporary output file${X}"
-        exit 2
-    }
+    out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" \
+        || die "Unable to create temporary output file"
+    raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" \
+        || { rm -f "$out_file"; die "Unable to create temporary output file"; }
     log echo -en "${B}${label}${X} "
     # Hard-cap raw command output on disk at 8x the retained log size, so a
     # runaway command cannot fill the volume before the tail truncation runs.
@@ -277,6 +275,34 @@ verify() {
     heartbeat ok
 }
 
+# Alert when the newest successful backup is older than BACKUP_MAX_AGE. Email on
+# failure already covers a backup that runs and breaks; this covers a backup that
+# silently stops running while the scheduler is still alive. A scheduler that has
+# stopped entirely still needs HEALTHCHECK_URL, which is an external service.
+check_freshness() {
+    local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s
+    now="$(date -u +%s)"
+    if [ "$LAST_SUCCESS" = "0" ]; then
+        # A fresh volume has no baseline yet, so only complain once the instance
+        # has been up longer than the limit.
+        uptime_s="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+        if [ "${uptime_s:-0}" -lt "$limit" ]; then
+            log echo -e "${Y}No backup recorded yet and this instance is ${uptime_s}s old${X}"
+            return 0
+        fi
+    fi
+    age=$((now - LAST_SUCCESS))
+    if [ "$age" -le "$limit" ]; then
+        log echo -e "${G}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
+        return 0
+    fi
+    log echo -e "${R}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
+    write_status failed "No successful backup for ${age}s"
+    send_mail "Backup stale"
+    heartbeat fail
+    exit 2
+}
+
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 trim_logs
@@ -289,10 +315,11 @@ if [ -z "${RESTIC_PASSWORD:-}" ]; then
 fi
 
 case "${1:-}" in
-    backup)    backup ;;
-    restore)   restore "${2:-}" ;;
-    restore-test) restore_test "${2:-}" ;;
-    snapshots) timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
-    verify)    verify ;;
-    *)         echo "Usage: $0 {backup|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
+    backup)          backup ;;
+    check-freshness) check_freshness ;;
+    restore)         restore "${2:-}" ;;
+    restore-test)    restore_test "${2:-}" ;;
+    snapshots)       timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
+    verify)          verify ;;
+    *)               echo "Usage: $0 {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
