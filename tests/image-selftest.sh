@@ -436,9 +436,17 @@ same "restore drill leaves nothing in /tmp after a failure" "" \
     "$(leftovers)"
 
 # restore overwrites /data on purpose, so it runs last and the container is
-# thrown away afterwards.
-/restic.sh restore latest >/tmp/selftest-restore.log 2>&1
-same "restore writes the snapshot back" 0 "$?"
+# thrown away afterwards. It is also the only command that can destroy a live
+# instance, so the destructive path sits behind an explicit confirmation.
+/restic.sh restore latest >/tmp/selftest-restore-guard.log 2>&1
+same "restore refuses to run without confirmation" 2 "$?"
+same "the refused restore explains the confirmation" 1 \
+    "$(grep -c 'RESTORE_CONFIRM=yes' /tmp/selftest-restore-guard.log)"
+same "the refused restore never starts restic" 0 \
+    "$(grep -c 'Restore snapshot' /tmp/selftest-restore-guard.log)"
+
+RESTORE_CONFIRM=yes /restic.sh restore latest >/tmp/selftest-restore.log 2>&1
+same "a confirmed restore writes the snapshot back" 0 "$?"
 if [ -f /data/rsa_key.pem ]; then
     ok "restore wrote /data/rsa_key.pem back"
 else
