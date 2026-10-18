@@ -413,6 +413,21 @@ fi
 VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-verify.log 2>&1
 same "verify clears the stale lock and reads a data slice" 0 "$?"
 
+# The monthly check is the only job that looks for repository damage, so a
+# failure has to reach the operator. It used to exit 2 with nothing but a log
+# line, which is indistinguishable from a run nobody read.
+seed_status "$(date -u +%s)"
+RESTIC_REPOSITORY=/tmp/selftest-missing SMTP_TO=ops@example.com /restic.sh verify \
+    >/tmp/selftest-verifyfail.log 2>&1
+same "a failed verification exits 2" 2 "$?"
+same "a failed verification alerts the operator" 1 \
+    "$(grep -c 'Alert email' /tmp/selftest-verifyfail.log)"
+same "a failed verification records the state" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+same "a failed verification names the failing step" 1 \
+    "$(grep -c 'Repository verification failed' /data/backup-status.txt)"
+seed_status "$(date -u +%s)"
+
 # the guard is only useful if the scheduler actually calls it
 if grep -q 'check-freshness' /crontab; then
     ok "the freshness guard is scheduled in /crontab"
