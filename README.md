@@ -123,7 +123,9 @@ runtime smoke test all pass.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
-Timestamp tags older than 30 days are removed by the nightly `ghcr-cleanup` workflow.
+Timestamp tags older than 30 days are removed by the nightly `ghcr-cleanup` workflow. GitHub stops
+scheduled workflows silently, so the build expires them as well whenever that schedule has not run for a
+week; the run log says which path did the work.
 
 ```bash
 # Inspect the newest published image. The deploy workflow already rolled this

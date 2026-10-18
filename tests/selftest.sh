@@ -208,6 +208,30 @@ else
     bad "nothing gates the published image on pending package upgrades"
 fi
 
+# GitHub stops scheduled workflows without saying so: the nightly tag cleanup
+# last ran on 2026-01-03, so the 30-day expiry the README promises was not
+# enforced. The build has to expire old tags itself when the schedule is stale.
+if ruby -ryaml -e '
+    steps = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+    expiry = steps.select { |s| (s["with"] || {})["delete-tags"].to_s.include?("[0-9]{12}") }
+    exit 1 if expiry.empty?
+    exit 1 unless steps.any? { |s| (s["run"] || "").include?("event=schedule") }
+    exit 1 if expiry.all? { |s| (s["if"] || "").empty? }
+  '; then
+    ok "the build expires old timestamp tags when the nightly cleanup is behind"
+else
+    bad "tag expiry still depends entirely on a GitHub schedule that can stop silently"
+fi
+
+if ruby -ryaml -e '
+    runner = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["jobs"]["cleanup"]["runs-on"]
+    exit 1 if runner.to_s.include?("latest")
+  '; then
+    ok "the cleanup job pins its runner instead of tracking ubuntu-latest"
+else
+    bad "the cleanup job runs on a floating ubuntu-latest runner"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
 # The deploy workflow passes the freshly built digest with `fly deploy --image`,
