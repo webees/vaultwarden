@@ -148,6 +148,29 @@ else
     ok "no script relies on the GNU-only find -printf"
 fi
 
+# Every outbound fetch needs a bounded wait: a stalled request otherwise holds a
+# CI job open until GitHub's six-hour limit. This records the arguments curl
+# actually receives, so a call site that forgets the flags fails the check.
+net_log="$work/curl-args"
+: > "$net_log"
+net_stub="$work/curl-stub"
+mkdir -p "$net_stub"
+{
+    printf '#!/bin/sh\n'
+    printf 'printf "%%s\\n" "$*" >> "%s"\n' "$net_log"
+    printf 'exit 0\n'
+} > "$net_stub/curl"
+chmod +x "$net_stub/curl"
+PATH="$net_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" base >/dev/null 2>&1 || true
+PATH="$net_stub:$PATH" "$REPO_ROOT/scripts/refresh-cloudflare-ips.sh" >/dev/null 2>&1 || true
+net_calls="$(wc -l < "$net_log" | tr -d ' ')"
+net_timed="$(grep -c -- '--max-time' "$net_log" || true)"
+if [ "$net_calls" -gt 0 ] && [ "$net_calls" = "$net_timed" ]; then
+    ok "every dependency fetch sets a timeout (${net_timed}/${net_calls})"
+else
+    bad "outbound fetches without a timeout (${net_timed}/${net_calls})"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
 # fly.toml carries the machine config, and only a deploy applies it. If the
