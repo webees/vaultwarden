@@ -146,7 +146,7 @@ jobs:
       # merge. Rebuild the published image directly instead of waiting for the
       # weekly schedule; the build workflow upgrades the packages and deploys.
       - name: ♻️ Rebuild when only Alpine packages moved
-        if: steps.compare.outputs.changed != 'true'
+        if: success() && steps.compare.outputs.changed != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
