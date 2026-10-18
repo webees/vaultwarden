@@ -89,13 +89,37 @@ backup_is_running() {
 # Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
 send_mail() {
     [ -z "${SMTP_TO:-}" ] && return
-    # Strip ANSI colors and set UTF-8
-    (
-        exec 9>&-
-        sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
-            -a "Content-Type: text/plain; charset=UTF-8" \
-            -s "[$APP_NAME] $1" "$SMTP_TO"
-    )
+    # Strip ANSI colors and set UTF-8. The outcome is written to the log so
+    # "the alert never arrived" can be diagnosed from the run itself instead of
+    # from whatever the mailer happened to print on stderr.
+    local out rc
+    out="$(
+        (
+            exec 9>&-
+            sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
+                -a "Content-Type: text/plain; charset=UTF-8" \
+                -s "[$APP_NAME] $1" "$SMTP_TO"
+        ) 2>&1
+    )"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        log echo -e "${G}Alert email sent to ${SMTP_TO}${X}"
+        return 0
+    fi
+    log echo -e "${R}Alert email failed (exit ${rc})${X}"
+    [ -n "$out" ] && log printf '%s\n' "$out"
+    return 0
+}
+
+# Warn when the audit trail cannot be written: a run with no log file and no
+# status file is invisible to whoever has to diagnose it later.
+check_audit_trail() {
+    if ! ( : >> "$LOG" ) 2>/dev/null; then
+        echo "Warning: cannot write ${LOG}; this run leaves no persistent log" >&2
+    fi
+    if ! ( : >> "$STATUS_FILE" ) 2>/dev/null; then
+        echo "Warning: cannot write ${STATUS_FILE}; backup state will not be recorded" >&2
+    fi
 }
 
 # Restore-drill scratch paths. These are global on purpose: an EXIT trap runs
@@ -356,6 +380,7 @@ check_freshness() {
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 trim_logs
+check_audit_trail
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
     [ "${1:-}" = "backup" ] && write_status failed "RESTIC_PASSWORD not set"
