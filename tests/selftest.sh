@@ -111,6 +111,69 @@ GITHUB_OUTPUT="$work/deps-applied" "$apply_tree/scripts/deps.sh" compare \
 same "the rewritten pin round-trips through compare" "false" \
     "$(sed -n 's/^changed=//p' "$work/deps-applied")"
 
+# `sed` matches nothing when the name is wrong, so a typo or a renamed pin used
+# to turn `apply` into a silent no-op: the workflow reported success while the
+# Dockerfile still carried the old version. Validate every pair up front, before
+# the first rewrite, so a rejected request leaves the file byte-identical.
+guard_before="$(cksum < "$apply_tree/Dockerfile")"
+apply_unknown_out="$("$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION_TYPO=9.9.9" 2>&1)"
+apply_unknown_status=$?
+same "apply refuses a pin the Dockerfile does not declare" 2 "$apply_unknown_status"
+same "apply leaves the Dockerfile untouched when it refuses" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_unknown_out" in
+    *VAULTWARDEN_VERSION_TYPO*) ok "apply names the unknown pin in its error" ;;
+    *) bad "apply does not name the unknown pin: [$apply_unknown_out]" ;;
+esac
+
+apply_empty_out="$("$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION=" 2>&1)"
+apply_empty_status=$?
+same "apply refuses an empty value" 2 "$apply_empty_status"
+same "apply keeps the Dockerfile intact after an empty value" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_empty_out" in
+    *VAULTWARDEN_VERSION*) ok "apply names the empty-valued pin" ;;
+    *) bad "apply does not name the empty-valued pin: [$apply_empty_out]" ;;
+esac
+
+apply_bad_name_out="$("$apply_tree/scripts/deps.sh" apply "BAD-NAME=1" 2>&1)"
+apply_bad_name_status=$?
+same "apply refuses a name that is not a shell identifier" 2 "$apply_bad_name_status"
+same "apply keeps the Dockerfile intact after a bad name" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_bad_name_out" in
+    *BAD-NAME*) ok "apply names the rejected identifier" ;;
+    *) bad "apply does not name the rejected identifier: [$apply_bad_name_out]" ;;
+esac
+
+apply_no_eq_out="$("$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION" 2>&1)"
+apply_no_eq_status=$?
+same "apply refuses a pair without a value separator" 2 "$apply_no_eq_status"
+same "apply keeps the Dockerfile intact after a malformed pair" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_no_eq_out" in
+    *NAME=VALUE*) ok "apply explains the expected NAME=VALUE form" ;;
+    *) bad "apply does not explain the expected form: [$apply_no_eq_out]" ;;
+esac
+
+# A rejected pair must not half-apply the pairs that came before it.
+"$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION=1.2.3" "NOPE=4" \
+    >/dev/null 2>&1
+same "a rejected pair leaves earlier pairs unwritten" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+
+# The daily job re-runs apply with identical values, so the rewrite must be a
+# no-op then: a growing diff would reopen the PR on every schedule.
+# Stage the applied state first, otherwise the diff below is measured against
+# the pre-apply index and shows the first run's change all over again.
+( cd "$apply_tree" && git add Dockerfile ) >/dev/null 2>&1
+"$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION=0.0.0-selftest" \
+    >"$work/apply-again.out" 2>&1
+same "apply is idempotent for an unchanged value" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+same "a repeated apply produces no diff" 0 \
+    "$(grep -c '^[+-]ARG ' "$work/apply-again.out")"
+
 # `apk` needs an image to inspect. Without one it used to die on an unbound
 # variable, which reads like a broken script instead of a missing argument.
 apk_out="$("$REPO_ROOT/scripts/deps.sh" apk 2>&1)"
