@@ -109,10 +109,11 @@ fly deploy
 
 Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST`, the
 `SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `security-updates` workflow
-runs daily and resolves each one from Docker Hub and the GitHub Releases API; when a version or checksum
-changed it opens a PR with the updated pins. Merging that PR is what actually picks up new Alpine packages
-(`caddy`, `restic`, `sqlite`, `msmtp`, `mailx`, ...) and new scheduler/process-manager builds. `fly.toml`
-pins the deployed amd64 image by digest, so update that digest deliberately after a successful workflow run.
+runs daily, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
+changes plus any pending Alpine package upgrades, builds the patched image, validates the Caddyfile, and
+merges the PR. The build workflow then publishes a timestamped image and the deploy workflow rolls that
+digest out to Fly. `fly.toml` keeps the last manually pinned digest for local `fly deploy`; the automated
+rollout passes `--image` explicitly.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
