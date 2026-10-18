@@ -535,5 +535,13 @@ else
     bad "README does not mention tests/runtime-smoke.sh"
 fi
 
+# A destructive command that is documented without its guard is a trap: the
+# reader copies the command, gets an error, and goes looking for a workaround.
+if grep -q 'RESTORE_CONFIRM=yes' README.md; then
+    ok "README documents the in-place restore confirmation"
+else
+    bad "README shows restore without its RESTORE_CONFIRM guard"
+fi
+
 echo
 report "helper self tests"
