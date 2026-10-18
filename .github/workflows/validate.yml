@@ -1,18 +1,26 @@
 name: ✅ Validate
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
+  workflow_dispatch: {}
 
 permissions:
   contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: 🐚 Shell scripts
         run: |
@@ -20,18 +28,40 @@ jobs:
           sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh
 
-      - name: 🌐 Refresh the Cloudflare ranges
+      - name: 🧾 Workflow YAML
         run: |
-          {
-            curl -fsSL https://www.cloudflare.com/ips-v4
-            printf '\n'
-            curl -fsSL https://www.cloudflare.com/ips-v6
-            printf '\n'
-          } | awk 'NF {print "client_ip "$0}' > config/cloudflare-ips.caddy
-          test "$(wc -l < config/cloudflare-ips.caddy)" -gt 20
+          for file in .github/workflows/*.yml; do
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$file"
+            echo "ok ${file}"
+          done
+
+      - name: 🌐 Refresh the Cloudflare ranges
+        run: scripts/refresh-cloudflare-ips.sh
 
       - name: 🐳 Build and validate the image
         run: |
           docker build --tag validate:local .
           docker run --rm --entrypoint caddy validate:local \
             validate --config /Caddyfile --adapter caddyfile
+
+      # Caddy runs unprivileged and reads files baked into the image, so a
+      # root-only file or a broken process graph only shows up at runtime.
+      - name: 🚑 Runtime smoke test
+        run: |
+          docker run --detach --name smoke \
+            --env CADDY_DOMAINS=example.com \
+            --env DOMAIN=https://example.com \
+            --env I_REALLY_WANT_VOLATILE_STORAGE=true \
+            validate:local /entrypoint.sh overmind start
+          for _ in $(seq 1 30); do
+            if docker exec smoke wget -qO- http://127.0.0.1:8080/alive >/dev/null 2>&1; then
+              echo "/alive responded through Caddy"
+              docker rm --force smoke >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "/alive never came up" >&2
+          docker logs smoke >&2
+          docker rm --force smoke >/dev/null
+          exit 1
