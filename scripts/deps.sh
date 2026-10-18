@@ -112,8 +112,10 @@ apk() {
         exit 2
     }
     local image="$1" rows count
+    # A failed index refresh must abort instead of looking like "nothing to
+    # upgrade": that silently hides every pending security update.
     rows="$(docker run --rm "$image" sh -c \
-        'apk update >/dev/null 2>&1; apk version -v -l "<" 2>/dev/null' \
+        'apk update >/dev/null 2>&1 || { echo "apk update failed" >&2; exit 1; }; apk version -v -l "<" || { echo "apk version failed" >&2; exit 1; }' \
         | awk 'NF == 3 {print $1, $3}')"
     count="$(printf '%s\n' "$rows" | grep -c . || true)"
     {

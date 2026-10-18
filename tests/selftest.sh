@@ -266,6 +266,7 @@ if ruby -ryaml -e '
     rebuild = steps.find { |s| (s["run"] || "").include?("rebuild-needed") }
     exit 1 if rebuild.nil?
     exit 1 unless (rebuild["run"] || "").include?("gh workflow run")
+    exit 1 unless (rebuild["if"] || "").include?("success()")
     exit 1 unless (doc["permissions"] || {})["actions"] == "write"
   '; then
     ok "the daily check probes packages every run and dispatches a rebuild when needed"
