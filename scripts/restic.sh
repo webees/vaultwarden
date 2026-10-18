@@ -182,29 +182,38 @@ log_dir_size() {
         | awk '{total += $1} END {print total + 0}' || echo 0
 }
 
-# Drop logs older than 10 hours, cap oversized files, then trim the directory
+# Drop logs older than 10 hours, cap oversized files, then trim the directory.
+# Returns non-zero when the directory is still above the cap: a silent no-op
+# here lets the volume fill while every run keeps recording success.
 trim_logs() {
-    find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete
-    local file size tmp
+    find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete 2>/dev/null || true
+    local file size tmp total
     for file in "$LOG_DIR"/*.log; do
         [ -f "$file" ] || continue
         size=$(wc -c < "$file" 2>/dev/null || echo 0)
         if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
             tmp="${file}.tmp.$$"
             if tail -c "$MAX_LOG_BYTES" "$file" > "$tmp"; then
-                mv "$tmp" "$file"
+                mv "$tmp" "$file" || rm -f "$tmp"
             else
                 rm -f "$tmp"
             fi
         fi
     done
+    total="$(log_dir_size)"
+    [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && return 0
     while IFS= read -r file; do
         [ -e "$file" ] || continue
         [ "$file" = "$LOG" ] && continue
-        rm -f "$file"
-        [ "$(log_dir_size)" -le "$MAX_LOG_DIR_BYTES" ] && break
+        size="$(stat -c '%s' "$file" 2>/dev/null || echo 0)"
+        if rm -f "$file"; then
+            total=$(( total - size ))
+            [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && return 0
+        fi
     done < <(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%Y %n' {} + 2>/dev/null \
         | sort -n | cut -d' ' -f2-)
+    echo "Warning: log directory holds ${total} bytes, above the ${MAX_LOG_DIR_BYTES} byte cap and could not be trimmed" >&2
+    return 1
 }
 
 # Backup, check and prune
@@ -252,12 +261,17 @@ backup() {
     run "Snapshot prune" "$LONG_TIMEOUT" restic forget \
         --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune
 
-    trim_logs
+    local trim_message=""
+    trim_logs || trim_message=" (log trim failed)"
 
     LAST_SUCCESS="$(date -u +%s)"
-    write_status ok "Backup complete"
+    write_status ok "Backup complete${trim_message}"
     log echo -e "${G}Backup process complete ✨${X}"
-    heartbeat ok
+    if [ -n "$trim_message" ]; then
+        heartbeat fail
+    else
+        heartbeat ok
+    fi
 }
 
 # Restore data from snapshot
