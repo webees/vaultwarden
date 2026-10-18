@@ -146,7 +146,7 @@ jobs:
             exit 1
           fi
 
-      # The digest above is what the deploy workflow rolls out, so boot it and
+      # The digest above is what the deploy job rolls out, so boot it and
       # run the in-container checks now: a failure here fails the build job, and
       # the deploy job only runs after this job succeeds.
       - name: 🚑 Runtime smoke test the published image
@@ -211,3 +211,47 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           package: ${{ github.event.repository.name }}
+
+  deploy:
+    needs: build
+    # workflow_run never fired for a workflow_dispatch build, so a manual
+    # rebuild used to publish an image that never reached Fly. The deploy lives
+    # here so every published digest, from a push or a manual rebuild, can be
+    # rolled out.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      # An `exit 0` only ends this step, so a superseded build used to keep
+      # going and overwrite the newer release. The guard publishes an output and
+      # the deploy steps below are skipped explicitly.
+      - name: 🚦 Check whether this build is still the tip of main
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$main_sha" != "${GITHUB_SHA}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Build ${GITHUB_SHA} is no longer the tip of main (${main_sha}); skipping deploy." >&2
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🚀 Set up Flyctl
+        if: steps.guard.outputs.skip != 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: 🛫 Release
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: >-
+          flyctl deploy --app xvx-vaultwarden
+          --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}"
+          --yes
