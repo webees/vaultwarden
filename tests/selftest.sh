@@ -518,5 +518,14 @@ else
     ok "README points alert debugging at the recorded outcome"
 fi
 
+# "Ping on every run" reads as "the success URL on every run", which would leave
+# an operator believing a failing backup still reports in. The documented call
+# sites and the failure URL have to match what heartbeat() actually does.
+if grep -q -- '/fail' README.md; then
+    ok "README documents the failure URL the ping uses"
+else
+    bad "README does not say which URL the failure ping targets"
+fi
+
 echo
 report "helper self tests"

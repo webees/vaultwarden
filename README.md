@@ -151,7 +151,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email on failure (`SMTP_*`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping on every run |
+| Alerts | Email on failure (`SMTP_*`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
