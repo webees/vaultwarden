@@ -126,10 +126,11 @@ The build workflow is serialized globally, so two runs never publish the same ti
 Timestamp tags older than 30 days are removed by the nightly `ghcr-cleanup` workflow.
 
 ```bash
-# Show the new amd64 digest, then replace the value in fly.toml
+# Inspect the newest published image. The deploy workflow already rolled this
+# digest out with `fly deploy --image`; fly.toml itself keeps no image pin.
 docker buildx imagetools inspect ghcr.io/webees/vaultwarden:latest
 
-# Bump VAULTWARDEN_VERSION, then rebuild and redeploy
+# Bump VAULTWARDEN_VERSION, then build and roll out this Dockerfile by hand
 fly deploy
 fly releases            # list previous releases
 fly releases rollback   # roll back to the previous image
@@ -179,7 +180,7 @@ scheduler is still alive. A scheduler that has stopped firing entirely is only v
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); msmtp writes to stderr, so inspect `fly logs` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
-| Caddy exited and the proxy stopped responding | `/supervise.sh caddy ...` restarts Caddy in place; if the whole container dies, Fly restarts the machine because it is no longer marked restartable |
+| Caddy exited and the proxy stopped responding | `/supervise.sh caddy ...` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
 
 ## 🛠️ Management & Operations
 
