@@ -171,6 +171,55 @@ else
     bad "outbound fetches without a timeout (${net_timed}/${net_calls})"
 fi
 
+# gh has no timeout flag, so deps.sh has to wrap it. Record the wrapper call and
+# make sure no call site bypasses it.
+# gh has no timeout flag, so deps.sh has to wrap every call. The stub release
+# carries both arch assets so `tools` reaches its second gh call before the
+# empty overmind download ends the run.
+gh_log="$work/gh-args"
+timeout_log="$work/timeout-args"
+: > "$gh_log"
+: > "$timeout_log"
+gh_stub="$work/gh-stub"
+mkdir -p "$gh_stub"
+gh_release='{"tag_name":"v0","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://example.com/a"},{"name":"supercronic-linux-arm64","browser_download_url":"https://example.com/b"}]}'
+{
+    printf '#!/bin/sh\n'
+    printf 'printf "%%s\\n" "$*" >> "%s"\n' "$gh_log"
+    printf 'printf "%%s\\n" %s\n' "'$gh_release'"
+} > "$gh_stub/gh"
+{
+    printf '#!/bin/sh\n'
+    printf 'printf "%%s\\n" "$*" >> "%s"\n' "$timeout_log"
+    printf 'shift\n'
+    printf 'exec "$@"\n'
+} > "$gh_stub/timeout"
+printf '#!/bin/sh\nexit 0\n' > "$gh_stub/curl"
+chmod +x "$gh_stub/gh" "$gh_stub/timeout" "$gh_stub/curl"
+PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools >/dev/null 2>&1 || true
+gh_timeouts="$(grep -c -E '^[0-9]+ gh api' "$timeout_log" 2>/dev/null || true)"
+same "every gh api call runs under a timeout" 2 "$gh_timeouts"
+
+# Docker Hub can answer with an empty page (rate limit or malformed response).
+# Paginating 20 times through the retry wrapper would burn the whole job.
+if command -v jq >/dev/null 2>&1; then
+    page_log="$work/tag-pages"
+    : > "$page_log"
+    page_stub="$work/page-stub"
+    mkdir -p "$page_stub"
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "page\\n" >> "%s"\n' "$page_log"
+        printf 'printf "{\\"results\\":[]}\\n"\n'
+    } > "$page_stub/curl"
+    chmod +x "$page_stub/curl"
+    PATH="$page_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" base >/dev/null 2>&1 || true
+    same "an empty tag page stops the pagination loop" 1 \
+        "$(wc -l < "$page_log" | tr -d ' ')"
+else
+    bad "jq is required to test the empty-page guard"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
 # fly.toml carries the machine config, and only a deploy applies it. If the
@@ -320,6 +369,19 @@ if ruby -ryaml -e '
     ok "the build workflow deploys its own digest, for pushes and manual rebuilds"
 else
     bad "manual rebuilds publish an image that never reaches Fly, or deploys are duplicated"
+fi
+
+# The `gh api` calls in ghcr.yml need the same bound as the ones in deps.sh:
+# gh has no timeout flag of its own.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    runs = doc["jobs"].values.flat_map { |j| (j["steps"] || []).map { |s| s["run"] || "" } }.join("\n")
+    unbounded = runs.lines.select { |l| l.include?("gh api") && !l.include?("timeout") }
+    exit 1 unless unbounded.empty?
+  '; then
+    ok "ghcr.yml bounds every gh api call"
+else
+    bad "ghcr.yml calls gh api without a timeout"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────
