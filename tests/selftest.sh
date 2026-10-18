@@ -543,5 +543,13 @@ else
     bad "README shows restore without its RESTORE_CONFIRM guard"
 fi
 
+# The database is not in the snapshot, so a recovery guide that stops at
+# `restore` leaves the reader with an instance that never loaded the backup.
+if grep -q 'restore-pending' README.md; then
+    ok "README documents how the restored database reaches /data/db.sqlite3"
+else
+    bad "README does not explain the database swap after restore"
+fi
+
 echo
 report "helper self tests"
