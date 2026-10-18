@@ -333,7 +333,11 @@ restore_test() {
 # Read back a slice of the stored data to prove the repository is really readable
 verify() {
     clear_stale_locks
-    run "Repository data verification" "$LONG_TIMEOUT" restic check --read-data-subset="${VERIFY_SUBSET:-10%}"
+    # Wait for a running backup instead of failing: the monthly check used to
+    # fire at the same minute as the hourly backup, and restic refuses to take
+    # an exclusive lock without --retry-lock.
+    run "Repository data verification" "$LONG_TIMEOUT" restic check \
+        --read-data-subset="${VERIFY_SUBSET:-10%}" --retry-lock="${VERIFY_RETRY_LOCK:-10m}"
     heartbeat ok
 }
 
