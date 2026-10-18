@@ -531,10 +531,10 @@ case "$NOTIFY_ON_SUCCESS" in
         ;;
 esac
 if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
-    [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || {
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
         echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2
         exit 2
-    }
+    fi
     case "$TELEGRAM_BOT_TOKEN" in
         [0-9]*:[A-Za-z0-9_-]*) ;;
         *)
