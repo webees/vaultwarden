@@ -94,6 +94,26 @@ same "reports a change for a different value" "true" \
 same "writes the changed flag exactly once" 1 \
     "$(grep -c '^changed=' "$work/deps-diff")"
 
+# apply rewrites the Dockerfile in place, so it only ever runs on a throwaway
+# copy that has an index for `git diff` to compare against.
+apply_tree="$work/apply"
+mkdir -p "$apply_tree/scripts"
+cp scripts/deps.sh "$apply_tree/scripts/"
+cp Dockerfile "$apply_tree/"
+( cd "$apply_tree" && git init -q && git add Dockerfile ) >/dev/null 2>&1
+"$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION=0.0.0-selftest" \
+    >"$work/apply.out" 2>&1
+same "apply rewrites the pin in place" "ARG VAULTWARDEN_VERSION=0.0.0-selftest" \
+    "$(grep '^ARG VAULTWARDEN_VERSION=' "$apply_tree/Dockerfile")"
+same "apply prints the diff it produced" 1 \
+    "$(grep -c '^+ARG VAULTWARDEN_VERSION=0.0.0-selftest$' "$work/apply.out")"
+same "apply leaves no scratch file next to the Dockerfile" 1 \
+    "$(find "$apply_tree" -maxdepth 1 -type f -name 'Dockerfile*' | wc -l | tr -d ' ')"
+GITHUB_OUTPUT="$work/deps-applied" "$apply_tree/scripts/deps.sh" compare \
+    "VAULTWARDEN_VERSION=0.0.0-selftest" >/dev/null 2>&1
+same "the rewritten pin round-trips through compare" "false" \
+    "$(sed -n 's/^changed=//p' "$work/deps-applied")"
+
 echo
 if [ "$failures" -eq 0 ]; then
     echo "helper self tests passed"
