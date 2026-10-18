@@ -121,6 +121,15 @@ case "$apk_out" in
     *) bad "apk without an image printed [$apk_out]" ;;
 esac
 
+# A package-only update never changes the Dockerfile, so the pin comparison
+# cannot see it. Whether that needs a rebuild is a separate, testable unit.
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 3 >"$work/rebuild-yes.out" 2>&1
+same "a pending package upgrade asks for a rebuild" 0 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 0 >"$work/rebuild-no.out" 2>&1
+same "no pending upgrade leaves the build alone" 1 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed bogus >/dev/null 2>&1
+same "an invalid package count is rejected" 2 "$?"
+
 # The pinned base image ships packages that already have newer builds. `apk add`
 # never touches them, so without an explicit upgrade the weekly rebuild would
 # keep shipping the outdated zlib/tzdata that deps.sh apk reports.
@@ -244,6 +253,24 @@ if [ -n "$verify_minute" ] && [ "$verify_minute" != "0" ]; then
     ok "the monthly verify avoids the top of the hour (minute ${verify_minute})"
 else
     bad "the monthly verify fires at minute 0, the same minute as @hourly backup"
+fi
+
+# The daily check only opened a PR when a pin changed, so an Alpine-only
+# security update waited for the weekly rebuild. The apk probe has to run every
+# day, and a non-zero count has to dispatch the build workflow.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    steps = doc["jobs"]["check"]["steps"]
+    apk = steps.find { |s| (s["run"] || "").include?("deps.sh apk") }
+    exit 1 if apk.nil? || apk.key?("if")
+    rebuild = steps.find { |s| (s["run"] || "").include?("rebuild-needed") }
+    exit 1 if rebuild.nil?
+    exit 1 unless (rebuild["run"] || "").include?("gh workflow run")
+    exit 1 unless (doc["permissions"] || {})["actions"] == "write"
+  '; then
+    ok "the daily check probes packages every run and dispatches a rebuild when needed"
+else
+    bad "package-only updates still wait for the weekly rebuild"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────

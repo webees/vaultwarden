@@ -11,6 +11,7 @@ on:
     - cron: '23 2 * * *'
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -49,7 +50,6 @@ jobs:
 
       - name: 📦 Compare the Alpine packages
         id: apk
-        if: steps.compare.outputs.changed == 'true'
         run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
 
       - name: 🔧 Update the pins and validate the build
@@ -141,3 +141,17 @@ jobs:
           done
           echo "no status check registered on ${BRANCH}; the merge is still gated" >&2
           exit 1
+
+      # A package-only update never changes the Dockerfile, so no PR exists to
+      # merge. Rebuild the published image directly instead of waiting for the
+      # weekly schedule; the build workflow upgrades the packages and deploys.
+      - name: ♻️ Rebuild when only Alpine packages moved
+        if: steps.compare.outputs.changed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_COUNT: ${{ steps.apk.outputs.count }}
+        run: |
+          set -euo pipefail
+          if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
+            gh workflow run ghcr.yml --repo "$GITHUB_REPOSITORY" --ref main
+          fi
