@@ -158,7 +158,7 @@ fly ssh console -C "/restic.sh backup"         # manual backup
 fly ssh console -C "/restic.sh snapshots"      # list snapshots
 fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
 fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp and validate it
-fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
+fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
 ```
 
 `/restic.sh check-freshness` runs at `:45` every hour and emails when no backup has succeeded for
@@ -169,7 +169,8 @@ scheduler is still alive. A scheduler that has stopped firing entirely is only v
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
 > run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
 > `backup.bak` and `rsa_key.pem`, runs SQLite `PRAGMA integrity_check`, and cold-boots Vaultwarden against
-> the restored database without touching the live volume.
+> the restored database without touching the live volume. The in-place restore refuses to run unless
+> `RESTORE_CONFIRM=yes` is set, because Vaultwarden keeps `db.sqlite3` open while it runs.
 >
 > Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
 >
