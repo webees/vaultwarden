@@ -269,7 +269,12 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: >-
-          flyctl deploy --app xvx-vaultwarden
-          --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}"
-          --yes
+          # Passed through a secret so flyctl's own output (which prints the app
+          # name) is masked in this public repository's logs.
+          FLY_APP: ${{ secrets.FLY_APP }}
+        run: |
+          set -euo pipefail
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          flyctl deploy --app "$FLY_APP" \
+            --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}" \
+            --yes

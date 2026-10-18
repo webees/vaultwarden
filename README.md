@@ -54,6 +54,10 @@ fly auth login
 # Create application
 fly apps create vaultwarden
 
+# fly.toml deliberately omits the app name (it is personal data), so point
+# flyctl at your app once. Every `fly ...` command in this README relies on it.
+export FLY_APP=vaultwarden
+
 # Create the local secret file from the template, then fill in every value
 cp .env.example .env
 fly secrets import < .env
