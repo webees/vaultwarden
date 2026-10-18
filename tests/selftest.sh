@@ -283,6 +283,37 @@ else
     bad "jq is required to test the empty-page guard"
 fi
 
+# The default tag order is neither version order nor last_updated: page 1 lists
+# `latest` (2026-10-05) above `testing` (2026-10-16), and the API only sorts by
+# date when asked. A republished older tag can therefore sit above the newest
+# release, and taking the first match would open a dependency PR that downgrades
+# a security-critical image.
+if command -v jq >/dev/null 2>&1; then
+    order_calls="$work/tag-order-calls"
+    : > "$order_calls"
+    order_stub="$work/order-stub"
+    mkdir -p "$order_stub"
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$*" >> "%s"\n' "$order_calls"
+        printf 'case "$*" in\n'
+        printf '  *hub.docker.com*) printf %%s %s ;;\n' \
+            "'{\"results\":[{\"name\":\"1.36.0-alpine\"},{\"name\":\"1.38.0-alpine\"},{\"name\":\"1.37.4-alpine\"}]}'"
+        printf '  *auth.docker.io*) printf %%s %s ;;\n' "'{\"token\":\"stub\"}'"
+        printf '  *) printf %s ;;\n' "'docker-content-digest: sha256:stub\\n'"
+        printf 'esac\n'
+    } > "$order_stub/curl"
+    chmod +x "$order_stub/curl"
+    GITHUB_OUTPUT="$work/order-out" PATH="$order_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/order.log" 2>&1
+    same "the resolver picks the highest version, not the first listed" "1.38.0" \
+        "$(sed -n 's/^version=//p' "$work/order-out")"
+    same "the resolver resolves the manifest for that version" 1 \
+        "$(grep -c 'manifests/1\.38\.0-alpine' "$order_calls")"
+else
+    bad "jq is required to test the version ordering guard"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
 # fly.toml carries the machine config, and only a deploy applies it. If the
@@ -419,7 +450,7 @@ if ruby -ryaml -e '
     exit 1 unless Array(deploy["needs"]).include?("build")
     exit 1 unless (deploy["if"] || "").include?("refs/heads/main")
     steps = deploy["steps"] || []
-    guard = steps.find { |s| (s["name"] || "").include?("tip of main") }
+    guard = steps.find { |s| s["id"] == "guard" }
     exit 1 if guard.nil? || guard["id"].to_s.empty?
     exit 1 unless (guard["run"] || "").include?("skip=true")
     release = steps.find { |s| (s["run"] || "").include?("flyctl deploy") }
@@ -481,6 +512,70 @@ if grep -q 'no scheduled dependency check has ever run' "$work/guard-run.log"; t
     ok "the dependency-schedule warning still runs when the cleanup has no record"
 else
     bad "the dependency-schedule warning is skipped by an early exit"
+fi
+
+# `paths-ignore` means a README-only commit never triggers this workflow, so
+# "main moved" is not proof that a newer build will take over. A doc-only merge
+# during a build window used to cancel the deployment of the commit being built,
+# leaving the code change unpublished until the next code push. Run the real
+# guard body with a stub gh that answers both queries.
+ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    deploy = doc["jobs"]["deploy"]
+    step = (deploy["steps"] || []).find { |s| s["id"] == "guard" }
+    exit 1 if step.nil?
+    exit 1 unless (deploy["permissions"] || {})["actions"] == "read"
+    print step["run"]
+  ' > "$work/deploy-guard.sh" || true
+if [ -s "$work/deploy-guard.sh" ]; then
+    deploy_stub="$work/deploy-stub"
+    deploy_out="$work/deploy-out"
+    mkdir -p "$deploy_stub"
+    deploy_stub_case() { # main-tip sha, newest-run sha, runs-query exit code
+        {
+            printf '#!/bin/sh\n'
+            printf 'case "$*" in\n'
+            printf '  *git/ref/heads/main*) printf "%%s\\n" %s ;;\n' "'$1'"
+            printf '  *workflows/ghcr.yml/runs*)\n'
+            if [ "$3" = "0" ]; then
+                printf '    printf "%%s\\n" %s\n' "'$2'"
+            fi
+            printf '    exit %s\n' "$3"
+            printf '    ;;\n'
+            printf '  *) exit 1 ;;\n'
+            printf 'esac\n'
+        } > "$deploy_stub/gh"
+        chmod +x "$deploy_stub/gh"
+    }
+    run_deploy_guard() {
+        : > "$deploy_out"
+        GITHUB_OUTPUT="$deploy_out" GITHUB_REPOSITORY=example/repo GITHUB_SHA=abc123 \
+            PATH="$deploy_stub:$PATH" bash "$work/deploy-guard.sh" \
+            > "$work/deploy-run.log" 2>&1
+    }
+    deploy_skip() { grep '^skip=' "$deploy_out" | tail -n 1 | cut -d= -f2; }
+
+    # main moved to a doc-only commit that never started a run: still deploy.
+    deploy_stub_case doc999 abc123 0
+    run_deploy_guard
+    same "a doc-only commit on main does not cancel the deploy" "false" "$(deploy_skip)"
+
+    # a newer commit did start its own run: stand down for it.
+    deploy_stub_case def456 def456 0
+    run_deploy_guard
+    same "a newer run of this workflow supersedes this build" "true" "$(deploy_skip)"
+
+    # the run list cannot be read: deploy, and say why.
+    deploy_stub_case doc999 "" 1
+    run_deploy_guard
+    same "an unreadable run list still deploys" "false" "$(deploy_skip)"
+    if grep -q 'could not read the workflow runs' "$work/deploy-run.log"; then
+        ok "an unreadable run list is reported"
+    else
+        bad "an unreadable run list is swallowed"
+    fi
+else
+    bad "the deploy guard step or its actions:read permission is missing"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────
