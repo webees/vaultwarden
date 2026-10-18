@@ -22,6 +22,7 @@ MAX_LOG_BYTES="${RESTIC_LOG_MAX_BYTES:-262144}"
 MAX_LOG_DIR_BYTES="${RESTIC_LOG_DIR_MAX_BYTES:-10485760}"
 QUICK_TIMEOUT="${RESTIC_QUICK_TIMEOUT:-60}"
 LONG_TIMEOUT="${RESTIC_LONG_TIMEOUT:-1800}"
+NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 STATUS_FILE="/data/backup-status.txt"
 LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
 LAST_SUCCESS="${LAST_SUCCESS:-0}"
@@ -121,7 +122,7 @@ send_mail() {
     )"
     rc=$?
     if [ "$rc" -eq 0 ]; then
-        log echo -e "${G}Alert email sent to ${SMTP_TO}${X}"
+        log echo -e "${G}Alert email sent${X}"
         return 0
     fi
     log echo -e "${R}Alert email failed (exit ${rc})${X}"
@@ -289,8 +290,14 @@ backup() {
     log echo -e "${G}Backup process complete ✨${X}"
     if [ -n "$trim_message" ]; then
         heartbeat fail
+        if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
+            send_mail "Backup succeeded with warnings"
+        fi
     else
         heartbeat ok
+        if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
+            send_mail "Backup succeeded"
+        fi
     fi
 }
 
@@ -489,6 +496,13 @@ require_positive_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES"
 require_positive_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT"
 require_positive_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT"
 require_positive_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}"
+case "$NOTIFY_ON_SUCCESS" in
+    true|false) ;;
+    *)
+        echo "Error: BACKUP_NOTIFY_ON_SUCCESS must be true or false, got '${NOTIFY_ON_SUCCESS}'" >&2
+        exit 2
+        ;;
+esac
 
 trim_logs
 check_audit_trail
