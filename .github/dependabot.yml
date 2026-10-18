@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Every workflow action is pinned to an immutable commit SHA, so Dependabot is
+  # what keeps those pins current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"
+    open-pull-requests-limit: 5
+
+  # The Dockerfile pins the Vaultwarden base image by digest; Dependabot bumps it.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 5
