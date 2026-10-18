@@ -17,18 +17,13 @@ jobs:
   cleanup:
     runs-on: ubuntu-24.04
     steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: 🔍 Cleanup GHCR
-        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        uses: ./.github/actions/expire-tags
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          packages: ${{ github.event.repository.name }}
+          package: ${{ github.event.repository.name }}
           delete-untagged: true
-          use-regex: true
-          delete-tags: '^[0-9]{12}$'
-          older-than: 30 days
-          delete-ghost-images: true
-          delete-partial-images: true
-          delete-orphaned-images: true
-          validate: true
-          log-level: info
-          dry-run: false
+          delete-broken: true
