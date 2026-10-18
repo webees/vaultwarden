@@ -527,5 +527,13 @@ else
     bad "README does not say which URL the failure ping targets"
 fi
 
+# The runtime smoke test is the only check that proves a message is delivered,
+# so the verification list has to point at it instead of leaving it undiscovered.
+if grep -q 'runtime-smoke.sh' README.md; then
+    ok "README lists the runtime smoke test in its verification commands"
+else
+    bad "README does not mention tests/runtime-smoke.sh"
+fi
+
 echo
 report "helper self tests"
