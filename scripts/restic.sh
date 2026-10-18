@@ -61,21 +61,41 @@ heartbeat() {
 # Log an error and abort; used when the scratch files below cannot be created.
 die() { log echo -e "${R}$1${X}"; exit 2; }
 
+# Run a command without the backup lock. A child that outlives the run would
+# keep the lock forever, and every later backup would exit 3 as a "concurrent
+# run" - an exit that is deliberately not alerted.
+no_lock() ( exec 9>&-; exec "$@" )
+
 # Remove locks left behind by a run that was killed mid-flight. restic keeps
 # locks whose process is still alive, so this cannot disturb a running backup,
 # but without it one interrupted run makes verify/restore fail with "repository
 # is already locked" until the next hourly backup happens to clear it.
 clear_stale_locks() {
-    timeout -k 30 "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
+    no_lock timeout -k 30 "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
+}
+
+# True while another run holds the backup lock. Uses its own file descriptor so
+# it can be called from anywhere without disturbing the caller's lock.
+backup_is_running() {
+    exec 8>"$LOG_DIR/backup.lock" 2>/dev/null || return 1
+    if flock -n 8; then
+        exec 8>&-
+        return 1
+    fi
+    exec 8>&-
+    return 0
 }
 
 # Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
 send_mail() {
     [ -z "${SMTP_TO:-}" ] && return
     # Strip ANSI colors and set UTF-8
-    sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
-        -a "Content-Type: text/plain; charset=UTF-8" \
-        -s "[$APP_NAME] $1" "$SMTP_TO"
+    (
+        exec 9>&-
+        sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
+            -a "Content-Type: text/plain; charset=UTF-8" \
+            -s "[$APP_NAME] $1" "$SMTP_TO"
+    )
 }
 
 # Restore-drill scratch paths. These are global on purpose: an EXIT trap runs
@@ -105,6 +125,10 @@ run() {
     local raw_limit_kb=$(( (MAX_LOG_BYTES * 8 + 1023) / 1024 ))
     rc=0
     (
+        # Never hand the backup lock to a child: a helper that outlives this run
+        # would keep the lock forever, and every later backup would exit 3 as a
+        # "concurrent run" without alerting anyone.
+        exec 9>&-
         ulimit -f "$((raw_limit_kb * 2))"
         timeout -k 30 "$timeout_seconds" "$@"
     ) > "$raw_file" 2>&1 || rc=$?
@@ -180,7 +204,7 @@ backup() {
     # Initialise only when the repository really is missing (restic exit code 10).
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
     # otherwise "restic init" answers with a misleading "already initialized" error.
-    timeout -k 30 "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
+    no_lock timeout -k 30 "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
     case "${rc:-1}" in
         0)  ;;
         10) log echo -e "${Y}Repository not initialized, initializing...${X}"
@@ -296,6 +320,18 @@ verify() {
 check_freshness() {
     local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s
     now="$(date -u +%s)"
+
+    # A run that was killed mid-flight leaves the status at "running" forever.
+    # Only report that when nothing holds the lock, so a live backup is left be.
+    if [ "$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)" = "running" ] \
+        && ! backup_is_running; then
+        log echo -e "${R}The last backup started but never finished${X}"
+        write_status failed "Backup did not finish"
+        send_mail "Backup did not finish"
+        heartbeat fail
+        exit 2
+    fi
+
     if [ "$LAST_SUCCESS" = "0" ]; then
         # A fresh volume has no baseline yet, so only complain once the instance
         # has been up longer than the limit.
