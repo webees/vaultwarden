@@ -92,6 +92,9 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 
+# Optional: email after every successful backup
+fly secrets set BACKUP_NOTIFY_ON_SUCCESS="true"
+
 # Optional tuning (defaults shown)
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
@@ -151,7 +154,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email on failure (`SMTP_*`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
+| Alerts | Email on failure (`SMTP_*`), optional email after every successful backup (`BACKUP_NOTIFY_ON_SUCCESS=true`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
