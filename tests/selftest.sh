@@ -378,6 +378,24 @@ else
     bad "ghcr.yml ignores fly.toml, so a config-only commit would never deploy"
 fi
 
+# The Fly app name is personal data, so it must never be committed: fly.toml
+# carries no `app` key and the deploy step reads it from a repository secret,
+# which also makes flyctl's own output masked in this public repo's logs.
+if ruby -ryaml -e '
+    exit 1 if File.read("fly.toml") =~ /^\s*app\s*=/
+    release = YAML.load_file(".github/workflows/ghcr.yml")
+      .dig("jobs", "deploy", "steps")
+      .find { |s| s["name"].to_s.include?("Release") }
+    exit 1 unless release
+    exit 1 unless (release["env"] || {})["FLY_APP"].to_s.include?("secrets.FLY_APP")
+    run = release["run"].to_s
+    exit 1 unless run =~ /--app\s+"[^A-Za-z0-9"]/
+  '; then
+    ok "fly.toml keeps no app name and the deploy reads it from a secret"
+else
+    bad "fly.toml or the deploy step hardcodes the Fly app name"
+fi
+
 # A push to main already builds the multi-arch image in the Docker workflow and
 # deploys that exact digest. Rebuilding the same Dockerfile in Validate doubles
 # every merge's build work, so the image steps must stay on the pre-merge
