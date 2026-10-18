@@ -9,6 +9,11 @@ cd "$(dirname "$0")/.."
 readonly DOCKERFILE=Dockerfile
 readonly REGISTRY=https://registry-1.docker.io/v2/vaultwarden/server
 readonly GH_API=https://api.github.com/repos
+readonly HTTP_TIMEOUT="${DEPS_HTTP_TIMEOUT:-30}"
+
+# Bounded fetch: a stalled request must not hold a CI job open for its full
+# six-hour limit.
+fetch() { curl -fsSL --max-time "$HTTP_TIMEOUT" --retry 2 --retry-delay 2 "$@"; }
 
 emit() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
 
@@ -19,7 +24,7 @@ sha256() { sha256sum | cut -d' ' -f1; }
 base() {
     local page json tag found
     for page in $(seq 1 20); do
-        json="$(curl -fsSL "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
+        json="$(fetch "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
         found="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
         if [ -n "$found" ] && [ "$found" != "null" ]; then
             tag="$found"
@@ -29,8 +34,8 @@ base() {
     [ -n "${tag:-}" ] || { echo "no vaultwarden tag found" >&2; exit 1; }
 
     local token digest
-    token="$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' | jq -r .token)"
-    digest="$(curl -fsSI -H "Authorization: Bearer ${token}" \
+    token="$(fetch 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' | jq -r .token)"
+    digest="$(fetch -I -H "Authorization: Bearer ${token}" \
         -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
         "${REGISTRY}/manifests/${tag}" \
         | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}')"
@@ -47,7 +52,7 @@ tools() {
     sc_tag="$(jq -r .tag_name <<< "$sc_release")"
     for arch in amd64 arm64; do
         sc_url="$(jq -r --arg a "linux-${arch}\$" '.assets[] | select(.name | test($a)) | .browser_download_url' <<< "$sc_release")"
-        emit "supercronic_sha_${arch}" "$(curl -fsSL "$sc_url" | sha256)"
+        emit "supercronic_sha_${arch}" "$(fetch "$sc_url" | sha256)"
     done
     emit supercronic_version "$sc_tag"
 
@@ -55,7 +60,7 @@ tools() {
     om_tag="$(gh api "${GH_API}/DarthSim/overmind/releases?per_page=20" \
         --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first | .tag_name')"
     for arch in amd64 arm64; do
-        emit "overmind_sha_${arch}" "$(curl -fsSL \
+        emit "overmind_sha_${arch}" "$(fetch \
             "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-${arch}.gz" \
             | gunzip -c | sha256)"
     done
