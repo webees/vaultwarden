@@ -187,19 +187,27 @@ jobs:
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
+          # Same failure mode, different victim: report the daily dependency
+          # check if its schedule stops firing, without blocking the deploy.
+          deps_last="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/security-updates.yml/runs?event=schedule&per_page=1" \
+            --jq '.workflow_runs[0].created_at // empty' 2>/dev/null || true)"
+          if [ -z "$deps_last" ]; then
+            echo "::warning::no scheduled dependency check has ever run"
+          else
+            deps_age=$(( ( $(date -u +%s) - $(date -u -d "$deps_last" +%s) ) / 86400 ))
+            echo "last scheduled dependency check: ${deps_last} (${deps_age} days ago)"
+            if [ "$deps_age" -ge 3 ]; then
+              echo "::warning::the dependency check schedule has not fired for ${deps_age} days"
+            fi
+          fi
 
       # Best effort on purpose: a registry housekeeping failure must not hold
       # back a security deployment, but it stays visible in this run.
       - name: 🧹 Expire timestamp tags (nightly cleanup is behind)
         if: steps.cleanup-check.outputs.needed == 'true'
         continue-on-error: true
-        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        uses: ./.github/actions/expire-tags
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          packages: ${{ github.event.repository.name }}
-          use-regex: true
-          delete-tags: '^[0-9]{12}$'
-          older-than: 30 days
-          validate: true
-          log-level: info
-          dry-run: false
+          package: ${{ github.event.repository.name }}
