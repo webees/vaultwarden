@@ -2,6 +2,11 @@ name: 🛡️ Daily Dependency Updates
 
 on:
   workflow_dispatch:
+    inputs:
+      auto_merge:
+        description: "Merge the generated dependency PR automatically"
+        type: boolean
+        default: true
   schedule:
     - cron: '23 2 * * *'
 
@@ -160,6 +165,7 @@ jobs:
 
       - name: 📬 Open a pull request
         if: steps.compare.outputs.changed == 'true'
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
@@ -175,6 +181,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add Dockerfile
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
@@ -201,3 +208,23 @@ jobs:
             --title "chore(deps): update pinned upstream dependencies" \
             --body "$body" \
             || echo "PR already exists"
+
+      - name: 🛠️ Build with the updated pins
+        if: steps.compare.outputs.changed == 'true'
+        run: docker build --tag dependency-check:local .
+
+      - name: 🧪 Validate the patched Caddy configuration
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          docker run --rm --entrypoint caddy dependency-check:local \
+            validate --config /Caddyfile --adapter caddyfile
+
+      - name: 🔀 Merge the dependency PR
+        if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch
