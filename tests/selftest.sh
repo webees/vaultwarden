@@ -578,6 +578,70 @@ else
     bad "the deploy guard step or its actions:read permission is missing"
 fi
 
+# The dependency job has two places that turned a real failure into a reassuring
+# message: `gh pr create ... || echo "PR already exists"` and a status-check poll
+# that read an API error as "no checks registered". Both leave the operator
+# chasing the wrong cause, so assert the behaviour with stubs.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
+    exit 1 if step.nil?
+    body = step["run"] || ""
+    exit 1 if body.include?("|| echo")
+    exit 1 unless body.include?("gh pr view")
+  '; then
+    ok "the dependency PR step checks for an existing PR instead of swallowing failures"
+else
+    bad "the dependency PR step reports every gh pr create failure as an existing PR"
+fi
+
+ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "arm" }
+    print step["run"] if step
+  ' > "$work/arm-merge.sh" || true
+if [ -s "$work/arm-merge.sh" ]; then
+    arm_stub="$work/arm-stub"
+    mkdir -p "$arm_stub"
+    # The poll sleeps 10s between 18 attempts; the stub keeps the test instant.
+    printf '#!/bin/sh\nexit 0\n' > "$arm_stub/sleep"
+    chmod +x "$arm_stub/sleep"
+    arm_stub_case() { # mode: count <n> | fail
+        {
+            printf '#!/bin/sh\n'
+            printf 'case "$*" in\n'
+            printf '  *"pr merge"*) exit 0 ;;\n'
+            case "$1" in
+                fail) printf '  *) exit 1 ;;\n' ;;
+                *)    printf '  *) printf "%%s\\n" %s ;;\n' "'$2'" ;;
+            esac
+            printf 'esac\n'
+        } > "$arm_stub/gh"
+        chmod +x "$arm_stub/gh"
+    }
+    run_arm() {
+        BRANCH=deps/upstream-1.0.0 GITHUB_REPOSITORY=example/repo \
+            PATH="$arm_stub:$PATH" bash "$work/arm-merge.sh" > "$work/arm-run.log" 2>&1
+    }
+
+    arm_stub_case count 2
+    run_arm
+    same "arming auto-merge succeeds once checks register" 0 "$?"
+    same "arming auto-merge reports how many checks registered" 1 \
+        "$(grep -c 'auto-merge armed; 2 status check(s)' "$work/arm-run.log")"
+
+    arm_stub_case fail
+    run_arm
+    same "an unreadable check list fails the step" 1 "$?"
+    if grep -q 'could not read the status checks' "$work/arm-run.log"; then
+        ok "an unreadable check list is reported as such"
+    else
+        bad "an unreadable check list is misreported as a missing check"
+    fi
+else
+    bad "the auto-merge step is missing or has no id to select it by"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
 # The build workflow deploys the freshly built digest with `fly deploy --image`,
