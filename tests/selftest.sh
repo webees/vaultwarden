@@ -213,14 +213,18 @@ fi
 # enforced. The build has to expire old tags itself when the schedule is stale.
 if ruby -ryaml -e '
     steps = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
-    expiry = steps.select { |s| (s["with"] || {})["delete-tags"].to_s.include?("[0-9]{12}") }
+    expiry = steps.select { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
     exit 1 if expiry.empty?
-    exit 1 unless steps.any? { |s| (s["run"] || "").include?("event=schedule") }
     exit 1 if expiry.all? { |s| (s["if"] || "").empty? }
+    exit 1 unless steps.any? { |s| (s["run"] || "").include?("event=schedule") }
+    nightly = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["jobs"]["cleanup"]["steps"]
+    exit 1 unless nightly.any? { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
+    shared = YAML.load_file(".github/actions/expire-tags/action.yml")
+    exit 1 unless (shared["runs"]["steps"][0]["with"]["delete-tags"] || "").include?("[0-9]{12}")
   '; then
     ok "the build expires old timestamp tags when the nightly cleanup is behind"
 else
-    bad "tag expiry still depends entirely on a GitHub schedule that can stop silently"
+    bad "tag expiry depends on a GitHub schedule that can stop silently, or the two call sites diverged"
 fi
 
 if ruby -ryaml -e '
