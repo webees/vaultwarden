@@ -113,8 +113,9 @@ Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` +
 runs daily, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
 changes plus any pending Alpine package upgrades, builds the patched image, validates the Caddyfile, and
 merges the PR. The build workflow then publishes a timestamped image and the deploy workflow rolls that
-digest out to Fly. `fly.toml` keeps the last manually pinned digest for local `fly deploy`; the automated
-rollout passes `--image` explicitly.
+digest out to Fly by passing `--image` explicitly. `fly.toml` deliberately carries no image pin: a second
+copy of "what is running" is exactly what went stale before. Running `fly deploy` by hand builds this
+repository's pinned `Dockerfile` instead.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
@@ -201,7 +202,8 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 ### Verification
 
 ```bash
-shellcheck scripts/*.sh          # Static analysis for every helper script
+shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
+tests/selftest.sh                # supervise.sh, refresh-cloudflare-ips.sh and deps.sh failure paths
 scripts/refresh-cloudflare-ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
