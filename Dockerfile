@@ -62,6 +62,7 @@ RUN set -eu; \
         tzdata \
         caddy \
         restic \
+        tini \
         tmux \
         sqlite \
         msmtp \
@@ -86,4 +87,7 @@ RUN set -eu; \
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 ENTRYPOINT []
-CMD ["/entrypoint.sh", "overmind", "start"]
+# tini stays PID 1 so it reaps the processes that `timeout` leaves behind:
+# Overmind does not, and an unreaped zombie keeps its PID, which makes restic
+# treat the lock that process left as still active.
+CMD ["/entrypoint.sh", "tini", "-g", "--", "overmind", "start"]

@@ -61,6 +61,14 @@ heartbeat() {
 # Log an error and abort; used when the scratch files below cannot be created.
 die() { log echo -e "${R}$1${X}"; exit 2; }
 
+# Remove locks left behind by a run that was killed mid-flight. restic keeps
+# locks whose process is still alive, so this cannot disturb a running backup,
+# but without it one interrupted run makes verify/restore fail with "repository
+# is already locked" until the next hourly backup happens to clear it.
+clear_stale_locks() {
+    timeout -k 30 "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
+}
+
 # Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
 send_mail() {
     [ -z "${SMTP_TO:-}" ] && return
@@ -118,8 +126,11 @@ run() {
 
 # ── Business Logic ────────────────────────────────────────────────────────────
 
+# The image ships BusyBox find, which supports no GNU printf-format predicate: a
+# size or mtime query that relies on one fails silently and turns the directory
+# cap into a no-op. stat -c is available in the same BusyBox.
 log_dir_size() {
-    find "$LOG_DIR" -name '*.log' -type f -printf '%s\n' 2>/dev/null \
+    find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%s' {} + 2>/dev/null \
         | awk '{total += $1} END {print total + 0}' || echo 0
 }
 
@@ -144,7 +155,8 @@ trim_logs() {
         [ "$file" = "$LOG" ] && continue
         rm -f "$file"
         [ "$(log_dir_size)" -le "$MAX_LOG_DIR_BYTES" ] && break
-    done < <(find "$LOG_DIR" -name '*.log' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2-)
+    done < <(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%Y %n' {} + 2>/dev/null \
+        | sort -n | cut -d' ' -f2-)
 }
 
 # Backup, check and prune
@@ -163,8 +175,7 @@ backup() {
         exit 3
     fi
 
-    # Remove stale locks left behind by an interrupted run (active locks are kept)
-    timeout -k 30 "$QUICK_TIMEOUT" restic unlock 2>/dev/null || true
+    clear_stale_locks
 
     # Initialise only when the repository really is missing (restic exit code 10).
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
@@ -204,6 +215,7 @@ backup() {
 # Restore data from snapshot
 restore() {
     [ -z "${1:-}" ] && { echo "Usage: $0 restore <snapshot-id>"; exit 1; }
+    clear_stale_locks
     run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore "$1" --target /
 }
 
@@ -217,6 +229,7 @@ restore_test() {
     local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
     trap cleanup_restore_tmp EXIT
 
+    clear_stale_locks
     needed_bytes="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>/dev/null \
         | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
     needed_bytes="${needed_bytes:-0}"
@@ -271,6 +284,7 @@ restore_test() {
 
 # Read back a slice of the stored data to prove the repository is really readable
 verify() {
+    clear_stale_locks
     run "Repository data verification" "$LONG_TIMEOUT" restic check --read-data-subset="${VERIFY_SUBSET:-10%}"
     heartbeat ok
 }
@@ -319,7 +333,7 @@ case "${1:-}" in
     check-freshness) check_freshness ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
-    snapshots)       timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
+    snapshots)       clear_stale_locks; timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
     *)               echo "Usage: $0 {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac

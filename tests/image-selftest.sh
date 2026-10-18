@@ -31,7 +31,8 @@ pid_of() {
 
 # ── the entrypoint dropped privileges ────────────────────────────────────────
 vault_uid="$(id -u vaultwarden)"
-for proc in overmind caddy supercronic vaultwarden; do
+same "tini is PID 1 so orphans get reaped" tini "$(cat /proc/1/comm)"
+for proc in tini overmind caddy supercronic vaultwarden; do
     if ! pid="$(pid_of "$proc")"; then
         bad "$proc is not running"
         continue
@@ -62,6 +63,20 @@ if /restic.sh snapshots 2>/dev/null | grep -q '/data'; then
     ok "snapshots lists the new snapshot"
 else
     bad "snapshots did not list the new snapshot"
+fi
+
+# Every `timeout` in run() leaves a child behind. Without a reaping PID 1 those
+# become permanent zombies, and a zombie PID keeps the restic lock that process
+# left behind looking active, which blocks verify and the next backup.
+zombies() { ps -eo stat,comm | awk '$1 ~ /Z/' | wc -l; }
+zombie_before="$(zombies)"
+/restic.sh snapshots >/dev/null 2>&1
+sleep 1
+zombie_after="$(zombies)"
+if [ "$zombie_after" -le "$zombie_before" ]; then
+    ok "no zombie accumulates across a restic command (${zombie_before} -> ${zombie_after})"
+else
+    bad "zombies grew from ${zombie_before} to ${zombie_after} after one restic command"
 fi
 
 # A second run must skip instead of fighting for the repository lock.
@@ -96,9 +111,73 @@ same "freshness guard explains the alert" 1 \
 same "freshness guard records the stale state" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
+# The directory cap is the guard against filling the volume with logs. BusyBox
+# find supports no GNU printf predicate, so an implementation that relies on one
+# reports zero bytes and never trims: this seeds 3 MiB of logs and requires the
+# cap to hold.
+seed_status "$(date -u +%s)"
+for i in $(seq 1 12); do
+    dd if=/dev/zero of="/data/restic-logs/selftest-cap-$i.log" bs=1024 count=256 2>/dev/null
+done
+cap_before="$(du -sk /data/restic-logs | awk '{print $1 * 1024}')"
+RESTIC_LOG_DIR_MAX_BYTES=1048576 /restic.sh snapshots >/tmp/selftest-cap.log 2>&1
+cap_after="$(du -sk /data/restic-logs | awk '{print $1 * 1024}')"
+if [ "$cap_after" -le 1572864 ]; then
+    ok "the log directory is trimmed to the cap (${cap_before} -> ${cap_after} bytes)"
+else
+    bad "the log directory kept ${cap_after} bytes although the cap is 1048576"
+fi
+rm -f /data/restic-logs/selftest-cap-*.log
+
+# A backend that never answers must be killed by the command timeout and
+# recorded as a failure, instead of holding the lock until the next run.
+stub_dir=/tmp/selftest-stub
+mkdir -p "$stub_dir"
+printf '#!/bin/sh\nsleep 300\n' > "$stub_dir/restic"
+chmod +x "$stub_dir/restic"
+seed_status "$(date -u +%s)"
+hang_start="$(date -u +%s)"
+PATH="$stub_dir:$PATH" RESTIC_QUICK_TIMEOUT=1 RESTIC_LONG_TIMEOUT=1 \
+RESTIC_REPOSITORY=***REMOVED***
+hang_status=$?
+hang_elapsed=$(( $(date -u +%s) - hang_start ))
+same "a hung backend exits 2" 2 "$hang_status"
+if [ "$hang_elapsed" -lt 30 ]; then
+    ok "the command timeout killed the hung backend in ${hang_elapsed}s"
+else
+    bad "the hung backend was not killed (${hang_elapsed}s)"
+fi
+same "a hung backend is recorded as failed" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+rm -rf "$stub_dir"
+
+# A run killed mid-flight leaves its lock in the repository. backup() already
+# cleared stale locks, but the other entry points did not: an interrupted run
+# then blocked verify/snapshots with "repository is already locked".
+head -c 8388608 /dev/urandom > /tmp/selftest-lock-seed.bin
+# Run as vaultwarden, like /restic.sh does: a lock owned by another user is not
+# what happens in production and only tests file permissions.
+su-exec vaultwarden:vaultwarden restic backup --stdin --stdin-filename lock-seed \
+    < /tmp/selftest-lock-seed.bin >/tmp/selftest-lockseed.log 2>&1 &
+seed_pid=$!
+for _ in $(seq 1 100); do
+    [ -n "$(find /tmp/selftest-repo/locks -type f 2>/dev/null)" ] && break
+    sleep 0.1
+done
+kill -9 "$seed_pid" 2>/dev/null || true
+wait "$seed_pid" 2>/dev/null || true
+rm -f /tmp/selftest-lock-seed.bin
+sleep 1
+seed_locks="$(find /tmp/selftest-repo/locks -type f 2>/dev/null | wc -l)"
+if [ "$seed_locks" -ge 1 ]; then
+    ok "a killed run leaves a stale lock behind (${seed_locks})"
+else
+    bad "could not reproduce a stale lock"
+fi
+
 # the monthly integrity check reads a slice back out of the repository
 VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-verify.log 2>&1
-same "verify reads a data slice back" 0 "$?"
+same "verify clears the stale lock and reads a data slice" 0 "$?"
 
 # the guard is only useful if the scheduler actually calls it
 if grep -q 'check-freshness' /crontab; then
