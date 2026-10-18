@@ -126,6 +126,32 @@ else
     bad "ghcr.yml ignores fly.toml, so a config-only commit would never deploy"
 fi
 
+# A push to main already builds the multi-arch image in the Docker workflow and
+# deploys that exact digest. Rebuilding the same Dockerfile in Validate doubles
+# every merge's build work, so the image steps must stay on the pre-merge
+# events and ghcr.yml must not keep conditions for an event it never receives.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/validate.yml")
+    steps = doc["jobs"]["validate"]["steps"]
+    heavy = steps.select { |s| (s["run"] || "").include?("validate:local") }
+    exit 1 if heavy.empty?
+    exit 1 unless heavy.all? { |s| (s["if"] || "").include?("push") }
+  '; then
+    ok "validate.yml skips the image build on pushes to main"
+else
+    bad "validate.yml rebuilds the image on every push to main, duplicating the Docker workflow"
+fi
+
+# shellcheck disable=SC2016  # the literal workflow expression, not shell code
+if ! ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    exit 1 if (doc["on"] || doc[true]).key?("pull_request")
+  ' || grep -qF "github.event_name != 'pull_request'" .github/workflows/ghcr.yml; then
+    bad "ghcr.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
+else
+    ok "ghcr.yml has no conditions for an event it never receives"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
 # The deploy workflow passes the freshly built digest with `fly deploy --image`,
