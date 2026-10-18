@@ -20,6 +20,9 @@ timeout = "10s"
 type = "http"
 
 [http_service]
+  # Vaultwarden has no "cold start": every client is a syncing WebSocket, so the
+  # machine must stay up even when it looks idle.
+  auto_stop_machines = false
 force_https = true
 internal_port = 8080
 min_machines_running = 1
