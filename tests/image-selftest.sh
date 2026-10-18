@@ -261,7 +261,37 @@ PATH="$mail_stub:$PATH" SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 \
     /restic.sh check-freshness >/tmp/selftest-mailok.log 2>&1
 same "a delivered alert is recorded in the log" 1 \
     "$(grep -c 'Alert email sent' /tmp/selftest-mailok.log)"
+same "the alert recipient is not written to the run log" 0 \
+    "$(grep -c 'ops@example.com' /tmp/selftest-mailok.log)"
 rm -rf "$mail_stub"
+
+# A successful backup can send its own heartbeat email. It is opt-in so a
+# self-hoster does not start receiving hourly mail by accident.
+success_mail_dir=/tmp/selftest-success-mail
+success_mail_log=/tmp/selftest-success-mail.log
+rm -rf "$success_mail_dir"
+mkdir -p "$success_mail_dir"
+: > "$success_mail_log"
+chmod 666 "$success_mail_log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\ncat >/dev/null\nexit 0\n' \
+    "$success_mail_log" > "$success_mail_dir/mail"
+chmod 755 "$success_mail_dir/mail"
+PATH="$success_mail_dir:$PATH" SMTP_TO=ops@example.com /restic.sh backup \
+    >/tmp/selftest-mail-default.log 2>&1
+same "a successful backup does not email by default" 0 \
+    "$(wc -l < "$success_mail_log" | tr -d ' ')"
+PATH="$success_mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
+    /restic.sh backup >/tmp/selftest-mail-success.log 2>&1
+same "a successful backup sends one notification" 1 \
+    "$(grep -c 'Backup succeeded' "$success_mail_log")"
+same "the success notification is recorded" 1 \
+    "$(grep -c 'Alert email sent' /tmp/selftest-mail-success.log)"
+same "the recipient is not written to the run log" 0 \
+    "$(grep -c 'ops@example.com' /tmp/selftest-mail-success.log)"
+rm -rf "$success_mail_dir"
+BACKUP_NOTIFY_ON_SUCCESS=maybe /restic.sh snapshots \
+    >/tmp/selftest-notify-invalid.log 2>&1
+same "an invalid success-notification flag is rejected" 2 "$?"
 
 # The dead-man's-switch ping is the only channel that survives a scheduler which
 # stopped firing entirely, so the URL it hits has to match what the run actually
