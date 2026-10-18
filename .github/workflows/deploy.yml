@@ -27,6 +27,18 @@ jobs:
         with:
           ref: main
 
+      - name: 🚦 Skip superseded builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$main_sha" != "$BUILD_SHA" ]; then
+            echo "Build ${BUILD_SHA} is no longer the tip of main (${main_sha}); skipping deploy." >&2
+            exit 0
+          fi
+
       - name: 🧾 Read the published image digest
         id: image
         env:
