@@ -4,5 +4,5 @@
 
 # Application services
 vaultwarden: /vaultwarden
-caddy: caddy run --config /Caddyfile
+caddy: /caddy-loop.sh
 crontab: /cronloop.sh

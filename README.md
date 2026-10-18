@@ -88,9 +88,6 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 
-# Token protecting /backup-status, used by the backup-watchdog workflow
-fly secrets set BACKUP_STATUS_TOKEN="$(openssl rand -hex 32)"
-
 # Optional tuning (defaults shown)
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
@@ -111,9 +108,10 @@ fly deploy
 ## 🔢 Versions & Upgrades
 
 The base image is pinned by both `VAULTWARDEN_VERSION` and `VAULTWARDEN_DIGEST` in the `Dockerfile`, so a
-rebuild never silently changes the Vaultwarden runtime. The GHCR workflow additionally runs weekly to pick
-up Alpine package (`caddy`, `restic`, `sqlite`) security updates. `fly.toml` pins the deployed amd64 image
-by digest, so update that digest deliberately after a successful workflow run.
+rebuild never silently changes the Vaultwarden runtime. The `security-updates` workflow checks daily
+whether upstream published a newer `-alpine` image or digest and opens a PR when it did; merging that PR
+is what actually picks up new Alpine packages (`caddy`, `restic`, `sqlite`). `fly.toml` pins the deployed
+amd64 image by digest, so update that digest deliberately after a successful workflow run.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
@@ -137,7 +135,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email on failure (`SMTP_*`), an optional `HEALTHCHECK_URL` ping on every run, and an hourly GitHub Actions watchdog that fails when `last_success` is older than 90 minutes |
+| Alerts | Email on failure (`SMTP_*`) and an optional `HEALTHCHECK_URL` ping on every run |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
@@ -148,8 +146,9 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 ```
 
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
-> run `restore-test` instead: it restores into a temporary directory, checks `backup.bak` and `rsa_key.pem`,
-> and runs SQLite `PRAGMA integrity_check` without touching the live volume.
+> run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
+> `backup.bak` and `rsa_key.pem`, runs SQLite `PRAGMA integrity_check`, and cold-boots Vaultwarden against
+> the restored database without touching the live volume.
 >
 > Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
 >
@@ -167,7 +166,7 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); msmtp writes to stderr, so inspect `fly logs` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
-| Backup silently stops running | The hourly `backup-watchdog` workflow calls `/backup-status` with `BACKUP_STATUS_TOKEN` and fails when the last successful backup is older than 90 minutes |
+| Caddy exited and the proxy stopped responding | `/caddy-loop.sh` restarts Caddy in place; if the whole container dies, Fly restarts the machine because it is no longer marked restartable |
 
 ## 🛠️ Management & Operations
 
@@ -212,8 +211,8 @@ The Caddy configuration automatically applies the following security posture:
 Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
 Fly health checks). The admin panel at `/admin` is served on allowed hosts and remains protected by
 `ADMIN_TOKEN`, so treat that token as a high-value secret. Caddy access logs strip `Authorization`,
-`Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `X-Backup-Status-Token`, and
-`CF-Access-Jwt-Assertion` before writing to stdout.
+`Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `CF-Access-Jwt-Assertion`,
+`X-Forwarded-For`, `X-Real-IP`, and `Fly-Client-IP` before writing to stdout.
 
 The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` fixes ownership on `/data` and
 `/app`, then drops privileges with `su-exec` before starting Overmind.
