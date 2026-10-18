@@ -1,0 +1,52 @@
+name: 🚀 Deploy to Fly.io
+
+on:
+  workflow_run:
+    workflows:
+      - 🐳 Docker (Multi-Arch)
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: 🧾 Read the published image digest
+        id: image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name build-output --dir build-output
+          digest="$(sed -n 's/^digest=//p' build-output/build-output.txt | head -n 1)"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "Could not read the published digest from the build workflow" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: 🚀 Deploy
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: 🛫 Release
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --app xvx-vaultwarden --image "ghcr.io/webees/vaultwarden@${{ steps.image.outputs.digest }}" --yes
