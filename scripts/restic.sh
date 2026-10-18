@@ -405,6 +405,14 @@ restore_test() {
 
 # Read back a slice of the stored data to prove the repository is really readable
 verify() {
+    # This is the only job that looks for repository damage, and it used to exit
+    # 2 with nothing but a log line: corruption waited for someone to read the
+    # container log. Alert the way the backup does instead.
+    trap 'rc=$?; if [ "${rc:-0}" -ne 0 ]; then
+        write_status failed "Repository verification failed (exit ${rc})"
+        send_mail "Repository verification failed"
+        heartbeat fail
+    fi' EXIT
     clear_stale_locks
     # Wait for a running backup instead of failing: the monthly check used to
     # fire at the same minute as the hourly backup, and restic refuses to take
