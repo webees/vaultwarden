@@ -113,14 +113,22 @@ jobs:
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
-          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
-            --title "chore(deps): update pinned upstream dependencies" \
-            --body-file /tmp/pr-body.md || echo "PR already exists"
+          # Swallowing this failure reported every auth or API error as an
+          # existing PR, and the auto-merge step then failed with a misleading
+          # cause. Ask whether the PR exists instead.
+          if gh pr view "$branch" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "PR for ${branch} already exists; the force push above updated it"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+              --title "chore(deps): update pinned upstream dependencies" \
+              --body-file /tmp/pr-body.md
+          fi
 
       # main now requires the `validate` check, so the merge is armed instead of
       # performed: GitHub merges only once that check passes. Without --auto the
       # merge is refused outright, which is what used to hide the missing gate.
       - name: 🔀 Arm auto-merge on the dependency PR
+        id: arm
         if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,15 +139,26 @@ jobs:
           # Fail loudly if the required check never registers, instead of leaving
           # the PR parked with nothing to explain why.
           for _ in $(seq 1 18); do
-            registered="$(gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
-              --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || echo 0)"
-            if [ "$registered" -gt 0 ]; then
-              echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
-              exit 0
+            # `2>/dev/null || echo 0` read an API failure as "no checks
+            # registered", so the final message blamed the wrong thing.
+            registered=""
+            if ! registered="$(gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+                --json statusCheckRollup --jq '.statusCheckRollup | length')"; then
+              registered=""
             fi
+            case "$registered" in
+                ''|*[!0-9]*)
+                    echo "::warning::could not read the status checks for ${BRANCH}; retrying"
+                    ;;
+                0) ;;
+                *)
+                    echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
+                    exit 0
+                    ;;
+            esac
             sleep 10
           done
-          echo "no status check registered on ${BRANCH}; the merge is still gated" >&2
+          echo "no status check registered on ${BRANCH} within 180s; the merge is still gated" >&2
           exit 1
 
       # A package-only update never changes the Dockerfile, so no PR exists to
