@@ -38,6 +38,9 @@
 				request>headers>X-Auth-Token delete
 				request>headers>X-Backup-Status-Token delete
 				request>headers>CF-Access-Jwt-Assertion delete
+				request>headers>X-Forwarded-For delete
+				request>headers>X-Real-IP delete
+				request>headers>Fly-Client-IP delete
 			}
 		}
 	}
@@ -67,19 +70,6 @@
 		@denied not host {$CADDY_DOMAINS:localhost}
 		handle @denied {
 			respond "Access Denied: Domain not allowed" 403
-		}
-
-		# Backup freshness endpoint for the external watchdog. The token is a Fly
-		# secret; unauthenticated requests get 404 instead of leaking status.
-		@backup_status path /backup-status
-		handle @backup_status {
-			@backup_status_authorized header X-Backup-Status-Token {$BACKUP_STATUS_TOKEN:__unset__}
-			handle @backup_status_authorized {
-				root * /data
-				rewrite * /backup-status.txt
-				file_server
-			}
-			respond "Not found" 404
 		}
 
 		# Cloudflare publishes origin-facing ranges. Fly overwrites Fly-Client-IP

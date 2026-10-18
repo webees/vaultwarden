@@ -24,7 +24,6 @@ ENV WORKDIR=/app \
     XDG_DATA_HOME=/data \
     TZ="Asia/Shanghai" \
     OVERMIND_PROCFILE=/Procfile \
-    OVERMIND_CAN_DIE=caddy,crontab \
     OVERMIND_SHOW_TIMESTAMPS=0 \
     ROCKET_PORT=8081
 
@@ -35,13 +34,16 @@ COPY config/crontab \
     config/Procfile \
     config/Caddyfile \
     config/cloudflare-ips.caddy \
+    scripts/caddy-loop.sh \
     scripts/entrypoint.sh \
     scripts/cronloop.sh \
     scripts/restic.sh \
     /
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
+ARG CACHE_BUST=local
 RUN set -eu; \
+    date -u +%Y-%m-%dT%H:%M:%SZ; \
     case "$TARGETARCH" in \
         amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_SHA256_amd64"; OVERMIND_SHA256="$OVERMIND_SHA256_amd64" ;; \
         arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_SHA256_arm64"; OVERMIND_SHA256="$OVERMIND_SHA256_arm64" ;; \
@@ -72,7 +74,7 @@ RUN set -eu; \
     curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${OVERMIND_VERSION}/overmind-${OVERMIND_VERSION}-linux-${TARGETARCH}.gz" \
         | gunzip -c - > /usr/local/bin/overmind; \
     echo "${OVERMIND_SHA256}  /usr/local/bin/overmind" | sha256sum -c -; \
-    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /entrypoint.sh /cronloop.sh /restic.sh; \
+    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /caddy-loop.sh /entrypoint.sh /cronloop.sh /restic.sh; \
     # Symlink msmtp for mail commands
     ln -sf /usr/bin/msmtp /usr/bin/sendmail; \
     ln -sf /usr/bin/msmtp /usr/sbin/sendmail; \

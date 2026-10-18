@@ -1,0 +1,83 @@
+name: 🛡️ Daily Security Updates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7
+
+      - name: 🔎 Resolve upstream digest
+        id: upstream
+        run: |
+          set -euo pipefail
+          version="$(curl -fsSL 'https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&ordering=last_updated' \
+            | jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first')"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "Could not resolve the latest upstream version" >&2
+            exit 1
+          fi
+          digest="$(docker buildx imagetools inspect "vaultwarden/server:${version}" | awk '/^Digest:/{print $2; exit}')"
+          if [ -z "$digest" ]; then
+            echo "Could not resolve the digest for ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version%-alpine}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: 📌 Compare with Dockerfile pins
+        id: compare
+        env:
+          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
+          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+        run: |
+          set -euo pipefail
+          current_version="$(sed -n 's/^ARG VAULTWARDEN_VERSION=//p' Dockerfile | head -n 1)"
+          current_digest="$(sed -n 's/^ARG VAULTWARDEN_DIGEST=//p' Dockerfile | head -n 1)"
+          echo "current: ${current_version} ${current_digest}"
+          echo "upstream: ${UPSTREAM_VERSION} ${UPSTREAM_DIGEST}"
+          if [ "$current_version" = "$UPSTREAM_VERSION" ] && [ "$current_digest" = "$UPSTREAM_DIGEST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🔧 Update pinned version and digest
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
+          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+        run: |
+          set -euo pipefail
+          sed -i "s|^ARG VAULTWARDEN_VERSION=.*|ARG VAULTWARDEN_VERSION=${UPSTREAM_VERSION}|" Dockerfile
+          sed -i "s|^ARG VAULTWARDEN_DIGEST=.*|ARG VAULTWARDEN_DIGEST=${UPSTREAM_DIGEST}|" Dockerfile
+          git diff -- Dockerfile
+
+      - name: 📬 Open a pull request
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
+          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+        run: |
+          set -euo pipefail
+          branch="security/upstream-${UPSTREAM_VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add Dockerfile
+          git commit -m "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}"
+          git push --force origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}" \
+            --body "Upstream \`vaultwarden/server:${UPSTREAM_VERSION}-alpine\` is now pinned at \`${UPSTREAM_DIGEST}\`. Merging this PR makes the next image build pick up the newer Alpine packages." \
+            || echo "PR already exists"
