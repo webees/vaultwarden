@@ -614,11 +614,90 @@ if ruby -ryaml -e '
     exit 1 if step.nil?
     body = step["run"] || ""
     exit 1 if body.include?("|| echo")
-    exit 1 unless body.include?("gh pr view")
+    exit 1 unless body.include?("gh pr list")
   '; then
     ok "the dependency PR step checks for an existing PR instead of swallowing failures"
 else
     bad "the dependency PR step reports every gh pr create failure as an existing PR"
+fi
+
+# A version-named branch creates a new PR when the upstream version moves while
+# an older auto-merge PR is still open. The old PR can then merge stale pins
+# after the newer one. Keep one stable automation branch, and update its title
+# and body when it already has an open PR.
+# shellcheck disable=SC2016  # Ruby source, not shell expansion
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
+    body = step && (step["run"] || "")
+    exit 1 if body.nil? || body.empty?
+    exit 1 unless body.include?("branch=\"deps/upstream\"")
+    exit 1 if body.include?("branch=\"deps/upstream-${VERSION}\"")
+    exit 1 unless body.include?("gh pr list") && body.include?("--state open")
+    exit 1 unless body.include?("gh pr edit")
+  '; then
+    ok "dependency PRs use one stable branch and refresh an existing open PR"
+else
+    bad "dependency PRs use a version branch that can leave a stale auto-merge PR behind"
+fi
+
+# Execute the real PR step with stub git/gh commands. This proves the stable
+# branch is not just present in YAML: an existing open PR is updated in place,
+# and a missing PR is created.
+ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
+    print step["run"] if step
+  ' > "$work/pr-step.sh" || true
+if [ -s "$work/pr-step.sh" ]; then
+    pr_stub="$work/pr-stub"
+    pr_log="$work/pr-gh.log"
+    pr_out="$work/pr-output"
+    mkdir -p "$pr_stub"
+    # shellcheck disable=SC2016  # generated stub, not shell expansion
+    {
+        printf '#!/bin/sh\n'
+        printf 'case "$1" in\n'
+        printf '  diff) exit 1 ;;\n'
+        printf '  *) exit 0 ;;\n'
+        printf 'esac\n'
+    } > "$pr_stub/git"
+    # shellcheck disable=SC2016  # generated stub, not shell expansion
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$*" >> "%s"\n' "$pr_log"
+        printf 'case "$1 $2" in\n'
+        printf '  "pr list") printf "%%s\\n" "${OPEN_PR_COUNT:-0}" ;;\n'
+        printf 'esac\n'
+        printf 'exit 0\n'
+    } > "$pr_stub/gh"
+    chmod +x "$pr_stub/git" "$pr_stub/gh"
+    run_pr_step() { # open-pr count
+        : > "$pr_log"
+        : > "$pr_out"
+        GITHUB_OUTPUT="$pr_out" GITHUB_REPOSITORY=example/repo RUNNER_TEMP="$work" \
+            VERSION=1.2.3 DIGEST=sha256:stub SUPERCRONIC=v0 OVERMIND=v0 \
+            APK_COUNT=0 APK_ROWS='' OPEN_PR_COUNT="$1" \
+            PATH="$pr_stub:$PATH" bash "$work/pr-step.sh" \
+            > "$work/pr-run.log" 2>&1
+    }
+
+    run_pr_step 1
+    same "an existing open dependency PR is updated" 0 "$?"
+    same "the stable dependency branch is recorded" "deps/upstream" \
+        "$(sed -n 's/^branch=//p' "$pr_out")"
+    same "an existing open dependency PR does not create a duplicate" 0 \
+        "$(grep -c '^pr create' "$pr_log")"
+    same "an existing open dependency PR is refreshed" 1 \
+        "$(grep -c '^pr edit' "$pr_log")"
+
+    run_pr_step 0
+    same "a missing dependency PR is created" 1 \
+        "$(grep -c '^pr create' "$pr_log")"
+    same "a missing dependency PR is not edited" 0 \
+        "$(grep -c '^pr edit' "$pr_log")"
+else
+    bad "the dependency PR step could not be extracted for execution"
 fi
 
 ruby -ryaml -e '
