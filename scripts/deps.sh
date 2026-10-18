@@ -63,8 +63,7 @@ tools() {
 
 # Compare current pins against VAR=VALUE pairs; emit changed=true when any differ.
 compare() {
-    emit changed false
-    local pair name want have
+    local pair name want have changed=false
     for pair in "$@"; do
         name="${pair%%=*}"
         want="${pair#*=}"
@@ -73,9 +72,12 @@ compare() {
             echo "ok   ${name}"
         else
             echo "diff ${name}: ${have} -> ${want}"
-            emit changed true
+            changed=true
         fi
     done
+    # Emitted once at the end: a duplicate key in $GITHUB_OUTPUT only works
+    # because GitHub keeps the last value, which is easy to break silently.
+    emit changed "$changed"
 }
 
 # Rewrite the pins in place from VAR=VALUE pairs.
