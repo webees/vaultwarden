@@ -156,6 +156,38 @@ else
 fi
 exec 9>&-
 
+# An alert has to record whether it was actually delivered: the mailer's stderr
+# is not part of the run log, so "no email arrived" is otherwise undiagnosable.
+seed_status 1
+SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 /restic.sh check-freshness \
+    >/tmp/selftest-mailfail.log 2>&1
+same "an undeliverable alert is recorded in the log" 1 \
+    "$(grep -c 'Alert email failed' /tmp/selftest-mailfail.log)"
+
+mail_stub=/tmp/selftest-mailok
+mkdir -p "$mail_stub"
+printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' > "$mail_stub/mail"
+chmod +x "$mail_stub/mail"
+seed_status 1
+PATH="$mail_stub:$PATH" SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-mailok.log 2>&1
+same "a delivered alert is recorded in the log" 1 \
+    "$(grep -c 'Alert email sent' /tmp/selftest-mailok.log)"
+rm -rf "$mail_stub"
+
+# A run that cannot write its own audit trail must say so.
+chmod 500 /data/restic-logs
+chmod 400 /data/backup-status.txt
+sleep 1   # a fresh log name, so appending needs the directory itself
+audit_out="$(/restic.sh snapshots 2>&1)"
+same "an unwritable log directory is reported" 1 \
+    "$(printf '%s\n' "$audit_out" | grep -c 'leaves no persistent log')"
+same "an unwritable status file is reported" 1 \
+    "$(printf '%s\n' "$audit_out" | grep -c 'backup state will not be recorded')"
+chmod 700 /data/restic-logs
+chmod 664 /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/restic-logs /data/backup-status.txt
+
 # The directory cap is the guard against filling the volume with logs. BusyBox
 # find supports no GNU printf predicate, so an implementation that relies on one
 # reports zero bytes and never trims: this seeds 3 MiB of logs and requires the
