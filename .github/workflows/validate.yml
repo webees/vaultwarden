@@ -49,38 +49,7 @@ jobs:
         if: github.event_name != 'push'
         run: |
           docker build --tag validate:local .
-          docker run --rm --entrypoint caddy validate:local \
-            validate --config /Caddyfile --adapter caddyfile
-
-      # Caddy runs unprivileged and reads files baked into the image, so a
-      # root-only file or a broken process graph only shows up at runtime.
-      - name: 🚑 Runtime smoke test
-        if: github.event_name != 'push'
-        run: |
-          docker run --detach --name smoke \
-            --env CADDY_DOMAINS=example.com \
-            --env DOMAIN=https://example.com \
-            --env I_REALLY_WANT_VOLATILE_STORAGE=true \
-            validate:local /entrypoint.sh overmind start
-          alive=1
-          for _ in $(seq 1 30); do
-            if docker exec smoke wget -qO- http://127.0.0.1:8080/alive >/dev/null 2>&1; then
-              alive=0
-              break
-            fi
-            sleep 2
-          done
-          if [ "$alive" -ne 0 ]; then
-            echo "/alive never came up" >&2
-            docker logs smoke >&2
-            docker rm --force smoke >/dev/null
-            exit 1
-          fi
-          echo "/alive responded through Caddy"
-          docker cp tests/lib.sh smoke:/tmp/lib.sh
-          docker cp tests/image-selftest.sh smoke:/tmp/image-selftest.sh
-          docker exec smoke sh /tmp/image-selftest.sh
-          docker rm --force smoke >/dev/null
+          bash tests/runtime-smoke.sh validate:local
 
       # entrypoint.sh has two branches: write /etc/msmtprc from SMTP_*, or leave
       # it empty so alerts are skipped. Both are exercised here.
