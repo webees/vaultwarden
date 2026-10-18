@@ -1,0 +1,42 @@
+name: Expire old timestamp tags
+description: Delete timestamp tags older than the retention window from GHCR.
+
+inputs:
+  token:
+    description: Token with packages:write for this repository.
+    required: true
+  package:
+    description: Package name to clean up.
+    required: true
+  retention:
+    description: How old a timestamp tag must be before it is deleted.
+    required: false
+    default: 30 days
+  delete-untagged:
+    description: Also delete untagged images (the nightly sweep does this).
+    required: false
+    default: 'false'
+  delete-broken:
+    description: Also delete ghost, partial and orphaned images.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # One implementation for both call sites: the build expires tags when the
+    # nightly schedule has gone quiet, and the nightly sweep does the full pass.
+    - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+      with:
+        token: ${{ inputs.token }}
+        packages: ${{ inputs.package }}
+        use-regex: true
+        delete-tags: '^[0-9]{12}$'
+        older-than: ${{ inputs.retention }}
+        delete-untagged: ${{ inputs.delete-untagged == 'true' }}
+        delete-ghost-images: ${{ inputs.delete-broken == 'true' }}
+        delete-partial-images: ${{ inputs.delete-broken == 'true' }}
+        delete-orphaned-images: ${{ inputs.delete-broken == 'true' }}
+        validate: true
+        log-level: info
+        dry-run: false
