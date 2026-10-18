@@ -44,6 +44,25 @@ done
 same "/etc/msmtprc is 0600" 600 "$(stat -c %a /etc/msmtprc)"
 same "/etc/msmtprc belongs to vaultwarden" vaultwarden "$(stat -c %U /etc/msmtprc)"
 
+# Vaultwarden refuses to boot when SMTP_HOST is set without SMTP_FROM, while the
+# backup script only needs SMTP_HOST and SMTP_TO. The entrypoint has to give the
+# app the same sender default that the msmtp config uses, or setting up alerts
+# takes the password manager down.
+# The container may itself be started with SMTP_* set, so clear them first.
+smtp_env() { env -u SMTP_HOST -u SMTP_TO -u SMTP_FROM "$@" /entrypoint.sh env 2>/dev/null; }
+injected="$(smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com)"
+if printf '%s\n' "$injected" | grep -qx 'SMTP_FROM=ops@example.com'; then
+    ok "the entrypoint defaults SMTP_FROM to SMTP_TO"
+else
+    bad "SMTP_FROM is not defaulted, so SMTP_HOST+SMTP_TO alone breaks the app"
+fi
+injected="$(smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com SMTP_FROM=sender@example.com)"
+same "an explicit SMTP_FROM is preserved" 1 \
+    "$(printf '%s\n' "$injected" | grep -c '^SMTP_FROM=sender@example.com$')"
+injected="$(smtp_env SMTP_TO=ops@example.com)"
+same "SMTP_FROM stays unset when there is no SMTP_HOST" 0 \
+    "$(printf '%s\n' "$injected" | grep -c '^SMTP_FROM=')"
+
 # ── restic.sh ────────────────────────────────────────────────────────────────
 echo "--- restic.sh"
 export RESTIC_PASSWORD=selftest
@@ -111,6 +130,32 @@ same "freshness guard explains the alert" 1 \
 same "freshness guard records the stale state" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
+# A run that is killed mid-flight leaves the status at "running" forever. That
+# has to be reported once nothing holds the lock, and left alone while a real
+# backup is still working.
+seed_running() {
+    printf 'state=running\nupdated_at=%s\nlast_success=%s\nmessage=Backup started\n' \
+        "$(date -u +%s)" "$(date -u +%s)" > /data/backup-status.txt
+    chown vaultwarden:vaultwarden /data/backup-status.txt
+}
+seed_running
+/restic.sh check-freshness >/tmp/selftest-stuck.log 2>&1
+same "check-freshness flags a backup that never finished" 2 "$?"
+same "the stuck run is recorded as failed" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
+seed_running
+exec 9>/data/restic-logs/backup.lock
+if flock -n 9; then
+    /restic.sh check-freshness >/tmp/selftest-inflight.log 2>&1
+    same "check-freshness leaves a backup that holds the lock alone" 0 "$?"
+    same "the in-flight run keeps its running state" "running" \
+        "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+else
+    bad "could not take the backup lock for the in-flight test"
+fi
+exec 9>&-
+
 # The directory cap is the guard against filling the volume with logs. BusyBox
 # find supports no GNU printf predicate, so an implementation that relies on one
 # reports zero bytes and never trims: this seeds 3 MiB of logs and requires the
@@ -150,6 +195,15 @@ fi
 same "a hung backend is recorded as failed" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 rm -rf "$stub_dir"
+
+# The run above left stub children alive. They must not have inherited the
+# backup lock: one that outlives the run would block every later backup, and
+# those exits are treated as an intentional concurrent run, so nobody alerts.
+if flock -n /data/restic-logs/backup.lock -c true 2>/dev/null; then
+    ok "the killed run did not leak the backup lock to its children"
+else
+    bad "a child of the killed run still holds the backup lock"
+fi
 
 # A run killed mid-flight leaves its lock in the repository. backup() already
 # cleared stale locks, but the other entry points did not: an interrupted run
