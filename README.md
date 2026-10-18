@@ -182,7 +182,7 @@ scheduler is still alive. A scheduler that has stopped firing entirely is only v
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
-| Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); msmtp writes to stderr, so inspect `fly logs` |
+| Backup failures produce no email | Check the run log in `/data/restic-logs`: it records `Alert email sent to …` or `Alert email failed (exit N)` with the mailer's error. Mail is skipped entirely when `SMTP_TO` is unset, and an unset `SMTP_HOST` fails with `account default not found` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
 | Caddy exited and the proxy stopped responding | `/supervise.sh caddy ...` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
