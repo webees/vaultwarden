@@ -25,6 +25,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.digest.outputs.tag }}
+      digest: ${{ steps.digest.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -115,3 +118,29 @@ jobs:
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 🧾 Record the published amd64 digest
+        if: github.event_name != 'pull_request'
+        id: digest
+        env:
+          TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
+            --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
+          test -n "$digest"
+          echo "tag=${TIMESTAMP_TAG}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${TIMESTAMP_TAG}"
+            echo "digest=${digest}"
+          } > build-output.txt
+          echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
+
+      - name: 📤 Upload the build output
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: build-output.txt
+          retention-days: 7
