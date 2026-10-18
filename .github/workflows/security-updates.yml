@@ -20,18 +20,23 @@ jobs:
         id: upstream
         run: |
           set -euo pipefail
-          version="$(curl -fsSL 'https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&ordering=last_updated' \
-            | jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first')"
-          if [ -z "$version" ] || [ "$version" = "null" ]; then
-            echo "Could not resolve the latest upstream version" >&2
+          json="$(curl -fsSL 'https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&ordering=last_updated')"
+          tag="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "Could not resolve the latest upstream tag" >&2
             exit 1
           fi
-          digest="$(docker buildx imagetools inspect "vaultwarden/server:${version}" | awk '/^Digest:/{print $2; exit}')"
+          token="$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' \
+            | jq -r .token)"
+          digest="$(curl -fsSI -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://registry-1.docker.io/v2/vaultwarden/server/manifests/${tag}" \
+            | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}')"
           if [ -z "$digest" ]; then
-            echo "Could not resolve the digest for ${version}" >&2
+            echo "Could not resolve the digest for ${tag}" >&2
             exit 1
           fi
-          echo "version=${version%-alpine}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag%-alpine}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: 📌 Compare with Dockerfile pins
@@ -75,9 +80,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add Dockerfile
+          git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}"
           git push --force origin "$branch"
-          gh pr create --base main --head "$branch" \
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
             --title "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}" \
             --body "Upstream \`vaultwarden/server:${UPSTREAM_VERSION}-alpine\` is now pinned at \`${UPSTREAM_DIGEST}\`. Merging this PR makes the next image build pick up the newer Alpine packages." \
             || echo "PR already exists"
