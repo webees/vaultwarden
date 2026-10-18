@@ -69,6 +69,67 @@ if [ "$alive" -ne 0 ]; then
 fi
 echo "/alive responded through Caddy"
 
+# Caddy decides who may reach the app and who the client is; both are security
+# controls, and neither was asserted anywhere. Read them where they are
+# observable: the status code and the access log Caddy writes to stdout.
+probe_code() { docker exec "$container" curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+code_allowed="$(probe_code -H 'Host: example.com' http://127.0.0.1:8080/api/config)"
+code_denied="$(probe_code -H 'Host: evil.example' http://127.0.0.1:8080/api/config)"
+# /alive is deliberately matched before the whitelist, or Fly would pull a
+# machine whose proxy is fine but whose domain secret is wrong.
+code_alive="$(probe_code -H 'Host: evil.example' http://127.0.0.1:8080/alive)"
+if [ "$code_allowed" = "200" ] && [ "$code_denied" = "403" ] && [ "$code_alive" = "200" ]; then
+    echo "the host whitelist serves the configured domain, refuses others and keeps /alive reachable"
+else
+    echo "FAIL host whitelist: allowed=${code_allowed} denied=${code_denied} alive=${code_alive}" >&2
+    exit 1
+fi
+
+# Fly overwrites Fly-Client-IP at the edge, so it may be trusted. CF-Connecting-IP
+# may not: a direct client could otherwise pick the address that lands in the log.
+probe_code -H 'Host: example.com' -H 'Fly-Client-IP: 203.0.113.9' \
+    http://127.0.0.1:8080/api/config >/dev/null
+probe_code -H 'Host: example.com' -H 'CF-Connecting-IP: 203.0.113.99' \
+    http://127.0.0.1:8080/api/config >/dev/null
+
+probe_secret="smoke-cred-$$"
+probe_code -H 'Host: example.com' -H "Authorization: Bearer ${probe_secret}" \
+    -H "Cookie: session=${probe_secret}" -H "X-Api-Key: ${probe_secret}" \
+    http://127.0.0.1:8080/api/config >/dev/null
+sleep 3
+
+# Captured once, and proven non-empty first: an empty string would make both
+# assertions below pass without a single access log line behind them.
+access_log="$(docker logs "$container" 2>&1)"
+if printf '%s\n' "$access_log" | grep -q '"uri": "/api/config"'; then
+    echo "the smoke probes reached the access log"
+else
+    echo "FAIL no access log lines for the smoke probes" >&2
+    printf '%s\n' "$access_log" | tail -20 >&2
+    exit 1
+fi
+
+if printf '%s\n' "$access_log" | grep -q '"client_ip": "203.0.113.9"'; then
+    echo "Fly-Client-IP is trusted as the client address"
+else
+    echo "FAIL Fly-Client-IP did not reach the access log" >&2
+    printf '%s\n' "$access_log" | grep -o '"client_ip": "[^"]*"' | sort | uniq -c >&2
+    exit 1
+fi
+
+if printf '%s\n' "$access_log" | grep -q '"client_ip": "203.0.113.99"'; then
+    echo "FAIL a spoofed CF-Connecting-IP was trusted as the client address" >&2
+    exit 1
+fi
+echo "a spoofed CF-Connecting-IP is not trusted as the client address"
+
+if printf '%s\n' "$access_log" | grep -q "$probe_secret"; then
+    echo "FAIL credentials reached the access log" >&2
+    exit 1
+fi
+echo "credentials sent to the proxy never reach the access log"
+
 docker cp "$tests_dir/lib.sh" "$container:/tmp/lib.sh"
 docker cp "$tests_dir/image-selftest.sh" "$container:/tmp/image-selftest.sh"
 docker exec "$container" sh /tmp/image-selftest.sh
