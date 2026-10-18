@@ -23,6 +23,8 @@ MAX_LOG_DIR_BYTES="${RESTIC_LOG_DIR_MAX_BYTES:-10485760}"
 QUICK_TIMEOUT="${RESTIC_QUICK_TIMEOUT:-60}"
 LONG_TIMEOUT="${RESTIC_LONG_TIMEOUT:-1800}"
 NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 STATUS_FILE="/data/backup-status.txt"
 LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
 LAST_SUCCESS="${LAST_SUCCESS:-0}"
@@ -128,6 +130,31 @@ send_mail() {
     log echo -e "${R}Alert email failed (exit ${rc})${X}"
     [ -n "$out" ] && log printf '%s\n' "$out"
     return 0
+}
+
+# Send a short Telegram notification through the Bot API. The token and chat id
+# are secrets: the request contains them, but the persistent run log must not.
+send_telegram() {
+    [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && return 0
+    local text="$1" out rc
+    out="$(curl -fsS -m 10 --retry 2 \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=[$APP_NAME] ${text}" \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+        log echo -e "${G}Telegram notification sent${X}"
+        return 0
+    fi
+    log echo -e "${R}Telegram notification failed (exit ${rc})${X}"
+    return 0
+}
+
+# One notification entry point for email and Telegram. Each channel is optional.
+notify() {
+    local subject="$1"
+    send_mail "$subject"
+    send_telegram "$subject"
 }
 
 # Warn when the audit trail cannot be written: a run with no log file and no
@@ -239,7 +266,7 @@ trim_logs() {
 backup() {
     trap 'rc=$?; if [ "${rc:-0}" -ne 0 ] && [ "${rc:-0}" -ne 3 ]; then
         write_status failed "Task failed: ${CURRENT_STEP:-backup} (exit ${rc})"
-        send_mail "Task Failed: ${CURRENT_STEP:-backup}"
+        notify "Task Failed: ${CURRENT_STEP:-backup}"
         heartbeat fail
     fi' EXIT
 
@@ -291,12 +318,12 @@ backup() {
     if [ -n "$trim_message" ]; then
         heartbeat fail
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_mail "Backup succeeded with warnings"
+            notify "Backup succeeded with warnings"
         fi
     else
         heartbeat ok
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_mail "Backup succeeded"
+            notify "Backup succeeded"
         fi
     fi
 }
@@ -431,7 +458,7 @@ verify() {
     # container log. Alert the way the backup does instead.
     trap 'rc=$?; if [ "${rc:-0}" -ne 0 ]; then
         write_status failed "Repository verification failed (exit ${rc})"
-        send_mail "Repository verification failed"
+        notify "Repository verification failed"
         heartbeat fail
     fi' EXIT
     clear_stale_locks
@@ -461,7 +488,7 @@ check_freshness() {
             0) ;;
             1) log echo -e "${R}The last backup started but never finished${X}"
                write_status failed "Backup did not finish"
-               send_mail "Backup did not finish"
+               notify "Backup did not finish"
                heartbeat fail
                exit 2 ;;
             2) log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}" ;;
@@ -484,7 +511,7 @@ check_freshness() {
     fi
     log echo -e "${R}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
     write_status failed "No successful backup for ${age}s"
-    send_mail "Backup stale"
+    notify "Backup stale"
     heartbeat fail
     exit 2
 }
@@ -503,6 +530,26 @@ case "$NOTIFY_ON_SUCCESS" in
         exit 2
         ;;
 esac
+if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
+    [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || {
+        echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2
+        exit 2
+    }
+    case "$TELEGRAM_BOT_TOKEN" in
+        [0-9]*:[A-Za-z0-9_-]*) ;;
+        *)
+            echo "Error: TELEGRAM_BOT_TOKEN has an invalid format" >&2
+            exit 2
+            ;;
+    esac
+    case "$TELEGRAM_CHAT_ID" in
+        -[0-9]*|[0-9]*|@[A-Za-z0-9_]*) ;;
+        *)
+            echo "Error: TELEGRAM_CHAT_ID has an invalid format" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 trim_logs
 check_audit_trail
