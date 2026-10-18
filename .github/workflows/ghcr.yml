@@ -228,24 +228,36 @@ jobs:
       group: fly-deploy
       cancel-in-progress: false
     permissions:
+      actions: read
       contents: read
     steps:
       # An `exit 0` only ends this step, so a superseded build used to keep
       # going and overwrite the newer release. The guard publishes an output and
       # the deploy steps below are skipped explicitly.
-      - name: 🚦 Check whether this build is still the tip of main
+      #
+      # The guard stands down only when a newer run of this workflow exists for
+      # main. Comparing the tip of main instead cancelled the deploy whenever a
+      # doc-only commit landed mid-build: paths-ignore means that commit never
+      # starts a run, so nothing was left to publish the code being built.
+      - name: 🚦 Check whether a newer build has taken over
         id: guard
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          main_sha="$(timeout 30 gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          if [ "$main_sha" != "${GITHUB_SHA}" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Build ${GITHUB_SHA} is no longer the tip of main (${main_sha}); skipping deploy." >&2
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          skip=false
+          if ! newest="$(timeout 30 gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr.yml/runs?branch=main&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // empty')"; then
+            newest=""
           fi
+          if [ -z "$newest" ]; then
+            echo "::warning::could not read the workflow runs; deploying this build"
+          elif [ "$newest" != "${GITHUB_SHA}" ]; then
+            skip=true
+            echo "A newer build for ${newest} has taken over; skipping deploy of ${GITHUB_SHA}." >&2
+          fi
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
 
       - name: 🚀 Set up Flyctl
         if: steps.guard.outputs.skip != 'true'
