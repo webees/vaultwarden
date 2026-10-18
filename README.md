@@ -224,6 +224,7 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 ```bash
 shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
 tests/selftest.sh                # supervise.sh, refresh-cloudflare-ips.sh and deps.sh failure paths
+tests/runtime-smoke.sh <image>   # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/refresh-cloudflare-ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
