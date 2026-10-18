@@ -3,8 +3,10 @@ kill_signal = "SIGINT"
 kill_timeout = "5s"
 primary_region = "sin"
 
-[build]
-image = "ghcr.io/webees/vaultwarden@sha256:5831741b4e8b89b1186ff1f0f26f877706468566b4539e50159d373ec82c87cf"
+# No [build].image on purpose: two sources of truth for "what is running" is how
+# fly.toml silently went stale. The deploy workflow passes the exact digest the
+# build workflow just published with --image; running `fly deploy` by hand builds
+# this repository's pinned Dockerfile locally instead.
 
 [checks.health]
 grace_period = "60s"
