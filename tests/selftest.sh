@@ -37,6 +37,29 @@ else
 fi
 same "exits with status 0 on SIGTERM" 0 "$supervisor_status"
 
+# A bad delay used to spin: `sleep` failed every iteration and the supervisor
+# restarted the child as fast as the shell could loop. Start it in the
+# background so the pre-fix code cannot hang the suite, then terminate it.
+run_supervise_invalid() { # delay
+    SUPERVISE_RESTART_DELAY="$1" ./scripts/supervise.sh probe true \
+        >/dev/null 2>&1 &
+    local pid=$!
+    sleep 0.3
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid"
+}
+run_supervise_invalid bogus
+same "a non-numeric restart delay is rejected" 2 "$?"
+run_supervise_invalid 0.0
+same "a zero restart delay is rejected" 2 "$?"
+
+./scripts/supervise.sh probe >/dev/null 2>&1 &
+supervise_empty_pid=$!
+sleep 0.3
+kill -TERM "$supervise_empty_pid" 2>/dev/null || true
+wait "$supervise_empty_pid"
+same "a supervisor without a child command is rejected" 2 "$?"
+
 # ── refresh-cloudflare-ips.sh ─────────────────────────────────────────────────
 echo "--- refresh-cloudflare-ips.sh"
 # Build a stub `curl` that answers with exactly N ranges per call.
