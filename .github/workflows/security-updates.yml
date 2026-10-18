@@ -117,9 +117,27 @@ jobs:
             --title "chore(deps): update pinned upstream dependencies" \
             --body-file /tmp/pr-body.md || echo "PR already exists"
 
-      - name: 🔀 Merge the dependency PR
+      # main now requires the `validate` check, so the merge is armed instead of
+      # performed: GitHub merges only once that check passes. Without --auto the
+      # merge is refused outright, which is what used to hide the missing gate.
+      - name: 🔀 Arm auto-merge on the dependency PR
         if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.pr.outputs.branch }}
-        run: gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+        run: |
+          set -euo pipefail
+          gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --auto
+          # Fail loudly if the required check never registers, instead of leaving
+          # the PR parked with nothing to explain why.
+          for _ in $(seq 1 18); do
+            registered="$(gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+              --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || echo 0)"
+            if [ "$registered" -gt 0 ]; then
+              echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "no status check registered on ${BRANCH}; the merge is still gated" >&2
+          exit 1
