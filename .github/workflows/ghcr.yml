@@ -44,6 +44,13 @@ jobs:
           } | awk 'NF {print "client_ip "$0}' > config/cloudflare-ips.caddy
           test "$(wc -l < config/cloudflare-ips.caddy)" -gt 20
 
+      - name: 🧹 Invalidate package layer cache
+        id: cache-bust
+        run: |
+          # apk only pulls patched packages when this layer is rebuilt, so give
+          # every scheduled run a unique cache key for the dependency layer.
+          echo "cache-bust=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
       - name: ⚙️ Enable QEMU for cross-platform builds
         uses: docker/setup-qemu-action@v4
 
@@ -99,6 +106,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          build-args: |
+            CACHE_BUST=${{ steps.cache-bust.outputs.cache-bust }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
