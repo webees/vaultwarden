@@ -31,6 +31,8 @@
 		format filter {
 			wrap console
 			fields {
+				# Caddy already hides Authorization/Cookie/Set-Cookie; the token
+				# headers below are not covered by that and need this filter.
 				request>headers>Authorization delete
 				request>headers>Cookie delete
 				request>headers>Proxy-Authorization delete
