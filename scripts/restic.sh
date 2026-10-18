@@ -67,6 +67,18 @@ send_mail() {
         -s "[$APP_NAME] $1" "$SMTP_TO"
 }
 
+# Restore-drill scratch paths. These are global on purpose: an EXIT trap runs
+# after the function has returned, so a `local` would already be unset and the
+# cleanup would silently delete nothing, leaving a full copy in /tmp.
+RESTORE_TMP_DIR=""
+RESTORE_BOOT_LOG=""
+
+cleanup_restore_tmp() {
+    [ -n "$RESTORE_TMP_DIR" ] && rm -rf "$RESTORE_TMP_DIR"
+    [ -n "$RESTORE_BOOT_LOG" ] && rm -f "$RESTORE_BOOT_LOG"
+    return 0
+}
+
 # Run command and log status
 run() {
     local label="$1" timeout_seconds="$2" out_file raw_file rc
@@ -199,12 +211,13 @@ restore() {
 
 # Restore a snapshot into a temporary directory and validate the important files
 restore_test() {
-    local snapshot="${1:-latest}" target tmp_parent free_bytes needed_bytes boot_log
+    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes
     tmp_parent="${TMPDIR:-/tmp}"
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
-    target="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
-    boot_log="$(mktemp "$tmp_parent/restic-boot.XXXXXX")"
-    trap 'rm -rf "${target:-}" "${boot_log:-}"' EXIT
+    RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
+    RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")"
+    local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
+    trap cleanup_restore_tmp EXIT
 
     needed_bytes="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>/dev/null \
         | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"

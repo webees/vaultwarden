@@ -54,15 +54,16 @@ fly auth login
 # Create application
 fly apps create vaultwarden
 
-# Import secrets from .env
-cat .env | fly secrets import
+# Create the local secret file from the template, then fill in every value
+cp .env.example .env
+fly secrets import < .env
 
 # Create storage volume
 fly volumes create app_data --region sin --size 1   # must match primary_region in fly.toml
 ```
 
-> The committed `.env` ships placeholders only (`vault.example.com`, `88888888`, ...). Replace every
-> value before importing, and never commit real credentials.
+> `.env` is git ignored on purpose; only the placeholder template `.env.example` is committed. Real
+> values belong in Fly secrets, so a working tree stays clean after `cp .env.example .env`.
 
 ### 2. Required Secrets Configuration
 
@@ -91,7 +92,7 @@ fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 # Optional tuning (defaults shown)
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
-fly secrets set CRON_RESTART_DELAY="5"   # seconds before the scheduler is restarted
+fly secrets set SUPERVISE_RESTART_DELAY="5"  # seconds before a crashed caddy/scheduler restarts
 fly secrets set RESTIC_QUICK_TIMEOUT="60"    # seconds for init/check/cat operations
 fly secrets set RESTIC_LONG_TIMEOUT="1800"   # seconds for backup/restore/prune
 fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
@@ -201,6 +202,7 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 
 ```bash
 shellcheck scripts/*.sh          # Static analysis for every helper script
+scripts/refresh-cloudflare-ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
 scripts/deps.sh compare ...      # Compare resolved values against the Dockerfile pins

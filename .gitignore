@@ -1,3 +1,8 @@
 .DS_Store
 
 *.log
+
+# Local secret store; the committed template is .env.example
+.env
+.env.*
+!.env.example
