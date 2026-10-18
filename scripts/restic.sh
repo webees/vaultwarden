@@ -1,10 +1,10 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
-# ║ Usage: /restic.sh {backup|restore <id>|restore-test [id]|snapshots|verify|test} ║
+# ║ Usage: /restic.sh {backup|restore <id>|restore-test [id]|snapshots|verify} ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
-set -o pipefail
+set -uo pipefail
 
 # Run as the unprivileged owner so files created here never become root-owned.
 # `fly ssh console` starts as root; without this, cleans before forever.
@@ -24,7 +24,7 @@ LONG_TIMEOUT="${RESTIC_LONG_TIMEOUT:-1800}"
 STATUS_FILE="/data/backup-status.txt"
 LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
 LAST_SUCCESS="${LAST_SUCCESS:-0}"
-UPDATE_BACKUP_STATUS=0
+CURRENT_STEP=""
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
 # ANSI colors
@@ -40,23 +40,13 @@ write_status() {
     local state="$1" message="${2:-}" now tmp
     now="$(date -u +%s)"
     tmp="${STATUS_FILE}.tmp.$$"
-    if {
-        printf 'state=%s\n' "$state"
-        printf 'updated_at=%s\n' "$now"
-        printf 'last_success=%s\n' "$LAST_SUCCESS"
-        printf 'message=%s\n' "$message"
-    } > "$tmp" 2>/dev/null && mv "$tmp" "$STATUS_FILE" 2>/dev/null; then
-        return 0
-    fi
-
-    # Fall back to an in-place write when the parent directory is root-owned
+    local body
+    printf -v body 'state=%s\nupdated_at=%s\nlast_success=%s\nmessage=%s\n' \
+        "$state" "$now" "$LAST_SUCCESS" "$message"
+    # Atomic rename when the log volume is writable, in-place fallback otherwise
+    printf '%s' "$body" > "$tmp" 2>/dev/null && mv "$tmp" "$STATUS_FILE" 2>/dev/null && return 0
     rm -f "$tmp"
-    {
-        printf 'state=%s\n' "$state"
-        printf 'updated_at=%s\n' "$now"
-        printf 'last_success=%s\n' "$LAST_SUCCESS"
-        printf 'message=%s\n' "$message"
-    } > "$STATUS_FILE" 2>/dev/null || true
+    printf '%s' "$body" > "$STATUS_FILE" 2>/dev/null || true
 }
 
 # Optional dead-man's-switch ping (e.g. healthchecks.io). No-op when HEALTHCHECK_URL is unset.
@@ -68,9 +58,8 @@ heartbeat() {
         || log echo -e "${Y}Heartbeat ping failed${X}"
 }
 
-# Send email notification
-# The outer timeout keeps a stalled SMTP relay from blocking the whole backup run.
-mail() {
+# Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
+send_mail() {
     [ -z "${SMTP_TO:-}" ] && return
     # Strip ANSI colors and set UTF-8
     sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
@@ -80,8 +69,9 @@ mail() {
 
 # Run command and log status
 run() {
-    local label="$1" timeout_seconds="$2" out_file raw_file
+    local label="$1" timeout_seconds="$2" out_file raw_file rc
     shift 2
+    CURRENT_STEP="$label"
     out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" || {
         log echo -e "${R}Unable to create temporary output file${X}"
         exit 2
@@ -95,7 +85,7 @@ run() {
     # Hard-cap raw command output on disk at 8x the retained log size, so a
     # runaway command cannot fill the volume before the tail truncation runs.
     local raw_limit_kb=$(( (MAX_LOG_BYTES * 8 + 1023) / 1024 ))
-    local rc=0
+    rc=0
     (
         ulimit -f "$((raw_limit_kb * 2))"
         timeout -k 30 "$timeout_seconds" "$@"
@@ -113,91 +103,48 @@ run() {
         log cat "$out_file"
     fi
     rm -f "$out_file"
-    [ "$UPDATE_BACKUP_STATUS" = "1" ] && write_status failed "Task failed: $label"
-    mail "Task Failed: $label"
-    heartbeat fail
-    cleanup_logs
     exit 2
-}
-
-# Initialize SMTP configuration
-initCfg() {
-    [ -z "${SMTP_TO:-}" ] && return
-    [ -z "${SMTP_HOST:-}" ] && return
-
-    # umask 077: the file holds the SMTP password, so keep it root-only readable
-    ( umask 077; cat > /etc/msmtprc << EOF
-defaults
-auth on
-tls on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
-logfile /dev/stderr
-timeout ${SMTP_TIMEOUT:-15}
-account default
-host $SMTP_HOST
-port ${SMTP_PORT:-587}
-from $SMTP_FROM
-user $SMTP_USERNAME
-password $SMTP_PASSWORD
-EOF
-    )
-    chmod 600 /etc/msmtprc
 }
 
 # ── Business Logic ────────────────────────────────────────────────────────────
 
-# Drop logs older than 10 hours and cap any oversized file left by an earlier run
-cap_log_file() {
-    local file="$1" size tmp
-    [ -f "$file" ] || return 0
-    size=$(wc -c < "$file" 2>/dev/null || echo 0)
-    [ "$size" -gt "$MAX_LOG_BYTES" ] || return 0
-    tmp="${file}.tmp.$$"
-    if tail -c "$MAX_LOG_BYTES" "$file" > "$tmp"; then
-        mv "$tmp" "$file"
-    else
-        rm -f "$tmp"
-    fi
-}
-
 log_dir_size() {
-    local file size total=0
-    for file in "$LOG_DIR"/*.log; do
-        [ -e "$file" ] || continue
-        size=$(wc -c < "$file" 2>/dev/null || echo 0)
-        total=$((total + size))
-    done
-    echo "$total"
+    find "$LOG_DIR" -name '*.log' -type f -printf '%s\n' 2>/dev/null \
+        | awk '{total += $1} END {print total + 0}' || echo 0
 }
 
-trim_log_dir() {
-    local file total
-    total=$(log_dir_size)
-    [ "$total" -gt "$MAX_LOG_DIR_BYTES" ] || return 0
+# Drop logs older than 10 hours, cap oversized files, then trim the directory
+trim_logs() {
+    find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete
+    local file size tmp
+    for file in "$LOG_DIR"/*.log; do
+        [ -f "$file" ] || continue
+        size=$(wc -c < "$file" 2>/dev/null || echo 0)
+        if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
+            tmp="${file}.tmp.$$"
+            if tail -c "$MAX_LOG_BYTES" "$file" > "$tmp"; then
+                mv "$tmp" "$file"
+            else
+                rm -f "$tmp"
+            fi
+        fi
+    done
     while IFS= read -r file; do
         [ -e "$file" ] || continue
         [ "$file" = "$LOG" ] && continue
         rm -f "$file"
-        total=$(log_dir_size)
-        [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && break
-    done < <(ls -1tr "$LOG_DIR"/*.log 2>/dev/null)
-}
-
-cleanup_logs() {
-    find "$LOG_DIR" -name "*.log" -type f -mmin +600 ! -path "$LOG" -delete
-    for file in "$LOG_DIR"/*.log; do
-        [ -e "$file" ] || continue
-        cap_log_file "$file"
-    done
-    trim_log_dir
+        [ "$(log_dir_size)" -le "$MAX_LOG_DIR_BYTES" ] && break
+    done < <(find "$LOG_DIR" -name '*.log' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2-)
 }
 
 # Backup, check and prune
 backup() {
-    UPDATE_BACKUP_STATUS=1
+    trap 'rc=$?; if [ "${rc:-0}" -ne 0 ] && [ "${rc:-0}" -ne 3 ]; then
+        write_status failed "Task failed: ${CURRENT_STEP:-backup} (exit ${rc})"
+        send_mail "Task Failed: ${CURRENT_STEP:-backup}"
+        heartbeat fail
+    fi' EXIT
     write_status running "Backup started"
-
-    # Clock accuracy comes from the Fly.io host; Alpine provides no ntpdate binary
 
     # Skip instead of fighting over the repository when a manual run is already active
     exec 9>"$LOG_DIR/backup.lock"
@@ -213,7 +160,7 @@ backup() {
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
     # otherwise "restic init" answers with a misleading "already initialized" error.
     timeout -k 30 "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
-    case "$rc" in
+    case "${rc:-1}" in
         0)  ;;
         10) log echo -e "${Y}Repository not initialized, initializing...${X}"
             run "Repo init" "$QUICK_TIMEOUT" restic init ;;
@@ -236,7 +183,7 @@ backup() {
     run "Snapshot prune" "$LONG_TIMEOUT" restic forget \
         --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune
 
-    cleanup_logs
+    trim_logs
 
     LAST_SUCCESS="$(date -u +%s)"
     write_status ok "Backup complete"
@@ -257,7 +204,7 @@ restore_test() {
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
     target="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
     boot_log="$(mktemp "$tmp_parent/restic-boot.XXXXXX")"
-    trap 'rm -rf "$target"; rm -f "$boot_log"' EXIT
+    trap 'rm -rf "${target:-}" "${boot_log:-}"' EXIT
 
     needed_bytes="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>/dev/null \
         | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
@@ -288,7 +235,7 @@ restore_test() {
         DATA_FOLDER="$target/data" WEB_VAULT_ENABLED=false ROCKET_PORT=18081 \
             /vaultwarden > "$boot_log" 2>&1 &
         boot_pid=$!
-        trap 'kill "$boot_pid" 2>/dev/null || true' EXIT
+        trap 'kill "${boot_pid:-0}" 2>/dev/null || true' EXIT
         boot_ok=0
         for _ in $(seq 1 60); do
             if wget -qO- http://127.0.0.1:18081/alive >/dev/null 2>&1; then
@@ -319,19 +266,14 @@ verify() {
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-cleanup_logs
+trim_logs
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
-    if [ "${1:-}" = "backup" ]; then
-        UPDATE_BACKUP_STATUS=1
-        write_status failed "RESTIC_PASSWORD not set"
-    fi
+    [ "${1:-}" = "backup" ] && write_status failed "RESTIC_PASSWORD not set"
     echo "Error: RESTIC_PASSWORD not set"
     heartbeat fail
     exit 1
 fi
-
-initCfg
 
 case "${1:-}" in
     backup)    backup ;;
@@ -339,6 +281,5 @@ case "${1:-}" in
     restore-test) restore_test "${2:-}" ;;
     snapshots) timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
     verify)    verify ;;
-    test)      echo "Test email from $APP_NAME backup system." | timeout 45 mail -s "[$APP_NAME] Test Mail" "$SMTP_TO" && echo "Test mail sent to $SMTP_TO" ;;
-    *)         echo "Usage: $0 {backup|restore <id>|restore-test [id]|snapshots|verify|test}"; exit 1 ;;
+    *)         echo "Usage: $0 {backup|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
