@@ -384,6 +384,42 @@ else
     bad "ghcr.yml calls gh api without a timeout"
 fi
 
+# The cleanup guard used to swallow an unreadable schedule with `|| true`, so an
+# API failure was reported as "no scheduled run found", and the early exit also
+# skipped the dependency-schedule warning. Run the real step body with a stub gh.
+ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    step = doc["jobs"]["build"]["steps"].find { |s| s["id"] == "cleanup-check" }
+    print step["run"]
+  ' > "$work/cleanup-check.sh"
+guard_stub="$work/guard-stub"
+guard_out="$work/guard-out"
+mkdir -p "$guard_stub"
+run_guard() { # gh exit status
+    : > "$guard_out"
+    {
+        printf '#!/bin/sh\n'
+        printf 'exit %s\n' "$1"
+    } > "$guard_stub/gh"
+    chmod +x "$guard_stub/gh"
+    GITHUB_OUTPUT="$guard_out" GITHUB_REPOSITORY=example/repo \
+        PATH="$guard_stub:$PATH" bash "$work/cleanup-check.sh" > "$work/guard-run.log" 2>&1
+}
+run_guard 1
+if grep -q 'could not read the cleanup schedule' "$work/guard-run.log"; then
+    ok "an unreadable cleanup schedule is reported as such"
+else
+    bad "an unreadable cleanup schedule is misreported as an empty one"
+fi
+same "an unreadable cleanup schedule still requests the sweep" "needed=true" \
+    "$(grep '^needed=' "$guard_out" | tail -n 1)"
+run_guard 0
+if grep -q 'no scheduled dependency check has ever run' "$work/guard-run.log"; then
+    ok "the dependency-schedule warning still runs when the cleanup has no record"
+else
+    bad "the dependency-schedule warning is skipped by an early exit"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
 # The build workflow deploys the freshly built digest with `fly deploy --image`,
