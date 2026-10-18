@@ -95,9 +95,12 @@ fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 # Optional: email after every successful backup
 fly secrets set BACKUP_NOTIFY_ON_SUCCESS="true"
 
-# Optional Telegram notifications. The bot must be able to post to the chat or channel.
+# Optional Telegram notifications. The bot must be able to post to the target.
+# A channel or group accepts its @username; a private chat only accepts the
+# numeric chat id (send /start to the bot, then read it from
+# https://api.telegram.org/bot<token>/getUpdates).
 fly secrets set TELEGRAM_BOT_TOKEN="123456:replace-me"
-fly secrets set TELEGRAM_CHAT_ID="@your_channel"
+fly secrets set TELEGRAM_CHAT_ID="-1001234567890"   # or "@your_channel"
 
 # Optional tuning (defaults shown)
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
