@@ -63,6 +63,23 @@ injected="$(smtp_env SMTP_TO=ops@example.com)"
 same "SMTP_FROM stays unset when there is no SMTP_HOST" 0 \
     "$(printf '%s\n' "$injected" | grep -c '^SMTP_FROM=')"
 
+# SMTP credentials are arbitrary secrets: $, backticks, and backslashes must
+# reach msmtprc verbatim. A second round of shell expansion silently corrupts
+# the password and executes whatever sits between the backticks.
+# shellcheck disable=SC2016  # the metacharacters must stay literal for the test
+smtp_secret='pa$word`id -u`back\slash'
+smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com SMTP_USERNAME=user \
+SMTP_PASSWORD=***REMOVED***
+same "an SMTP password with shell metacharacters is written verbatim" \
+    "${smtp_secret}" "$(sed -n 's/^password //p' /etc/msmtprc)"
+
+# A newline in any SMTP value would inject extra msmtprc directives, so it has
+# to be refused before the file is written.
+smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
+SMTP_PASSWORD=***REMOVED***
+lines' >/dev/null 2>&1
+same "an SMTP value containing a newline is rejected" 1 "$?"
+
 # ── restic.sh ────────────────────────────────────────────────────────────────
 echo "--- restic.sh"
 export RESTIC_PASSWORD=selftest
