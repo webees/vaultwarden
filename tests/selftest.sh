@@ -111,5 +111,20 @@ GITHUB_OUTPUT="$work/deps-applied" "$apply_tree/scripts/deps.sh" compare \
 same "the rewritten pin round-trips through compare" "false" \
     "$(sed -n 's/^changed=//p' "$work/deps-applied")"
 
+# ── workflow config ───────────────────────────────────────────────────────────
+echo "--- workflow config"
+# fly.toml carries the machine config, and only a deploy applies it. If the
+# build workflow ignores fly.toml, a config-only commit deploys nothing at all.
+# Psych parses the bare `on:` key as boolean true, hence the fallback.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    push = (doc["on"] || doc[true])["push"] || {}
+    exit 1 if Array(push["paths-ignore"]).include?("fly.toml")
+  '; then
+    ok "ghcr.yml rebuilds and redeploys when fly.toml changes"
+else
+    bad "ghcr.yml ignores fly.toml, so a config-only commit would never deploy"
+fi
+
 echo
 report "helper self tests"
