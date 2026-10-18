@@ -88,6 +88,21 @@ mkdir -p "$RESTIC_REPOSITORY"
 chown vaultwarden:vaultwarden "$RESTIC_REPOSITORY"
 rm -rf /tmp/restic-restore.* /tmp/restic-boot.*
 
+# A zero limit used to clear every log file and time out every restic command
+# without saying why. Misconfiguration has to fail before it destroys anything.
+for pair in RESTIC_LOG_MAX_BYTES=0 RESTIC_LOG_DIR_MAX_BYTES=0 \
+    RESTIC_QUICK_TIMEOUT=0 RESTIC_LONG_TIMEOUT=0 BACKUP_MAX_AGE=0; do
+    name="${pair%%=*}"
+    value="${pair#*=}"
+    env "$name=$value" /restic.sh snapshots >/tmp/selftest-limit.log 2>&1
+    limit_rc=$?
+    if [ "$limit_rc" -eq 2 ] && grep -q "${name} must be" /tmp/selftest-limit.log; then
+        ok "${name}=${value} is rejected before any work"
+    else
+        bad "${name}=${value} was not rejected (rc=${limit_rc})"
+    fi
+done
+
 if /restic.sh backup >/tmp/selftest-backup.log 2>&1; then
     ok "backup succeeds against a fresh repository"
 else
