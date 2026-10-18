@@ -130,6 +130,15 @@ else
     bad "the dependency layer only installs new packages, so patched base packages never land"
 fi
 
+# The image ships BusyBox find, which rejects -printf. A GNU-only log size or
+# mtime query fails silently there and turns the log directory cap into a no-op.
+# selftest.sh itself is excluded: it carries the pattern being searched for.
+if grep -q -- '-printf' scripts/*.sh tests/image-selftest.sh tests/runtime-smoke.sh; then
+    bad "a script uses find -printf, which the image's BusyBox find does not support"
+else
+    ok "no script relies on the GNU-only find -printf"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
 # fly.toml carries the machine config, and only a deploy applies it. If the
@@ -185,6 +194,18 @@ if ruby -ryaml -e '
     ok "the published image is smoke tested, through one shared script"
 else
     bad "ghcr.yml does not smoke test the published image, or the smoke test is duplicated inline"
+fi
+
+# The daily dependency job reports pending package upgrades, but nothing failed
+# when the image that actually gets deployed still carried them.
+if ruby -ryaml -e '
+    runs = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+              .map { |s| s["run"] || "" }.join("\n")
+    exit 1 unless runs.include?("deps.sh apk")
+  '; then
+    ok "the build fails when the published image still has upgradable packages"
+else
+    bad "nothing gates the published image on pending package upgrades"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────

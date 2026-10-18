@@ -20,11 +20,13 @@ trap cleanup EXIT
 
 docker run --rm --entrypoint caddy "$image" validate --config /Caddyfile --adapter caddyfile
 
+# No command override: the image's own CMD is what production runs, so the smoke
+# test has to exercise that path (tini as PID 1) rather than a copy of it.
 docker run --detach --name "$container" \
     --env CADDY_DOMAINS=example.com \
     --env DOMAIN=https://example.com \
     --env I_REALLY_WANT_VOLATILE_STORAGE=true \
-    "$image" /entrypoint.sh overmind start >/dev/null
+    "$image" >/dev/null
 
 alive=1
 for _ in $(seq 1 30); do
