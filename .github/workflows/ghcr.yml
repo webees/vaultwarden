@@ -172,7 +172,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          last="$(gh api \
+          last="$(timeout 30 gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr-cleanup.yml/runs?event=schedule&per_page=1" \
             --jq '.workflow_runs[0].created_at // empty' 2>/dev/null || true)"
           if [ -z "$last" ]; then
@@ -189,7 +189,7 @@ jobs:
           fi
           # Same failure mode, different victim: report the daily dependency
           # check if its schedule stops firing, without blocking the deploy.
-          deps_last="$(gh api \
+          deps_last="$(timeout 30 gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/security-updates.yml/runs?event=schedule&per_page=1" \
             --jq '.workflow_runs[0].created_at // empty' 2>/dev/null || true)"
           if [ -z "$deps_last" ]; then
@@ -235,7 +235,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          main_sha="$(timeout 30 gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           if [ "$main_sha" != "${GITHUB_SHA}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Build ${GITHUB_SHA} is no longer the tip of main (${main_sha}); skipping deploy." >&2
