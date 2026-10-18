@@ -860,7 +860,7 @@ fi
 missing_env=""
 for name in BACKUP_MAX_AGE RESTIC_LOG_DIR RESTIC_LOG_MAX_BYTES RESTIC_LOG_DIR_MAX_BYTES \
     RESTIC_QUICK_TIMEOUT RESTIC_LONG_TIMEOUT SUPERVISE_RESTART_DELAY VERIFY_SUBSET \
-    BACKUP_NOTIFY_ON_SUCCESS; do
+    BACKUP_NOTIFY_ON_SUCCESS TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
     grep -q "^${name}=" .env.example || missing_env="${missing_env} ${name}"
 done
 if [ -z "$missing_env" ]; then
