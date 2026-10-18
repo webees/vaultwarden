@@ -242,6 +242,60 @@ same "a delivered alert is recorded in the log" 1 \
     "$(grep -c 'Alert email sent' /tmp/selftest-mailok.log)"
 rm -rf "$mail_stub"
 
+# The dead-man's-switch ping is the only channel that survives a scheduler which
+# stopped firing entirely, so the URL it hits has to match what the run actually
+# did: a failure that pings the success URL silently disarms the whole alarm.
+# A stub curl records the arguments instead of talking to the network.
+hb_dir=/tmp/selftest-heartbeat
+hb_calls="$hb_dir/calls"
+rm -rf "$hb_dir"
+mkdir -p "$hb_dir"
+chmod 777 "$hb_dir"
+: > "$hb_calls"
+chmod 666 "$hb_calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$hb_calls" > "$hb_dir/curl"
+chmod 755 "$hb_dir/curl"
+hb_count() { wc -l < "$hb_calls" | tr -d ' '; }
+
+# No URL configured: the helper must not reach the network at all.
+seed_status 1
+PATH="$hb_dir:$PATH" BACKUP_MAX_AGE=60 /restic.sh check-freshness \
+    >/tmp/selftest-hb-unset.log 2>&1
+hb_unset_rc=$?
+same "an unset HEALTHCHECK_URL sends no ping" 0 "$(hb_count)"
+same "an unset HEALTHCHECK_URL keeps the run's own exit status" 2 "$hb_unset_rc"
+
+# A run that fails has to ping the failure URL, not the success one.
+seed_status 1
+PATH="$hb_dir:$PATH" HEALTHCHECK_URL=http://hb.invalid/ping BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-hb-fail.log 2>&1
+same "a failed run pings the failure URL once" 1 \
+    "$(grep -c ' http://hb.invalid/ping/fail$' "$hb_calls")"
+
+# A run that succeeds has to ping the base URL, without the failure suffix.
+: > "$hb_calls"
+PATH="$hb_dir:$PATH" HEALTHCHECK_URL=http://hb.invalid/ping /restic.sh backup \
+    >/tmp/selftest-hb-ok.log 2>&1
+same "a successful run pings the base URL once" 1 \
+    "$(grep -c ' http://hb.invalid/ping$' "$hb_calls")"
+same "a successful run does not ping the failure URL" 0 \
+    "$(grep -c '/fail$' "$hb_calls")"
+same "the ping carries a bounded timeout and retries" 1 \
+    "$(grep -c -- '-m 10 --retry 3' "$hb_calls")"
+
+# The ping is best effort: an unreachable switch must be recorded without
+# replacing the run's own exit status.
+printf '#!/bin/sh\nexit 7\n' > "$hb_dir/curl"
+chmod 755 "$hb_dir/curl"
+seed_status 1
+PATH="$hb_dir:$PATH" HEALTHCHECK_URL=http://hb.invalid/ping BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-hb-down.log 2>&1
+hb_down_rc=$?
+same "an undeliverable ping is recorded in the run log" 1 \
+    "$(grep -c 'Heartbeat ping failed' /tmp/selftest-hb-down.log)"
+same "an undeliverable ping keeps the run's own exit status" 2 "$hb_down_rc"
+rm -rf "$hb_dir"
+
 # A run that cannot write its own audit trail must say so.
 chmod 500 /data/restic-logs
 chmod 400 /data/backup-status.txt
