@@ -318,7 +318,7 @@ restore() {
 
 # Restore a snapshot into a temporary directory and validate the important files
 restore_test() {
-    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes table
+    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes table stats_json
     tmp_parent="${TMPDIR:-/tmp}"
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
     RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
@@ -327,9 +327,23 @@ restore_test() {
     trap cleanup_restore_tmp EXIT
 
     clear_stale_locks
-    needed_bytes="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>/dev/null \
+    # Sizing has three distinct outcomes: a real number, a successful response
+    # without total_size, and a failed read. Treating either failure mode as
+    # zero bytes made the drill proceed without knowing whether it had space.
+    if ! stats_json="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>&1)"; then
+        log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
+        [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
+        exit 2
+    fi
+    needed_bytes="$(printf '%s\n' "$stats_json" \
         | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
-    needed_bytes="${needed_bytes:-0}"
+    case "$needed_bytes" in
+        ''|*[!0-9]*)
+            log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
+            [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
+            exit 2
+            ;;
+    esac
     free_bytes="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4 * 1024}')"
     free_bytes="${free_bytes:-0}"
     needed_bytes=$((needed_bytes + needed_bytes / 5 + 67108864))

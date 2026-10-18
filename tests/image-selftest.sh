@@ -456,6 +456,39 @@ fi
 same "restore drill leaves nothing in /tmp after a failure" "" \
     "$(leftovers)"
 
+# Snapshot sizing has three outcomes: a real size, a successful response with
+# no size field, and a failed read. Treating the last two as "zero bytes" made
+# the drill decide it had enough space without knowing the snapshot size.
+real_restic="$(command -v restic)"
+stats_stub_dir="$(mktemp -d)"
+chmod 755 "$stats_stub_dir"
+# shellcheck disable=SC2016  # generated stub, not shell expansion
+{
+    printf '#!/bin/sh\n'
+    printf 'case "$1" in\n'
+    printf '  stats)\n'
+    printf '    case "${STATS_MODE:-fail}" in\n'
+    printf '      empty) printf "%%s\\n" "{\\\"foo\\\":1}"; exit 0 ;;\n'
+    printf '      *) echo "stats backend unavailable" >&2; exit 1 ;;\n'
+    printf '    esac ;;\n'
+    printf '  *) exec "%s" "$@" ;;\n' "$real_restic"
+    printf 'esac\n'
+} > "$stats_stub_dir/restic"
+chmod 755 "$stats_stub_dir/restic"
+
+PATH="$stats_stub_dir:$PATH" STATS_MODE=fail /restic.sh restore-test \
+    >/tmp/selftest-stats-fail.log 2>&1
+same "restore drill refuses to continue when snapshot sizing fails" 2 "$?"
+same "restore drill reports the snapshot sizing failure" 1 \
+    "$(grep -c 'Unable to size snapshot' /tmp/selftest-stats-fail.log)"
+
+PATH="$stats_stub_dir:$PATH" STATS_MODE=empty /restic.sh restore-test \
+    >/tmp/selftest-stats-empty.log 2>&1
+same "restore drill refuses a response without total_size" 2 "$?"
+same "restore drill reports the missing snapshot size" 1 \
+    "$(grep -c 'Unable to size snapshot' /tmp/selftest-stats-empty.log)"
+rm -rf "$stats_stub_dir"
+
 # restore overwrites /data on purpose, so it runs last and the container is
 # thrown away afterwards. It is also the only command that can destroy a live
 # instance, so the destructive path sits behind an explicit confirmation.
