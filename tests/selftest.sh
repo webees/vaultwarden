@@ -126,5 +126,32 @@ else
     bad "ghcr.yml ignores fly.toml, so a config-only commit would never deploy"
 fi
 
+# ── docs consistency ──────────────────────────────────────────────────────────
+echo "--- docs"
+# The deploy workflow passes the freshly built digest with `fly deploy --image`,
+# and fly.toml deliberately keeps no image pin. A README that still tells the
+# reader to edit a fly.toml image pin sends them to a value that does not exist.
+if grep -q 'replace the value in fly.toml' README.md; then
+    bad "README still points readers at a fly.toml image pin that was removed"
+else
+    ok "README no longer references a removed fly.toml image pin"
+fi
+
+if grep -q -- '--image' README.md; then
+    ok "README documents that the deploy workflow passes --image"
+else
+    bad "README does not explain how the built digest reaches Fly"
+fi
+
+# The health check and the restart policy are separate mechanisms: Fly pulls a
+# machine out of service when /alive fails, and the machine-level restart policy
+# restarts a container that exits. Describing one as the other misleads during
+# an incident, so keep the troubleshooting row on the real mechanism.
+if grep -qi 'no longer marked restartable' README.md; then
+    bad "README explains a container exit with a health-check mechanism"
+else
+    ok "README keeps the restart policy distinct from the health check"
+fi
+
 echo
 report "helper self tests"
