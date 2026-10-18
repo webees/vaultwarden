@@ -177,6 +177,22 @@ scheduler is still alive. A scheduler that has stopped firing entirely is only v
 > To rotate it, add the new password as an extra key first (`restic key add`), then update the secret.
 > Replacing the secret without adding a key first locks you out of every existing snapshot.
 
+### Recovering in place
+
+A snapshot never contains the live `db.*` files: the consistent database travels as `/data/backup.bak`.
+`restore` puts the keys, the attachments and that hot copy back, but swapping the database under a
+running process is not safe, so the swap is armed with a marker and applied by the entrypoint before
+Vaultwarden opens the database:
+
+```bash
+fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # keys, attachments, backup.bak
+fly ssh console -C "touch /data/restore-pending"                  # arm the database swap
+fly apps restart                                                  # entrypoint swaps, then starts
+```
+
+`/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
+Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong.
+
 ## 🧯 Troubleshooting
 
 | Symptom | Cause / fix |
