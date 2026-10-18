@@ -42,7 +42,11 @@ jobs:
       - name: 🧪 Helper self tests
         run: tests/selftest.sh
 
+      # A push to main already builds the multi-arch image in the Docker workflow
+      # and deploys that exact digest. Rebuilding here would double the build
+      # work for every merge, so the image steps stay on the pre-merge events.
       - name: 🐳 Build and validate the image
+        if: github.event_name != 'push'
         run: |
           docker build --tag validate:local .
           docker run --rm --entrypoint caddy validate:local \
@@ -51,6 +55,7 @@ jobs:
       # Caddy runs unprivileged and reads files baked into the image, so a
       # root-only file or a broken process graph only shows up at runtime.
       - name: 🚑 Runtime smoke test
+        if: github.event_name != 'push'
         run: |
           docker run --detach --name smoke \
             --env CADDY_DOMAINS=example.com \
@@ -80,6 +85,7 @@ jobs:
       # entrypoint.sh has two branches: write /etc/msmtprc from SMTP_*, or leave
       # it empty so alerts are skipped. Both are exercised here.
       - name: 📧 SMTP config branches
+        if: github.event_name != 'push'
         run: |
           docker run --rm validate:local /entrypoint.sh sh -c '
             test ! -s /etc/msmtprc
