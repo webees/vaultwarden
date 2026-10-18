@@ -61,6 +61,21 @@ heartbeat() {
 # Log an error and abort; used when the scratch files below cannot be created.
 die() { log echo -e "${R}$1${X}"; exit 2; }
 
+# Reject misconfigured limits instead of clearing every log file or timing out
+# every restic command without saying why.
+require_positive_int() {
+    case "${2:-}" in
+        ''|*[!0-9]*)
+            echo "Error: $1 must be a positive integer, got '${2:-}'" >&2
+            exit 2
+            ;;
+    esac
+    [ "${2:-0}" -gt 0 ] || {
+        echo "Error: $1 must be a positive integer, got '${2:-}'" >&2
+        exit 2
+    }
+}
+
 # Run a command without the backup lock. A child that outlives the run would
 # keep the lock forever, and every later backup would exit 3 as a "concurrent
 # run" - an exit that is deliberately not alerted.
@@ -406,6 +421,12 @@ check_freshness() {
 }
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
+
+require_positive_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES"
+require_positive_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES"
+require_positive_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT"
+require_positive_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT"
+require_positive_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}"
 
 trim_logs
 check_audit_trail
