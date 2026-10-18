@@ -128,6 +128,23 @@ jobs:
           } > build-output.txt
           echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
 
+      # The daily dependency job only reports pending package upgrades. An image
+      # that is published (and then deployed) with an upgrade already available
+      # means the dependency layer is behind, so fail instead of shipping it;
+      # re-running the workflow rebuilds with the patched package.
+      - name: 🔍 Assert no pending package upgrades
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          out="$(scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}@${DIGEST}")"
+          printf '%s\n' "$out"
+          count="$(printf '%s\n' "$out" | sed -n 's/^upgradable packages: //p' | tail -n 1)"
+          if [ "${count:-1}" -ne 0 ]; then
+            echo "::error::${count:-unknown} package upgrade(s) are already available; re-run this workflow to rebuild with them"
+            exit 1
+          fi
+
       # The digest above is what the deploy workflow rolls out, so boot it and
       # run the in-container checks now: a failure here fails the build job, and
       # the deploy job only runs after this job succeeds.
