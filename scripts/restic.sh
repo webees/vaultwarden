@@ -308,11 +308,17 @@ restore() {
     fi
     clear_stale_locks
     run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore "$1" --target /
+    # The snapshot carries the database as the consistent hot copy, not as the
+    # live db.* files, so the command above leaves the old database in place.
+    # Say so, or the operator walks away from a half-restored instance whose
+    # keys were rolled back while its data was not.
+    log echo -e "${Y}The live db.* files are not in the snapshot; the consistent copy is /data/backup.bak.${X}"
+    log echo "To finish: 'touch /data/restore-pending', then restart the machine; the entrypoint swaps backup.bak in before Vaultwarden starts."
 }
 
 # Restore a snapshot into a temporary directory and validate the important files
 restore_test() {
-    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes
+    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes table
     tmp_parent="${TMPDIR:-/tmp}"
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
     RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
@@ -344,6 +350,24 @@ restore_test() {
         exit 2
     fi
 
+    # The snapshot leaves the live db.* files out on purpose and carries the
+    # consistent hot copy instead, so the drill has to put that copy where
+    # Vaultwarden looks. Booting a data directory with no database proved
+    # nothing: Vaultwarden creates a fresh one and answers /alive anyway.
+    cp "$target/data/backup.bak" "$target/data/db.sqlite3"
+    for table in __diesel_schema_migrations users; do
+        if ! sqlite3 "$target/data/db.sqlite3" \
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='${table}'" \
+            | grep -q 1; then
+            log echo -e "${R}The restored database is missing the ${table} table${X}"
+            exit 2
+        fi
+    done
+    # A marker in the restored file, so the boot below has to prove it opened
+    # this database instead of quietly creating another one.
+    sqlite3 "$target/data/db.sqlite3" \
+        "CREATE TABLE IF NOT EXISTS drill_sentinel(v TEXT); DELETE FROM drill_sentinel; INSERT INTO drill_sentinel VALUES('restore-drill');"
+
     log echo -e "${B}Restore cold boot${X} "
     if (
         cd "$target"
@@ -364,6 +388,12 @@ restore_test() {
         [ "$boot_ok" = "1" ]
     ); then
         log echo -e "${G}✓${X}"
+        if [ "$(sqlite3 "$target/data/db.sqlite3" 'SELECT v FROM drill_sentinel' 2>/dev/null)" = "restore-drill" ]; then
+            log echo -e "${G}The cold boot kept the restored database${X}"
+        else
+            log echo -e "${R}The cold boot did not keep the restored database${X}"
+            exit 2
+        fi
     else
         log echo -e "${R}✗${X}"
         log cat "$boot_log"

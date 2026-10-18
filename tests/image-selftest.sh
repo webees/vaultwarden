@@ -422,6 +422,12 @@ fi
 
 /restic.sh restore-test >/tmp/selftest-drill.log 2>&1
 same "restore drill succeeds" 0 "$?"
+# The snapshot carries the consistent hot copy instead of the live db.* files,
+# so the drill only proves anything if it puts that copy where Vaultwarden looks
+# and shows the booted instance kept it. Without the report below, the drill
+# passed while booting an empty data directory.
+same "the drill boots the restored database" 1 \
+    "$(grep -c 'kept the restored database' /tmp/selftest-drill.log)"
 same "restore drill leaves nothing in /tmp" "" "$(leftovers)"
 
 RESTIC_REPOSITORY=/tmp/selftest-missing /restic.sh restore-test \
