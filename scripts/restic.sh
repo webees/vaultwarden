@@ -3,6 +3,7 @@
 # ║ Restic Backup Script                                                      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 # Usage: /restic.sh {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}
+#        `restore <id>` overwrites the live /data and needs RESTORE_CONFIRM=yes.
 
 set -uo pipefail
 
@@ -296,6 +297,15 @@ backup() {
 # Restore data from snapshot
 restore() {
     [ -z "${1:-}" ] && { echo "Usage: $0 restore <snapshot-id>"; exit 1; }
+    # `restic restore --target /` writes straight over the live /data while
+    # Vaultwarden holds db.sqlite3 open, so a single keystroke between `restore`
+    # and `restore-test` can destroy the running instance. Keep the destructive
+    # path behind an explicit confirmation instead of one typo away.
+    if [ "${RESTORE_CONFIRM:-}" != "yes" ]; then
+        echo "Refusing to overwrite /data without RESTORE_CONFIRM=yes" >&2
+        echo "Run 'restore-test' to verify a snapshot first, or confirm the in-place restore on purpose." >&2
+        exit 2
+    fi
     clear_stale_locks
     run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore "$1" --target /
 }
