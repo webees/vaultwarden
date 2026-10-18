@@ -4,12 +4,8 @@
 # config permissions, and the restic failure paths.
 set -u
 
-failures=0
-ok()  { printf 'ok   %s\n' "$1"; }
-bad() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
-same() { # label, expected, actual
-    if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected [$2], got [$3])"; fi
-}
+# shellcheck source=tests/lib.sh
+. "$(dirname "$0")/lib.sh"
 
 # List any restore-drill scratch file that survived a run.
 leftovers() {
@@ -78,6 +74,39 @@ else
 fi
 exec 9>&-
 
+# freshness guard: a recent success is quiet, a stale one alerts
+seed_status() { # last_success epoch
+    printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=selftest\n' "$1" "$1" \
+        > /data/backup-status.txt
+    chown vaultwarden:vaultwarden /data/backup-status.txt
+}
+seed_status "$(date -u +%s)"
+/restic.sh check-freshness >/tmp/selftest-fresh.log 2>&1
+same "freshness guard accepts a recent backup" 0 "$?"
+seed_status 1
+BACKUP_MAX_AGE=60 /restic.sh check-freshness >/tmp/selftest-stale.log 2>&1
+stale_rc=$?
+if [ "$stale_rc" -ne 0 ]; then
+    ok "freshness guard fails on a stale backup"
+else
+    bad "freshness guard accepted a stale backup"
+fi
+same "freshness guard explains the alert" 1 \
+    "$(grep -c 'Last successful backup was' /tmp/selftest-stale.log)"
+same "freshness guard records the stale state" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
+# the monthly integrity check reads a slice back out of the repository
+VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-verify.log 2>&1
+same "verify reads a data slice back" 0 "$?"
+
+# the guard is only useful if the scheduler actually calls it
+if grep -q 'check-freshness' /crontab; then
+    ok "the freshness guard is scheduled in /crontab"
+else
+    bad "the freshness guard is not scheduled in /crontab"
+fi
+
 /restic.sh restore-test >/tmp/selftest-drill.log 2>&1
 same "restore drill succeeds" 0 "$?"
 same "restore drill leaves nothing in /tmp" "" "$(leftovers)"
@@ -93,10 +122,15 @@ fi
 same "restore drill leaves nothing in /tmp after a failure" "" \
     "$(leftovers)"
 
-echo
-if [ "$failures" -eq 0 ]; then
-    echo "image self tests passed"
+# restore overwrites /data on purpose, so it runs last and the container is
+# thrown away afterwards.
+/restic.sh restore latest >/tmp/selftest-restore.log 2>&1
+same "restore writes the snapshot back" 0 "$?"
+if [ -f /data/rsa_key.pem ]; then
+    ok "restore wrote /data/rsa_key.pem back"
 else
-    printf '%s image self test(s) failed\n' "$failures" >&2
-    exit 1
+    bad "restore did not write /data/rsa_key.pem back"
 fi
+
+echo
+report "image self tests"

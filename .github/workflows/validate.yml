@@ -71,6 +71,7 @@ jobs:
             exit 1
           fi
           echo "/alive responded through Caddy"
+          docker cp tests/lib.sh smoke:/tmp/lib.sh
           docker cp tests/image-selftest.sh smoke:/tmp/image-selftest.sh
           docker exec smoke sh /tmp/image-selftest.sh
           docker rm --force smoke >/dev/null
