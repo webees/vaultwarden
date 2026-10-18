@@ -34,10 +34,9 @@ COPY config/crontab \
     config/Procfile \
     config/Caddyfile \
     config/cloudflare-ips.caddy \
-    scripts/caddy-loop.sh \
     scripts/entrypoint.sh \
-    scripts/cronloop.sh \
     scripts/restic.sh \
+    scripts/supervise.sh \
     /
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ RUN set -eu; \
     curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${OVERMIND_VERSION}/overmind-${OVERMIND_VERSION}-linux-${TARGETARCH}.gz" \
         | gunzip -c - > /usr/local/bin/overmind; \
     echo "${OVERMIND_SHA256}  /usr/local/bin/overmind" | sha256sum -c -; \
-    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /caddy-loop.sh /entrypoint.sh /cronloop.sh /restic.sh; \
+    chmod +x /usr/local/bin/supercronic /usr/local/bin/overmind /entrypoint.sh /restic.sh /supervise.sh; \
     # Symlink msmtp for mail commands
     ln -sf /usr/bin/msmtp /usr/bin/sendmail; \
     ln -sf /usr/bin/msmtp /usr/sbin/sendmail; \
