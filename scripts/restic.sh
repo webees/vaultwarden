@@ -74,10 +74,12 @@ clear_stale_locks() {
     no_lock timeout -k 30 "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
 }
 
-# True while another run holds the backup lock. Uses its own file descriptor so
-# it can be called from anywhere without disturbing the caller's lock.
+# Whether another run holds the backup lock, as three states:
+#   0 a run holds it, 1 nobody holds it, 2 it cannot be inspected.
+# A read-only open avoids creating the lock file, and "cannot inspect" must not
+# be collapsed into "not running": that turns a live backup into a false alert.
 backup_is_running() {
-    exec 8>"$LOG_DIR/backup.lock" 2>/dev/null || return 1
+    exec 8<"$LOG_DIR/backup.lock" 2>/dev/null || return 2
     if flock -n 8; then
         exec 8>&-
         return 1
@@ -362,18 +364,24 @@ verify() {
 # silently stops running while the scheduler is still alive. A scheduler that has
 # stopped entirely still needs HEALTHCHECK_URL, which is an external service.
 check_freshness() {
-    local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s
+    local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s lock_state
     now="$(date -u +%s)"
 
     # A run that was killed mid-flight leaves the status at "running" forever.
-    # Only report that when nothing holds the lock, so a live backup is left be.
-    if [ "$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)" = "running" ] \
-        && ! backup_is_running; then
-        log echo -e "${R}The last backup started but never finished${X}"
-        write_status failed "Backup did not finish"
-        send_mail "Backup did not finish"
-        heartbeat fail
-        exit 2
+    # Only report that when the lock is readable and free: an uninspectable lock
+    # is unknown, and guessing "finished" would raise a false alert.
+    if [ "$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)" = "running" ]; then
+        backup_is_running
+        lock_state=$?
+        case "$lock_state" in
+            0) ;;
+            1) log echo -e "${R}The last backup started but never finished${X}"
+               write_status failed "Backup did not finish"
+               send_mail "Backup did not finish"
+               heartbeat fail
+               exit 2 ;;
+            2) log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}" ;;
+        esac
     fi
 
     if [ "$LAST_SUCCESS" = "0" ]; then
