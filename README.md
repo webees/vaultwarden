@@ -117,8 +117,8 @@ runs daily, resolves each one from Docker Hub and the GitHub Releases API, opens
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
 dispatches the image build directly instead of opening an empty PR.
-The build workflow then publishes a timestamped image and the deploy workflow rolls that digest out to Fly
-by passing `--image` explicitly. `fly.toml` deliberately carries no image pin: a second copy of "what is
+The same workflow then publishes a timestamped image and rolls that digest out to Fly by passing `--image`
+explicitly. `fly.toml` deliberately carries no image pin: a second copy of "what is
 running" is exactly what went stale before. Running `fly deploy` by hand builds this repository's pinned
 `Dockerfile` instead.
 
@@ -133,7 +133,7 @@ scheduled workflows silently, so the build expires them as well whenever that sc
 week; the run log says which path did the work.
 
 ```bash
-# Inspect the newest published image. The deploy workflow already rolled this
+# Inspect the newest published image. The build workflow already rolled this
 # digest out with `fly deploy --image`; fly.toml itself keeps no image pin.
 docker buildx imagetools inspect ghcr.io/webees/vaultwarden:latest
 
