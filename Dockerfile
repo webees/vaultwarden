@@ -8,13 +8,13 @@ FROM vaultwarden/server:${VAULTWARDEN_VERSION}-alpine@${VAULTWARDEN_DIGEST}
 
 # ── Build Args ────────────────────────────────────────────────────────────────
 ARG TARGETARCH
-ARG SUPERCRONIC_VERSION=v0.2.50
+ARG SUPERCRONIC_VERSION=v0.2.49
 ARG OVERMIND_VERSION=v2.5.1
 
 # Artifact digests, so a replaced or truncated download fails the build.
 # supercronic is hashed as downloaded; overmind is hashed after gunzip.
-ARG SUPERCRONIC_SHA256_amd64=d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0
-ARG SUPERCRONIC_SHA256_arm64=a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e28156899e2
+ARG SUPERCRONIC_SHA256_amd64=a53ae236602c7338aba3fbaff40bda6300eae3b9fedb8261eb06cfe3724430c1
+ARG SUPERCRONIC_SHA256_arm64=02aa0cb229ba09050cba6638059dadb9eedc2276632ea43d6a57a2f8c1629dd5
 ARG OVERMIND_SHA256_amd64=73fdf28313821ac4f76a18da29fb907707edc4a6b90e11c6c71984a2bd98c8ad
 ARG OVERMIND_SHA256_arm64=6fbb37a51366516b0fd9ee33ae452caf791809354746bd0ef2a95292d5f2965a
 
