@@ -9,5 +9,7 @@
 # This is the only channel that fires when the backup itself stops working.
 45 * * * * /restic.sh check-freshness
 
-# Monthly integrity check that reads back a slice of the stored data
-0 3 1 * * /restic.sh verify
+# Monthly integrity check that reads back a slice of the stored data. Kept off
+# the top of the hour so it never races the @hourly backup for the repository
+# lock (verify now also waits for the lock, this is the cheaper half).
+30 3 1 * * /restic.sh verify

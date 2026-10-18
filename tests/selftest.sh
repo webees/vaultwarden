@@ -236,6 +236,16 @@ else
     bad "the cleanup job runs on a floating ubuntu-latest runner"
 fi
 
+# The monthly verify must not share a minute with the hourly backup: restic
+# refuses the exclusive lock by default, so the check failed instantly with
+# "repo already locked" instead of verifying anything.
+verify_minute="$(awk '/\/restic\.sh verify$/ {print $1}' config/crontab | head -n 1)"
+if [ -n "$verify_minute" ] && [ "$verify_minute" != "0" ]; then
+    ok "the monthly verify avoids the top of the hour (minute ${verify_minute})"
+else
+    bad "the monthly verify fires at minute 0, the same minute as @hourly backup"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
 # The deploy workflow passes the freshly built digest with `fly deploy --image`,

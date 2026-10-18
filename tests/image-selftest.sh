@@ -297,5 +297,36 @@ else
     bad "restore did not write /data/rsa_key.pem back"
 fi
 
+# The monthly verify used to share a minute with the hourly backup, and restic
+# refuses an exclusive lock by default, so the check failed instantly with
+# "repo already locked" instead of verifying anything. This runs last because
+# the gate backup adds a snapshot, and `latest` must stay the data snapshot for
+# the drill above.
+rm -f /tmp/selftest-gate
+mkfifo /tmp/selftest-gate
+chmod 666 /tmp/selftest-gate
+( exec 3>/tmp/selftest-gate; sleep 5 ) &
+gate_producer=$!
+su-exec vaultwarden:vaultwarden restic backup --stdin --stdin-filename verify-gate \
+    < /tmp/selftest-gate >/tmp/selftest-gate.log 2>&1 &
+gate_backup=$!
+for _ in $(seq 1 100); do
+    [ -n "$(find /tmp/selftest-repo/locks -type f 2>/dev/null)" ] && break
+    sleep 0.1
+done
+gate_start="$(date -u +%s)"
+VERIFY_RETRY_LOCK=60s VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-retry.log 2>&1
+gate_rc=$?
+gate_elapsed=$(( $(date -u +%s) - gate_start ))
+same "verify waits for a running backup instead of failing" 0 "$gate_rc"
+if [ "$gate_elapsed" -ge 3 ]; then
+    ok "verify waited ${gate_elapsed}s for the backup lock"
+else
+    bad "verify returned in ${gate_elapsed}s without waiting for the lock"
+fi
+wait "$gate_backup" 2>/dev/null || true
+wait "$gate_producer" 2>/dev/null || true
+rm -f /tmp/selftest-gate
+
 echo
 report "image self tests"
