@@ -551,5 +551,18 @@ else
     bad "README does not explain the database swap after restore"
 fi
 
+# The README documents these knobs and the template is what a local run copies,
+# so a missing entry means the operator silently gets a default instead.
+missing_env=""
+for name in BACKUP_MAX_AGE RESTIC_LOG_DIR RESTIC_LOG_MAX_BYTES RESTIC_LOG_DIR_MAX_BYTES \
+    RESTIC_QUICK_TIMEOUT RESTIC_LONG_TIMEOUT SUPERVISE_RESTART_DELAY VERIFY_SUBSET; do
+    grep -q "^${name}=" .env.example || missing_env="${missing_env} ${name}"
+done
+if [ -z "$missing_env" ]; then
+    ok "every documented tuning variable appears in .env.example"
+else
+    bad "missing from .env.example:${missing_env}"
+fi
+
 echo
 report "helper self tests"

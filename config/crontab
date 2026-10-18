@@ -12,4 +12,6 @@
 # Monthly integrity check that reads back a slice of the stored data. Kept off
 # the top of the hour so it never races the @hourly backup for the repository
 # lock (verify now also waits for the lock, this is the cheaper half).
+# Repository damage is the one thing only this job can find, so a failure emails
+# the operator and records the failed state in backup-status.txt.
 30 3 1 * * /restic.sh verify
