@@ -10,10 +10,21 @@ readonly DOCKERFILE=Dockerfile
 readonly REGISTRY=https://registry-1.docker.io/v2/vaultwarden/server
 readonly GH_API=https://api.github.com/repos
 readonly HTTP_TIMEOUT="${DEPS_HTTP_TIMEOUT:-30}"
+readonly GH_TIMEOUT="${DEPS_GH_TIMEOUT:-30}"
 
 # Bounded fetch: a stalled request must not hold a CI job open for its full
 # six-hour limit.
 fetch() { curl -fsSL --max-time "$HTTP_TIMEOUT" --retry 2 --retry-delay 2 "$@"; }
+
+# gh has no timeout flag of its own. `timeout` exists on the CI runners; macOS
+# without GNU coreutils falls back to the plain call.
+gh_api() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$GH_TIMEOUT" gh api "$@"
+    else
+        gh api "$@"
+    fi
+}
 
 emit() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
 
@@ -25,6 +36,11 @@ base() {
     local page json tag found
     for page in $(seq 1 20); do
         json="$(fetch "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
+        # A rate-limited or malformed page has no results: stop instead of
+        # spending the remaining pages on retries.
+        if [ "$(jq -r '(.results // []) | length' <<< "$json")" -eq 0 ]; then
+            break
+        fi
         found="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
         if [ -n "$found" ] && [ "$found" != "null" ]; then
             tag="$found"
@@ -47,7 +63,7 @@ base() {
 
 tools() {
     local sc_tag sc_release sc_url
-    sc_release="$(gh api "${GH_API}/aptible/supercronic/releases?per_page=20" \
+    sc_release="$(gh_api "${GH_API}/aptible/supercronic/releases?per_page=20" \
         --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
     sc_tag="$(jq -r .tag_name <<< "$sc_release")"
     for arch in amd64 arm64; do
@@ -57,7 +73,7 @@ tools() {
     emit supercronic_version "$sc_tag"
 
     local om_tag
-    om_tag="$(gh api "${GH_API}/DarthSim/overmind/releases?per_page=20" \
+    om_tag="$(gh_api "${GH_API}/DarthSim/overmind/releases?per_page=20" \
         --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first | .tag_name')"
     for arch in amd64 arm64; do
         emit "overmind_sha_${arch}" "$(fetch \
