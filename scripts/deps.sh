@@ -113,6 +113,33 @@ cleanup_apply_tmp() {
 # Rewrite the pins in place from VAR=VALUE pairs.
 apply() {
     local pair name value
+    # `sed` rewrites nothing when the name is wrong, so an unvalidated pair made
+    # this a silent no-op while the caller reported success, and a malformed or
+    # empty value wrote a broken pin straight into the build. Validate the whole
+    # request before the first rewrite: a rejected call must leave the file
+    # byte-identical instead of half-applied.
+    for pair in "$@"; do
+        case "$pair" in
+            *=*) ;;
+            *) echo "apply: expected NAME=VALUE, got '${pair}'" >&2; exit 2 ;;
+        esac
+        name="${pair%%=*}"
+        value="${pair#*=}"
+        case "$name" in
+            ''|*[!A-Za-z0-9_]*)
+                echo "apply: '${name}' is not a valid pin name" >&2
+                exit 2
+                ;;
+        esac
+        [ -n "$value" ] || {
+            echo "apply: ${name} has an empty value" >&2
+            exit 2
+        }
+        grep -q "^ARG ${name}=" "$DOCKERFILE" || {
+            echo "apply: ${name} is not declared in ${DOCKERFILE}" >&2
+            exit 2
+        }
+    done
     APPLY_TMP="$(mktemp)"
     trap cleanup_apply_tmp EXIT
     for pair in "$@"; do
