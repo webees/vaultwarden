@@ -17,17 +17,29 @@ container="smoke-$$"
 apk_stub_image=""
 apk_stub_container=""
 apk_stub_file=""
+smtp_container=""
+smtp_pid=""
+smtp_dir=""
 
 cleanup() {
     docker rm --force "$container" >/dev/null 2>&1 || true
     if [ -n "$apk_stub_container" ]; then
         docker rm --force "$apk_stub_container" >/dev/null 2>&1 || true
     fi
+    if [ -n "$smtp_container" ]; then
+        docker rm --force "$smtp_container" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$smtp_pid" ]; then
+        kill "$smtp_pid" >/dev/null 2>&1 || true
+    fi
     if [ -n "$apk_stub_image" ]; then
         docker rmi --force "$apk_stub_image" >/dev/null 2>&1 || true
     fi
     if [ -n "$apk_stub_file" ]; then
         rm -f "$apk_stub_file"
+    fi
+    if [ -n "$smtp_dir" ]; then
+        rm -rf "$smtp_dir"
     fi
 }
 trap cleanup EXIT
@@ -85,3 +97,114 @@ if "$tests_dir/../scripts/deps.sh" apk "$apk_stub_image" >/tmp/deps-apk-stub.log
     exit 1
 fi
 echo "deps.sh apk fails loudly when the index refresh fails"
+rm -f /tmp/deps-apk-stub.log
+
+# Email is the only channel that reports a broken backup, and every other check
+# stubs `mail` out. Nothing proved that mailx, the sendmail symlink, msmtp and
+# the trust store actually deliver a message, so send one to a local STARTTLS
+# sink and assert on what reached the wire.
+smtp_dir="$(mktemp -d)"
+smtp_ready="$smtp_dir/port"
+smtp_message="$smtp_dir/message.txt"
+smtp_run="$smtp_dir/run.log"
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    -keyout "$smtp_dir/key.pem" -out "$smtp_dir/cert.pem" \
+    -subj "/CN=host.docker.internal" \
+    -addext "subjectAltName=DNS:host.docker.internal,DNS:localhost,IP:127.0.0.1" \
+    >/dev/null 2>&1
+python3 "$tests_dir/smtp-sink.py" \
+    --cert "$smtp_dir/cert.pem" --key "$smtp_dir/key.pem" \
+    --out "$smtp_message" --ready "$smtp_ready" --timeout 120 &
+smtp_pid=$!
+for _ in $(seq 1 100); do
+    [ -s "$smtp_ready" ] && break
+    sleep 0.1
+done
+smtp_port="$(cat "$smtp_ready" 2>/dev/null || true)"
+if [ -z "$smtp_port" ]; then
+    echo "the SMTP sink never reported its port" >&2
+    exit 1
+fi
+
+smtp_container="smtp-$$"
+docker run --detach --name "$smtp_container" \
+    --add-host=host.docker.internal:host-gateway \
+    --env CADDY_DOMAINS=example.com \
+    --env DOMAIN=https://example.com \
+    --env I_REALLY_WANT_VOLATILE_STORAGE=true \
+    --env SMTP_HOST=host.docker.internal \
+    --env SMTP_PORT="$smtp_port" \
+    --env SMTP_TO=ops@example.com \
+    --env SMTP_USERNAME=user \
+    --env SMTP_PASSWORD=secret \
+    "$image" >/dev/null
+
+smtp_up=1
+for _ in $(seq 1 30); do
+    if docker exec "$smtp_container" sh -c \
+        'test -s /etc/msmtprc && wget -qO- http://127.0.0.1:8080/alive >/dev/null 2>&1'; then
+        smtp_up=0
+        break
+    fi
+    sleep 2
+done
+if [ "$smtp_up" -ne 0 ]; then
+    echo "the alert test container never came up" >&2
+    docker logs "$smtp_container" >&2
+    exit 1
+fi
+
+# The sink is self-signed, so the container has to trust it: msmtp reads the
+# system bundle that the image already points tls_trust_file at.
+docker cp "$smtp_dir/cert.pem" "$smtp_container:/tmp/sink-ca.pem"
+docker exec "$smtp_container" sh -c \
+    'cat /tmp/sink-ca.pem >> /etc/ssl/certs/ca-certificates.crt'
+
+# A stale freshness check is the cheapest real failure path that sends mail.
+smtp_rc=0
+docker exec "$smtp_container" sh -c \
+    'RESTIC_PASSWORD=selftest BACKUP_MAX_AGE=1 /restic.sh check-freshness' \
+    >"$smtp_run" 2>&1 || smtp_rc=$?
+
+delivered=1
+for _ in $(seq 1 60); do
+    if [ -s "$smtp_message" ]; then
+        delivered=0
+        break
+    fi
+    sleep 1
+done
+if [ "$delivered" -ne 0 ]; then
+    echo "FAIL no message reached the SMTP sink" >&2
+    sed -n '1,20p' "$smtp_run" >&2
+    exit 1
+fi
+echo "a real alert reached the SMTP sink over STARTTLS"
+
+if grep -q '^Subject: \[Vaultwarden\] Backup stale' "$smtp_message"; then
+    echo "the delivered message carries the alert subject"
+else
+    echo "FAIL the delivered message has an unexpected subject" >&2
+    sed -n '1,15p' "$smtp_message" >&2
+    exit 1
+fi
+if grep -q 'ops@example.com' "$smtp_message"; then
+    echo "the delivered message is addressed to the configured recipient"
+else
+    echo "FAIL the delivered message lost its recipient" >&2
+    sed -n '1,15p' "$smtp_message" >&2
+    exit 1
+fi
+if grep -q 'Alert email sent' "$smtp_run"; then
+    echo "the run recorded the delivery"
+else
+    echo "FAIL the run did not record the delivery" >&2
+    sed -n '1,20p' "$smtp_run" >&2
+    exit 1
+fi
+if [ "$smtp_rc" -eq 2 ]; then
+    echo "the alert path keeps the failing run's exit status"
+else
+    echo "FAIL the freshness check exited ${smtp_rc} instead of 2" >&2
+    exit 1
+fi
