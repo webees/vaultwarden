@@ -1,6 +1,7 @@
 #!/bin/bash
 # Dependency pin resolver used by .github/workflows/security-updates.yml.
 # Usage: deps.sh <base|tools|compare|apply> [VAR=VALUE ...]
+#        deps.sh apk <image>
 # Every resolved or changed value is written to $GITHUB_OUTPUT (or stdout).
 set -euo pipefail
 
@@ -106,6 +107,10 @@ apply() {
 
 # Report the Alpine packages that have a newer build in the pinned base image.
 apk() {
+    [ "$#" -ge 1 ] || {
+        echo "usage: deps.sh apk <image>" >&2
+        exit 2
+    }
     local image="$1" rows count
     rows="$(docker run --rm "$image" sh -c \
         'apk update >/dev/null 2>&1; apk version -v -l "<" 2>/dev/null' \
