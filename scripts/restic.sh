@@ -223,7 +223,6 @@ backup() {
         send_mail "Task Failed: ${CURRENT_STEP:-backup}"
         heartbeat fail
     fi' EXIT
-    write_status running "Backup started"
 
     # Skip instead of fighting over the repository when a manual run is already active
     exec 9>"$LOG_DIR/backup.lock"
@@ -232,6 +231,9 @@ backup() {
         exit 3
     fi
 
+    # Only the run that owns the lock may publish "running": a skipped run that
+    # wrote it first would erase the state the live run is maintaining.
+    write_status running "Backup started"
     clear_stale_locks
 
     # Initialise only when the repository really is missing (restic exit code 10).
