@@ -98,11 +98,19 @@ else
     bad "zombies grew from ${zombie_before} to ${zombie_after} after one restic command"
 fi
 
-# A second run must skip instead of fighting for the repository lock.
+# A second run must skip instead of fighting for the repository lock, and the
+# skip must not overwrite the state the live run is maintaining: the loser never
+# owns anything, so recording "running" here erases a healthy "ok" while the
+# real backup is still working.
+printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=concurrency-test\n' \
+    "$(date -u +%s)" "$(date -u +%s)" > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
 exec 9>/data/restic-logs/backup.lock
 if flock -n 9; then
     /restic.sh backup >/tmp/selftest-lock.log 2>&1
     same "a concurrent run exits 3 instead of blocking" 3 "$?"
+    same "a skipped concurrent run leaves the recorded state alone" "ok" \
+        "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 else
     bad "could not take the backup lock for the concurrency test"
 fi
