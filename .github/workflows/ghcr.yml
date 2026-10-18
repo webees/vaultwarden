@@ -21,7 +21,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 concurrency:
-  group: ghcr-build
+  # Shared with ghcr-cleanup.yml: both workflows mutate the same package, and a
+  # cleanup racing an in-flight multi-arch push can delete partial manifests.
+  group: ghcr-registry
   cancel-in-progress: false
 
 jobs:

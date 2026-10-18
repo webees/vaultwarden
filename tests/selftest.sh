@@ -460,6 +460,23 @@ else
     bad "the cleanup job runs on a floating ubuntu-latest runner"
 fi
 
+# The cleanup action deletes untagged and partial manifests. If it runs while a
+# multi-arch push is in flight, it can remove manifests the build is about to
+# publish. Put both workflows in one repository-wide concurrency group so the
+# registry is mutated by one workflow at a time.
+if ruby -ryaml -e '
+    build = YAML.load_file(".github/workflows/ghcr.yml")["concurrency"] || {}
+    cleanup = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["concurrency"] || {}
+    exit 1 unless build["group"] == "ghcr-registry"
+    exit 1 unless cleanup["group"] == "ghcr-registry"
+    exit 1 if build["cancel-in-progress"] != false
+    exit 1 if cleanup["cancel-in-progress"] != false
+  '; then
+    ok "builds and cleanup serialize on the same GHCR concurrency group"
+else
+    bad "GHCR cleanup can race an in-flight image push"
+fi
+
 # The monthly verify must not share a minute with the hourly backup: restic
 # refuses the exclusive lock by default, so the check failed instantly with
 # "repo already locked" instead of verifying anything.
