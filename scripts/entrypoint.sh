@@ -13,6 +13,11 @@ chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs
 # Write the SMTP config as root, then hand it to the unprivileged user.
 umask 077
 if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
+    # Vaultwarden refuses to start when SMTP_HOST is set without SMTP_FROM,
+    # while the backup script's msmtp config already defaults the sender to
+    # SMTP_TO. Give the app the same default so enabling alerts (which only
+    # needs HOST and TO here) cannot take the service down.
+    export SMTP_FROM="${SMTP_FROM:-$SMTP_TO}"
     cat > /etc/msmtprc <<EOF
 defaults
 auth on
