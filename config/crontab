@@ -5,5 +5,9 @@
 # Restic backup schedule
 @hourly /restic.sh backup
 
+# Alert when no backup has succeeded for BACKUP_MAX_AGE (default two hours).
+# This is the only channel that fires when the backup itself stops working.
+45 * * * * /restic.sh check-freshness
+
 # Monthly integrity check that reads back a slice of the stored data
 0 3 1 * * /restic.sh verify

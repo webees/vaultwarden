@@ -5,14 +5,11 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+. "$REPO_ROOT/tests/lib.sh"
 
-failures=0
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-ok()   { printf 'ok   %s\n' "$1"; }
-bad()  { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
-same() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected [$2], got [$3])"; fi; }
 # BSD stat and GNU stat disagree about -f, so pick the flag per platform.
 file_mode() {
     case "$(uname -s)" in
@@ -115,9 +112,4 @@ same "the rewritten pin round-trips through compare" "false" \
     "$(sed -n 's/^changed=//p' "$work/deps-applied")"
 
 echo
-if [ "$failures" -eq 0 ]; then
-    echo "helper self tests passed"
-else
-    printf '%s helper self test(s) failed\n' "$failures" >&2
-    exit 1
-fi
+report "helper self tests"
