@@ -49,7 +49,10 @@ same "/etc/msmtprc belongs to vaultwarden" vaultwarden "$(stat -c %U /etc/msmtpr
 # app the same sender default that the msmtp config uses, or setting up alerts
 # takes the password manager down.
 # The container may itself be started with SMTP_* set, so clear them first.
-smtp_env() { env -u SMTP_HOST -u SMTP_TO -u SMTP_FROM "$@" /entrypoint.sh env 2>/dev/null; }
+smtp_env() {
+    env -u SMTP_HOST -u SMTP_TO -u SMTP_FROM -u SMTP_USERNAME -u SMTP_PASSWORD \
+        -u SMTP_PORT -u SMTP_TIMEOUT "$@" /entrypoint.sh env 2>/dev/null
+}
 injected="$(smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com)"
 if printf '%s\n' "$injected" | grep -qx 'SMTP_FROM=ops@example.com'; then
     ok "the entrypoint defaults SMTP_FROM to SMTP_TO"
@@ -79,6 +82,24 @@ smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
     SMTP_PASSWORD='two
 lines' >/dev/null 2>&1
 same "an SMTP value containing a newline is rejected" 1 "$?"
+
+# An unauthenticated relay is valid. Writing `auth on` plus empty user/password
+# lines makes msmtp fail at delivery time, which is too late for a backup alert.
+smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com >/dev/null
+same "unauthenticated SMTP disables AUTH" 1 \
+    "$(grep -c '^auth off$' /etc/msmtprc)"
+same "unauthenticated SMTP writes no empty user line" 0 \
+    "$(grep -c '^user ' /etc/msmtprc)"
+same "unauthenticated SMTP writes no empty password line" 0 \
+    "$(grep -c '^password ' /etc/msmtprc)"
+
+# A half-configured credential pair is a typo, not a valid relay mode.
+smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
+    SMTP_USERNAME=user >/dev/null 2>&1
+same "an SMTP username without a password is rejected" 1 "$?"
+smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
+    SMTP_PASSWORD=secret >/dev/null 2>&1
+same "an SMTP password without a username is rejected" 1 "$?"
 
 # ── restic.sh ────────────────────────────────────────────────────────────────
 echo "--- restic.sh"

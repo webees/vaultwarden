@@ -47,10 +47,19 @@ if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
                 ;;
         esac
     done
+    if { [ -n "${SMTP_USERNAME:-}" ] && [ -z "${SMTP_PASSWORD:-}" ]; } \
+        || { [ -z "${SMTP_USERNAME:-}" ] && [ -n "${SMTP_PASSWORD:-}" ]; }; then
+        echo "SMTP_USERNAME and SMTP_PASSWORD must be set together" >&2
+        exit 1
+    fi
 
     {
         printf 'defaults\n'
-        printf 'auth on\n'
+        if [ -n "${SMTP_USERNAME:-}" ]; then
+            printf 'auth on\n'
+        else
+            printf 'auth off\n'
+        fi
         printf 'tls on\n'
         printf 'tls_trust_file /etc/ssl/certs/ca-certificates.crt\n'
         printf 'logfile /dev/stderr\n'
@@ -59,8 +68,10 @@ if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
         printf 'host %s\n' "$SMTP_HOST"
         printf 'port %s\n' "${SMTP_PORT:-587}"
         printf 'from %s\n' "${SMTP_FROM:-$SMTP_TO}"
-        printf 'user %s\n' "${SMTP_USERNAME:-}"
-        printf 'password %s\n' "${SMTP_PASSWORD:-}"
+        if [ -n "${SMTP_USERNAME:-}" ]; then
+            printf 'user %s\n' "$SMTP_USERNAME"
+            printf 'password %s\n' "$SMTP_PASSWORD"
+        fi
     } > /etc/msmtprc
 else
     : > /etc/msmtprc
