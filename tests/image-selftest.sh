@@ -206,6 +206,33 @@ else
 fi
 rm -f /data/restic-logs/selftest-cap-*.log
 
+# The cap is only a guard if a breach is reported. A frozen log directory makes
+# every delete fail, and the script used to keep going without saying anything,
+# so the volume could fill while each run still recorded a success.
+dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
+chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
+chmod 500 /data/restic-logs
+frozen_out="$(RESTIC_LOG_DIR_MAX_BYTES=1024 /restic.sh snapshots 2>&1)"
+same "a log directory that cannot be trimmed is reported" 1 \
+    "$(printf '%s\n' "$frozen_out" | grep -c 'could not be trimmed')"
+chmod 700 /data/restic-logs
+rm -f /data/restic-logs/selftest-frozen.log
+
+# A backup that succeeded must still complete when the trim fails, but the
+# failure cannot be swallowed: the recorded state has to carry it so an
+# operator watching the backup sees the volume risk without a failed run.
+dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
+chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
+chmod 500 /data/restic-logs
+RESTIC_LOG_DIR_MAX_BYTES=1024 /restic.sh backup \
+    >/tmp/selftest-frozen-backup.log 2>&1
+frozen_backup_rc=$?
+chmod 700 /data/restic-logs
+rm -f /data/restic-logs/selftest-frozen.log
+same "a backup with an untrimmable log directory still completes" 0 "$frozen_backup_rc"
+same "the successful backup records the log trim failure" 1 \
+    "$(grep -c 'log trim failed' /data/backup-status.txt)"
+
 # A backend that never answers must be killed by the command timeout and
 # recorded as a failure, instead of holding the lock until the next run.
 stub_dir=/tmp/selftest-stub
