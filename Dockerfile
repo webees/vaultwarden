@@ -48,6 +48,10 @@ RUN set -eu; \
         arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_SHA256_arm64"; OVERMIND_SHA256="$OVERMIND_SHA256_arm64" ;; \
         *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
+    # The base image is pinned, and `apk add` never touches packages that are
+    # already installed, so the patched zlib/tzdata builds would otherwise never
+    # reach the image. Upgrade first, then add what this image needs.
+    apk --no-cache upgrade; \
     # bash is required by the shebangs of scripts/*.sh; tmux is used by overmind
     apk add --no-cache \
         bash \
