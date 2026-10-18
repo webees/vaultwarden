@@ -181,6 +181,33 @@ else
 fi
 exec 9>&-
 
+# The lock itself can be uninspectable (volume full, directory read-only), and
+# the check must not create it: a missing lock has to stay missing so "never
+# backed up" remains distinguishable from "not running right now".
+seed_running
+rm -f /data/restic-logs/backup.lock
+/restic.sh check-freshness >/tmp/selftest-nolock.log 2>&1
+nolock_rc=$?
+same "a missing lock is left missing by the freshness check" 0 \
+    "$(find /data/restic-logs -maxdepth 1 -name 'backup.lock' | wc -l | tr -d ' ')"
+same "a missing lock is not reported as a finished backup" 0 "$nolock_rc"
+
+# "running" is then unknown, not "finished": reporting the latter would raise a
+# false alert and overwrite a live backup's state.
+seed_running
+rm -f /data/restic-logs/backup.lock
+chmod 500 /data/restic-logs
+/restic.sh check-freshness >/tmp/selftest-unknown.log 2>&1
+unknown_rc=$?
+chmod 700 /data/restic-logs
+: > /data/restic-logs/backup.lock
+chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
+same "an uninspectable lock is not reported as a finished backup" 0 "$unknown_rc"
+same "an uninspectable lock keeps the running state" "running" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+same "an uninspectable lock is explained" 1 \
+    "$(grep -c 'Cannot inspect the backup lock' /tmp/selftest-unknown.log)"
+
 # An alert has to record whether it was actually delivered: the mailer's stderr
 # is not part of the run log, so "no email arrived" is otherwise undiagnosable.
 seed_status 1
