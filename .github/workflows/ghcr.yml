@@ -35,17 +35,10 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: 🌐 Refresh Cloudflare IP ranges
-        run: |
-          {
-            curl -fsSL https://www.cloudflare.com/ips-v4
-            printf '\n'
-            curl -fsSL https://www.cloudflare.com/ips-v6
-            printf '\n'
-          } | awk 'NF {print "client_ip "$0}' > config/cloudflare-ips.caddy
-          test "$(wc -l < config/cloudflare-ips.caddy)" -gt 20
+        run: scripts/refresh-cloudflare-ips.sh
 
       - name: 🧹 Invalidate package layer cache
         id: cache-bust
@@ -55,17 +48,17 @@ jobs:
           echo "cache-bust=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: ⚙️ Enable QEMU for cross-platform builds
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: 🛠️ Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver: docker-container
           use: true
 
       - name: 🔐 Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -80,7 +73,7 @@ jobs:
 
       - name: 🏷️ Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -106,7 +99,7 @@ jobs:
 
       - name: 🚀 Build and push Docker image (Multi-Arch)
         id: build-and-push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           build-args: |
@@ -139,7 +132,7 @@ jobs:
 
       - name: 📤 Upload the build output
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-output
           path: build-output.txt
