@@ -143,7 +143,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email on failure (`SMTP_*`) and an optional `HEALTHCHECK_URL` ping on every run |
+| Alerts | Email on failure (`SMTP_*`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping on every run |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
@@ -152,6 +152,11 @@ fly ssh console -C "/restic.sh verify"         # read back a data slice from the
 fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp and validate it
 fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 ```
+
+`/restic.sh check-freshness` runs at `:45` every hour and emails when no backup has succeeded for
+`BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
+scheduler is still alive. A scheduler that has stopped firing entirely is only visible through
+`HEALTHCHECK_URL`, so point that at a dead-man's-switch service if you want a second, independent channel.
 
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
 > run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
