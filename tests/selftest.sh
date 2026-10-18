@@ -263,5 +263,13 @@ else
     ok "README keeps the restart policy distinct from the health check"
 fi
 
+# The run log records whether the alert was delivered, so the old advice to go
+# hunting through the mailer's stderr is no longer the right pointer.
+if grep -q 'msmtp writes to stderr' README.md; then
+    bad "README still points alert debugging at the mailer's stderr"
+else
+    ok "README points alert debugging at the recorded outcome"
+fi
+
 echo
 report "helper self tests"
