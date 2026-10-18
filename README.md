@@ -107,11 +107,12 @@ fly deploy
 
 ## 🔢 Versions & Upgrades
 
-The base image is pinned by both `VAULTWARDEN_VERSION` and `VAULTWARDEN_DIGEST` in the `Dockerfile`, so a
-rebuild never silently changes the Vaultwarden runtime. The `security-updates` workflow checks daily
-whether upstream published a newer `-alpine` image or digest and opens a PR when it did; merging that PR
-is what actually picks up new Alpine packages (`caddy`, `restic`, `sqlite`). `fly.toml` pins the deployed
-amd64 image by digest, so update that digest deliberately after a successful workflow run.
+Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST`, the
+`SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `security-updates` workflow
+runs daily and resolves each one from Docker Hub and the GitHub Releases API; when a version or checksum
+changed it opens a PR with the updated pins. Merging that PR is what actually picks up new Alpine packages
+(`caddy`, `restic`, `sqlite`, `msmtp`, `mailx`, ...) and new scheduler/process-manager builds. `fly.toml`
+pins the deployed amd64 image by digest, so update that digest deliberately after a successful workflow run.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.

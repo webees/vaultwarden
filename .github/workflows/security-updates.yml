@@ -1,4 +1,4 @@
-name: 🛡️ Daily Security Updates
+name: 🛡️ Daily Dependency Updates
 
 on:
   workflow_dispatch:
@@ -16,12 +16,19 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v7
 
-      - name: 🔎 Resolve upstream digest
+      - name: 🔎 Resolve Vaultwarden base image
         id: upstream
         run: |
           set -euo pipefail
-          json="$(curl -fsSL 'https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&ordering=last_updated')"
-          tag="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
+          tag=""
+          for page in $(seq 1 20); do
+            json="$(curl -fsSL "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
+            found="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
+            if [ -n "$found" ] && [ "$found" != "null" ]; then
+              tag="$found"
+              break
+            fi
+          done
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Could not resolve the latest upstream tag" >&2
             exit 1
@@ -39,32 +46,92 @@ jobs:
           echo "version=${tag%-alpine}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: 📌 Compare with Dockerfile pins
+      - name: 🧰 Resolve supercronic and overmind
+        id: tools
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          sc_release="$(gh api 'repos/aptible/supercronic/releases?per_page=20' \
+            --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
+          sc_tag="$(jq -r '.tag_name' <<< "$sc_release")"
+          sc_amd64="$(jq -r '.assets[] | select(.name | test("linux-amd64$")) | .browser_download_url' <<< "$sc_release")"
+          sc_arm64="$(jq -r '.assets[] | select(.name | test("linux-arm64$")) | .browser_download_url' <<< "$sc_release")"
+          sc_sha_amd64="$(curl -fsSL "$sc_amd64" | sha256sum | cut -d' ' -f1)"
+          sc_sha_arm64="$(curl -fsSL "$sc_arm64" | sha256sum | cut -d' ' -f1)"
+
+          om_release="$(gh api 'repos/DarthSim/overmind/releases?per_page=20' \
+            --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
+          om_tag="$(jq -r '.tag_name' <<< "$om_release")"
+          om_sha_amd64="$(curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-amd64.gz" \
+            | gunzip -c | sha256sum | cut -d' ' -f1)"
+          om_sha_arm64="$(curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-arm64.gz" \
+            | gunzip -c | sha256sum | cut -d' ' -f1)"
+
+          {
+            echo "supercronic_version=${sc_tag}"
+            echo "supercronic_sha_amd64=${sc_sha_amd64}"
+            echo "supercronic_sha_arm64=${sc_sha_arm64}"
+            echo "overmind_version=${om_tag}"
+            echo "overmind_sha_amd64=${om_sha_amd64}"
+            echo "overmind_sha_arm64=${om_sha_arm64}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 📌 Compare pins with upstream
         id: compare
         env:
           UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
           UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
+          SUPERCRONIC_SHA_AMD64: ${{ steps.tools.outputs.supercronic_sha_amd64 }}
+          SUPERCRONIC_SHA_ARM64: ${{ steps.tools.outputs.supercronic_sha_arm64 }}
+          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
+          OVERMIND_SHA_AMD64: ${{ steps.tools.outputs.overmind_sha_amd64 }}
+          OVERMIND_SHA_ARM64: ${{ steps.tools.outputs.overmind_sha_arm64 }}
         run: |
           set -euo pipefail
-          current_version="$(sed -n 's/^ARG VAULTWARDEN_VERSION=//p' Dockerfile | head -n 1)"
-          current_digest="$(sed -n 's/^ARG VAULTWARDEN_DIGEST=//p' Dockerfile | head -n 1)"
-          echo "current: ${current_version} ${current_digest}"
-          echo "upstream: ${UPSTREAM_VERSION} ${UPSTREAM_DIGEST}"
-          if [ "$current_version" = "$UPSTREAM_VERSION" ] && [ "$current_digest" = "$UPSTREAM_DIGEST" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+          current() { sed -n "s/^ARG $1=//p" Dockerfile | head -n 1; }
+          compare() {
+            if [ "$(current "$1")" = "$2" ]; then
+              echo "ok   $1"
+            else
+              echo "diff $1: $(current "$1") -> $2"
+              echo changed=true >> "$GITHUB_OUTPUT"
+            fi
+          }
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          compare VAULTWARDEN_VERSION "$UPSTREAM_VERSION"
+          compare VAULTWARDEN_DIGEST "$UPSTREAM_DIGEST"
+          compare SUPERCRONIC_VERSION "$SUPERCRONIC_VERSION"
+          compare SUPERCRONIC_SHA256_amd64 "$SUPERCRONIC_SHA_AMD64"
+          compare SUPERCRONIC_SHA256_arm64 "$SUPERCRONIC_SHA_ARM64"
+          compare OVERMIND_VERSION "$OVERMIND_VERSION"
+          compare OVERMIND_SHA256_amd64 "$OVERMIND_SHA_AMD64"
+          compare OVERMIND_SHA256_arm64 "$OVERMIND_SHA_ARM64"
 
-      - name: 🔧 Update pinned version and digest
+      - name: 🔧 Update pinned versions and checksums
         if: steps.compare.outputs.changed == 'true'
         env:
           UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
           UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
+          SUPERCRONIC_SHA_AMD64: ${{ steps.tools.outputs.supercronic_sha_amd64 }}
+          SUPERCRONIC_SHA_ARM64: ${{ steps.tools.outputs.supercronic_sha_arm64 }}
+          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
+          OVERMIND_SHA_AMD64: ${{ steps.tools.outputs.overmind_sha_amd64 }}
+          OVERMIND_SHA_ARM64: ${{ steps.tools.outputs.overmind_sha_arm64 }}
         run: |
           set -euo pipefail
-          sed -i "s|^ARG VAULTWARDEN_VERSION=.*|ARG VAULTWARDEN_VERSION=${UPSTREAM_VERSION}|" Dockerfile
-          sed -i "s|^ARG VAULTWARDEN_DIGEST=.*|ARG VAULTWARDEN_DIGEST=${UPSTREAM_DIGEST}|" Dockerfile
+          set_pin() { sed -i "s|^ARG $1=.*|ARG $1=$2|" Dockerfile; }
+          set_pin VAULTWARDEN_VERSION "$UPSTREAM_VERSION"
+          set_pin VAULTWARDEN_DIGEST "$UPSTREAM_DIGEST"
+          set_pin SUPERCRONIC_VERSION "$SUPERCRONIC_VERSION"
+          set_pin SUPERCRONIC_SHA256_amd64 "$SUPERCRONIC_SHA_AMD64"
+          set_pin SUPERCRONIC_SHA256_arm64 "$SUPERCRONIC_SHA_ARM64"
+          set_pin OVERMIND_VERSION "$OVERMIND_VERSION"
+          set_pin OVERMIND_SHA256_amd64 "$OVERMIND_SHA_AMD64"
+          set_pin OVERMIND_SHA256_arm64 "$OVERMIND_SHA_ARM64"
           git diff -- Dockerfile
 
       - name: 📬 Open a pull request
@@ -73,17 +140,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
           UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
+          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
+          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
         run: |
           set -euo pipefail
-          branch="security/upstream-${UPSTREAM_VERSION}"
+          branch="deps/upstream-${UPSTREAM_VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add Dockerfile
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
-          git commit -m "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}"
+          git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
+          body="Automated daily dependency check."$'\n\n'
+          body+="| Dependency | Pinned |"$'\n'
+          body+="| :--- | :--- |"$'\n'
+          body+="| vaultwarden/server | ${UPSTREAM_VERSION}-alpine @ ${UPSTREAM_DIGEST} |"$'\n'
+          body+="| supercronic | ${SUPERCRONIC_VERSION} |"$'\n'
+          body+="| overmind | ${OVERMIND_VERSION} |"$'\n\n'
+          body+="Alpine packages are refreshed whenever the base image digest changes; scheduled rebuilds also bypass the apk layer cache."$'\n\n'
+          body+="Merging this PR rebuilds and publishes a new timestamped image; pin the new digest in fly.toml afterwards."
           gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
-            --title "chore(deps): update Vaultwarden to ${UPSTREAM_VERSION}" \
-            --body "Upstream \`vaultwarden/server:${UPSTREAM_VERSION}-alpine\` is now pinned at \`${UPSTREAM_DIGEST}\`. Merging this PR makes the next image build pick up the newer Alpine packages." \
+            --title "chore(deps): update pinned upstream dependencies" \
+            --body "$body" \
             || echo "PR already exists"
