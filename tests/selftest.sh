@@ -156,6 +156,32 @@ case "$apply_no_eq_out" in
     *) bad "apply does not explain the expected form: [$apply_no_eq_out]" ;;
 esac
 
+# Pin values come from upstream release metadata and are spliced into a sed
+# replacement. A value containing `&` or `|` could rewrite the wrong text or
+# corrupt the Dockerfile, and a malformed digest would silently break the build.
+apply_sed_meta_out="$("$apply_tree/scripts/deps.sh" apply \
+    "VAULTWARDEN_VERSION=1.2.3&boom" 2>&1)"
+apply_sed_meta_status=$?
+same "apply refuses a version containing sed replacement syntax" 2 \
+    "$apply_sed_meta_status"
+same "apply keeps the Dockerfile intact after a sed metacharacter" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_sed_meta_out" in
+    *VAULTWARDEN_VERSION*) ok "apply names the rejected version value" ;;
+    *) bad "apply does not name the rejected version value: [$apply_sed_meta_out]" ;;
+esac
+
+apply_bad_digest_out="$("$apply_tree/scripts/deps.sh" apply \
+    "VAULTWARDEN_DIGEST=sha256:not-a-digest" 2>&1)"
+apply_bad_digest_status=$?
+same "apply refuses a malformed image digest" 2 "$apply_bad_digest_status"
+same "apply keeps the Dockerfile intact after a malformed digest" "$guard_before" \
+    "$(cksum < "$apply_tree/Dockerfile")"
+case "$apply_bad_digest_out" in
+    *VAULTWARDEN_DIGEST*) ok "apply names the malformed digest" ;;
+    *) bad "apply does not name the malformed digest: [$apply_bad_digest_out]" ;;
+esac
+
 # A rejected pair must not half-apply the pairs that came before it.
 "$apply_tree/scripts/deps.sh" apply "VAULTWARDEN_VERSION=1.2.3" "NOPE=4" \
     >/dev/null 2>&1
