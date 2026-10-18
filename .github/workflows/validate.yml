@@ -1,0 +1,37 @@
+name: ✅ Validate
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 🐚 Shell scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+
+      - name: 🌐 Refresh the Cloudflare ranges
+        run: |
+          {
+            curl -fsSL https://www.cloudflare.com/ips-v4
+            printf '\n'
+            curl -fsSL https://www.cloudflare.com/ips-v6
+            printf '\n'
+          } | awk 'NF {print "client_ip "$0}' > config/cloudflare-ips.caddy
+          test "$(wc -l < config/cloudflare-ips.caddy)" -gt 20
+
+      - name: 🐳 Build and validate the image
+        run: |
+          docker build --tag validate:local .
+          docker run --rm --entrypoint caddy validate:local \
+            validate --config /Caddyfile --adapter caddyfile
