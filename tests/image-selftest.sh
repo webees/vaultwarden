@@ -293,6 +293,44 @@ BACKUP_NOTIFY_ON_SUCCESS=maybe /restic.sh snapshots \
     >/tmp/selftest-notify-invalid.log 2>&1
 same "an invalid success-notification flag is rejected" 2 "$?"
 
+# Telegram is a second notification channel. The token and chat id are secrets:
+# they may appear in the API request but never in the persistent run log.
+tg_dir=/tmp/selftest-telegram
+tg_calls="$tg_dir/calls"
+rm -rf "$tg_dir"
+mkdir -p "$tg_dir"
+chmod 777 "$tg_dir"
+: > "$tg_calls"
+chmod 666 "$tg_calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nexit 0\n' \
+    "$tg_calls" > "$tg_dir/curl"
+chmod 755 "$tg_dir/curl"
+PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
+    /restic.sh backup >/tmp/selftest-tg-success.log 2>&1
+same "a successful backup sends one Telegram message" 1 \
+    "$(grep -c 'sendMessage' "$tg_calls")"
+same "the Telegram message carries the success text" 1 \
+    "$(grep -c 'Backup succeeded' "$tg_calls")"
+same "the Telegram notification is recorded" 1 \
+    "$(grep -c 'Telegram notification sent' /tmp/selftest-tg-success.log)"
+same "the Telegram token is not written to the run log" 0 \
+    "$(grep -c '123456:selftest' /tmp/selftest-tg-success.log)"
+same "the Telegram chat id is not written to the run log" 0 \
+    "$(grep -c '@selftest_channel' /tmp/selftest-tg-success.log)"
+
+: > "$tg_calls"
+seed_status 1
+PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-tg-fail.log 2>&1
+same "a failed run sends one Telegram message" 1 \
+    "$(grep -c 'Backup stale' "$tg_calls")"
+TELEGRAM_BOT_TOKEN='123456:selftest' /restic.sh snapshots \
+    >/tmp/selftest-tg-half.log 2>&1
+same "a Telegram token without a chat id is rejected" 2 "$?"
+rm -rf "$tg_dir"
+
 # The dead-man's-switch ping is the only channel that survives a scheduler which
 # stopped firing entirely, so the URL it hits has to match what the run actually
 # did: a failure that pings the success URL silently disarms the whole alarm.
