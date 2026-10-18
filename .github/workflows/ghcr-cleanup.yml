@@ -10,7 +10,8 @@ permissions:
   packages: write
 
 concurrency:
-  group: ghcr-cleanup
+  # Serialize with the image build workflow so cleanup never races a push.
+  group: ghcr-registry
   cancel-in-progress: false
 
 jobs:
