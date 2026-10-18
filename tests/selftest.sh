@@ -273,9 +273,34 @@ else
     bad "package-only updates still wait for the weekly rebuild"
 fi
 
+# workflow_run never fired for a workflow_dispatch build, so a manual rebuild
+# published an image that never reached Fly. The deploy has to live in the same
+# workflow, and the separate workflow must be gone to avoid double deploys.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    deploy = doc["jobs"]["deploy"]
+    exit 1 if deploy.nil?
+    exit 1 unless Array(deploy["needs"]).include?("build")
+    exit 1 unless (deploy["if"] || "").include?("refs/heads/main")
+    steps = deploy["steps"] || []
+    guard = steps.find { |s| (s["name"] || "").include?("tip of main") }
+    exit 1 if guard.nil? || guard["id"].to_s.empty?
+    exit 1 unless (guard["run"] || "").include?("skip=true")
+    release = steps.find { |s| (s["run"] || "").include?("flyctl deploy") }
+    exit 1 if release.nil?
+    exit 1 unless (release["run"] || "").include?("--image")
+    exit 1 unless (release["if"] || "").include?("steps.guard.outputs.skip")
+    exit 1 unless (deploy["concurrency"] || {})["group"] == "fly-deploy"
+    exit 1 if File.exist?(".github/workflows/deploy.yml")
+  '; then
+    ok "the build workflow deploys its own digest, for pushes and manual rebuilds"
+else
+    bad "manual rebuilds publish an image that never reaches Fly, or deploys are duplicated"
+fi
+
 # ── docs consistency ──────────────────────────────────────────────────────────
 echo "--- docs"
-# The deploy workflow passes the freshly built digest with `fly deploy --image`,
+# The build workflow deploys the freshly built digest with `fly deploy --image`,
 # and fly.toml deliberately keeps no image pin. A README that still tells the
 # reader to edit a fly.toml image pin sends them to a value that does not exist.
 if grep -q 'replace the value in fly.toml' README.md; then
@@ -285,7 +310,7 @@ else
 fi
 
 if grep -q -- '--image' README.md; then
-    ok "README documents that the deploy workflow passes --image"
+    ok "README documents that the build workflow passes --image"
 else
     bad "README does not explain how the built digest reaches Fly"
 fi
