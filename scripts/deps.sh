@@ -1,6 +1,6 @@
 #!/bin/bash
 # Dependency pin resolver used by .github/workflows/security-updates.yml.
-# Usage: deps.sh <base|tools|compare|apply> [VAR=VALUE ...]
+# Usage: deps.sh <base|tools|compare|apply|rebuild-needed> [args...]
 #        deps.sh apk <image>
 # Every resolved or changed value is written to $GITHUB_OUTPUT (or stdout).
 set -euo pipefail
@@ -124,6 +124,28 @@ apk() {
     printf '%s\n' "$rows"
 }
 
-command="${1:?usage: deps.sh <base|tools|compare|apply|apk> [args...]}"
+# A package-only update never changes the Dockerfile, so the pin comparison
+# cannot see it. Exit 0 means "rebuild", 1 means "leave it alone", 2 means the
+# caller passed something that is not a count.
+rebuild_needed() {
+    local count="${1:-}"
+    case "$count" in
+        ''|*[!0-9]*)
+            echo "usage: deps.sh rebuild-needed <count>" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$count" -gt 0 ]; then
+        echo "rebuild needed: ${count} package upgrade(s) available"
+        return 0
+    fi
+    echo "no rebuild needed: no package upgrades available"
+    return 1
+}
+
+command="${1:?usage: deps.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]}"
 shift
-"$command" "$@"
+case "$command" in
+    rebuild-needed) rebuild_needed "$@" ;;
+    *)              "$command" "$@" ;;
+esac
