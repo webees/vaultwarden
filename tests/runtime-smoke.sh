@@ -269,3 +269,42 @@ else
     echo "FAIL the freshness check exited ${smtp_rc} instead of 2" >&2
     exit 1
 fi
+
+# A snapshot never carries the live db.* files, so recovery arms the swap with a
+# marker and the entrypoint applies it before Vaultwarden opens the database.
+# This runs in a throwaway container: the one above keeps its own /data.
+restore_out="$(docker run --rm --entrypoint sh "$image" -c '
+    mkdir -p /data
+    printf "restored-database" > /data/backup.bak
+    printf "stale-database" > /data/db.sqlite3
+    printf "stale-wal" > /data/db.sqlite3-wal
+    touch /data/restore-pending
+    /entrypoint.sh sh -c "cat /data/db.sqlite3; echo; test -e /data/db.sqlite3-wal && echo wal-left || echo wal-removed; test -e /data/restore-pending && echo marker-left || echo marker-applied; stat -c %U /data/db.sqlite3"
+' 2>&1)"
+if printf '%s\n' "$restore_out" | grep -qx 'restored-database' \
+    && printf '%s\n' "$restore_out" | grep -qx 'wal-removed' \
+    && printf '%s\n' "$restore_out" | grep -qx 'marker-applied' \
+    && printf '%s\n' "$restore_out" | grep -qx 'vaultwarden'; then
+    echo "an armed restore swaps backup.bak in before the app starts"
+else
+    echo "FAIL an armed restore did not swap the database cleanly" >&2
+    printf '%s\n' "$restore_out" >&2
+    exit 1
+fi
+
+# Without the hot copy there is nothing to swap, and guessing would replace a
+# working database with nothing.
+unarmed_out="$(docker run --rm --entrypoint sh "$image" -c '
+    mkdir -p /data
+    printf "stale-database" > /data/db.sqlite3
+    touch /data/restore-pending
+    /entrypoint.sh sh -c "cat /data/db.sqlite3; echo; test -e /data/restore-pending && echo marker-left"
+' 2>&1)"
+if printf '%s\n' "$unarmed_out" | grep -qx 'stale-database' \
+    && printf '%s\n' "$unarmed_out" | grep -qx 'marker-left'; then
+    echo "an armed restore without backup.bak leaves the database alone"
+else
+    echo "FAIL an armed restore without backup.bak changed the database" >&2
+    printf '%s\n' "$unarmed_out" >&2
+    exit 1
+fi

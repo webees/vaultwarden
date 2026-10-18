@@ -10,6 +10,22 @@ if [ ! -f /data/backup-status.txt ]; then
 fi
 chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs
 
+# A snapshot never carries the live db.* files: the consistent database travels
+# as backup.bak. Swapping it in has to happen while Vaultwarden is not running,
+# so `restore` arms the swap with a marker and this applies it before the app
+# opens the database on the next start.
+if [ -f /data/restore-pending ]; then
+    if [ -f /data/backup.bak ]; then
+        rm -f /data/db.sqlite3 /data/db.sqlite3-wal /data/db.sqlite3-shm
+        cp /data/backup.bak /data/db.sqlite3
+        chown vaultwarden:vaultwarden /data/db.sqlite3
+        rm -f /data/restore-pending
+        echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
+    else
+        echo "restore-pending is set but /data/backup.bak is missing; leaving the database alone" >&2
+    fi
+fi
+
 # Write the SMTP config as root, then hand it to the unprivileged user.
 umask 077
 if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
