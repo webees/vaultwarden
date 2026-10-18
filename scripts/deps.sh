@@ -80,13 +80,26 @@ compare() {
     emit changed "$changed"
 }
 
+# Scratch file for apply(). Global on purpose: an EXIT trap runs after the
+# function has returned, where a `local` would already be unset.
+APPLY_TMP=""
+cleanup_apply_tmp() {
+    [ -n "$APPLY_TMP" ] && rm -f "$APPLY_TMP"
+    return 0
+}
+
 # Rewrite the pins in place from VAR=VALUE pairs.
 apply() {
     local pair name value
+    APPLY_TMP="$(mktemp)"
+    trap cleanup_apply_tmp EXIT
     for pair in "$@"; do
         name="${pair%%=*}"
         value="${pair#*=}"
-        sed -i "s|^ARG ${name}=.*|ARG ${name}=${value}|" "$DOCKERFILE"
+        # `sed -i` needs a suffix on BSD and rejects one on GNU, so rewrite
+        # through a temp file and rename instead of editing in place.
+        sed "s|^ARG ${name}=.*|ARG ${name}=${value}|" "$DOCKERFILE" > "$APPLY_TMP"
+        mv "$APPLY_TMP" "$DOCKERFILE"
     done
     git --no-pager diff -- "$DOCKERFILE"
 }

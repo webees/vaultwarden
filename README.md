@@ -111,11 +111,15 @@ fly deploy
 Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST`, the
 `SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `security-updates` workflow
 runs daily, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
-changes plus any pending Alpine package upgrades, builds the patched image, validates the Caddyfile, and
-merges the PR. The build workflow then publishes a timestamped image and the deploy workflow rolls that
-digest out to Fly by passing `--image` explicitly. `fly.toml` deliberately carries no image pin: a second
-copy of "what is running" is exactly what went stale before. Running `fly deploy` by hand builds this
-repository's pinned `Dockerfile` instead.
+changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
+The build workflow then publishes a timestamped image and the deploy workflow rolls that digest out to Fly
+by passing `--image` explicitly. `fly.toml` deliberately carries no image pin: a second copy of "what is
+running" is exactly what went stale before. Running `fly deploy` by hand builds this repository's pinned
+`Dockerfile` instead.
+
+`main` requires the `validate` check, so the dependency workflow arms auto-merge rather than merging
+directly: the bump lands only after shellcheck, the workflow lint, the self tests, the image build and the
+runtime smoke test all pass.
 
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.

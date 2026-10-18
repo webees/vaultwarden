@@ -6,6 +6,8 @@
 
 # Never ship local secrets or files that the Dockerfile does not COPY
 .env
+.github
 README.md
 LICENSE
 fly.toml
+tests
