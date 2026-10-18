@@ -8,6 +8,8 @@ primary_region = "sin"
 # build workflow just published with --image; running `fly deploy` by hand builds
 # this repository's pinned Dockerfile locally instead.
 
+# Fly probes /alive through Caddy. If the proxy stops answering, the machine is
+# taken out of service instead of silently black-holing requests.
 [checks.health]
 grace_period = "60s"
 interval = "15s"
