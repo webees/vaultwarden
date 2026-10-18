@@ -111,6 +111,25 @@ GITHUB_OUTPUT="$work/deps-applied" "$apply_tree/scripts/deps.sh" compare \
 same "the rewritten pin round-trips through compare" "false" \
     "$(sed -n 's/^changed=//p' "$work/deps-applied")"
 
+# `apk` needs an image to inspect. Without one it used to die on an unbound
+# variable, which reads like a broken script instead of a missing argument.
+apk_out="$("$REPO_ROOT/scripts/deps.sh" apk 2>&1)"
+apk_status=$?
+same "apk without an image exits 2" 2 "$apk_status"
+case "$apk_out" in
+    *usage*deps.sh\ apk*) ok "apk without an image prints its usage" ;;
+    *) bad "apk without an image printed [$apk_out]" ;;
+esac
+
+# The pinned base image ships packages that already have newer builds. `apk add`
+# never touches them, so without an explicit upgrade the weekly rebuild would
+# keep shipping the outdated zlib/tzdata that deps.sh apk reports.
+if grep -q 'apk --no-cache upgrade' Dockerfile; then
+    ok "the dependency layer upgrades the pinned base packages"
+else
+    bad "the dependency layer only installs new packages, so patched base packages never land"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
 # fly.toml carries the machine config, and only a deploy applies it. If the
@@ -150,6 +169,22 @@ if ! ruby -ryaml -e '
     bad "ghcr.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
 else
     ok "ghcr.yml has no conditions for an event it never receives"
+fi
+
+# The image that actually reaches Fly is the one the Docker workflow publishes.
+# Booting that exact digest before the artifact is uploaded is the only runtime
+# gate on the merge path, and both workflows share one implementation.
+if ruby -ryaml -e '
+    runs = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+              .map { |s| s["run"] || "" }.join("\n")
+    exit 1 unless runs.include?("tests/runtime-smoke.sh")
+    steps = YAML.load_file(".github/workflows/validate.yml")["jobs"]["validate"]["steps"]
+    exit 1 unless steps.any? { |s| (s["run"] || "").include?("tests/runtime-smoke.sh") }
+    exit 1 if steps.any? { |s| (s["run"] || "").include?("docker cp tests/") }
+  '; then
+    ok "the published image is smoke tested, through one shared script"
+else
+    bad "ghcr.yml does not smoke test the published image, or the smoke test is duplicated inline"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────
