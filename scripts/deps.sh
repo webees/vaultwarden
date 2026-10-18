@@ -28,7 +28,36 @@ gh_api() {
 
 emit() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
 
-pin() { sed -n "s/^ARG $1=//p" "$DOCKERFILE" | head -n 1; }
+pin() {
+    case "$1" in
+        ''|*[!A-Za-z0-9_]*)
+            echo "pin: '${1:-}' is not a valid pin name" >&2
+            exit 2
+            ;;
+    esac
+    sed -n "s/^ARG $1=//p" "$DOCKERFILE" | head -n 1
+}
+
+# Pin values come from upstream release metadata and are written into the
+# Dockerfile. Keep the accepted shapes narrow so a malformed or hostile tag
+# cannot corrupt a build pin.
+validate_pin_value() {
+    local name="$1" value="$2"
+    case "$name" in
+        VAULTWARDEN_VERSION|SUPERCRONIC_VERSION|OVERMIND_VERSION)
+            [[ "$value" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
+            ;;
+        VAULTWARDEN_DIGEST)
+            [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]]
+            ;;
+        *_SHA256_amd64|*_SHA256_arm64)
+            [[ "$value" =~ ^[0-9a-f]{64}$ ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 sha256() { sha256sum | cut -d' ' -f1; }
 
@@ -140,6 +169,10 @@ apply() {
             echo "apply: ${name} has an empty value" >&2
             exit 2
         }
+        if ! validate_pin_value "$name" "$value"; then
+            echo "apply: ${name} has an invalid value" >&2
+            exit 2
+        fi
         grep -q "^ARG ${name}=" "$DOCKERFILE" || {
             echo "apply: ${name} is not declared in ${DOCKERFILE}" >&2
             exit 2
@@ -150,6 +183,9 @@ apply() {
     for pair in "$@"; do
         name="${pair%%=*}"
         value="${pair#*=}"
+        # Values are validated above, but escape sed's replacement syntax too:
+        # a future pin type must not turn into an accidental rewrite.
+        value="$(printf '%s' "$value" | sed 's/[&\\|]/\\&/g')"
         # `sed -i` needs a suffix on BSD and rejects one on GNU, so rewrite
         # through a temp file and rename instead of editing in place.
         sed "s|^ARG ${name}=.*|ARG ${name}=${value}|" "$DOCKERFILE" > "$APPLY_TMP"
