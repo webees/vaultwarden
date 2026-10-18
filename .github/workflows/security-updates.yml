@@ -114,7 +114,7 @@ jobs:
         id: apk
         if: steps.compare.outputs.changed == 'true'
         env:
-          BASE_IMAGE: ${{ steps.upstream.outputs.digest }}
+          BASE_IMAGE: vaultwarden/server@${{ steps.upstream.outputs.digest }}
         run: |
           set -euo pipefail
           rows="$(docker run --rm "$BASE_IMAGE" sh -c \
