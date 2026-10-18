@@ -41,9 +41,14 @@ base() {
         if [ "$(jq -r '(.results // []) | length' <<< "$json")" -eq 0 ]; then
             break
         fi
-        found="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
-        if [ -n "$found" ] && [ "$found" != "null" ]; then
-            tag="$found"
+        # The default tag order is neither version order nor last_updated, so a
+        # republished older tag can sit above the newest release. Take the
+        # highest version on the page instead of the first match, or the daily
+        # job opens a PR that downgrades a security-critical image.
+        found="$(jq -r '.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$")) | sub("-alpine$"; "")' <<< "$json" \
+            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
+        if [ -n "$found" ]; then
+            tag="${found}-alpine"
             break
         fi
     done
