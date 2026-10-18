@@ -86,6 +86,9 @@ fly secrets set SMTP_TO="admin@example.com"
 fly secrets set SMTP_USERNAME="sender@example.com"
 fly secrets set SMTP_PASSWORD="app-specific-password"
 
+# SMTP_FROM defaults to SMTP_TO when it is left unset, so the app still boots
+# with only the two variables the backup alerts need.
+
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 
