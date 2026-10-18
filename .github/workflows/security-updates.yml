@@ -203,7 +203,7 @@ jobs:
             body+="_No package upgrades are pending in the pinned base image._"$'\n'
           fi
           body+=$'\n'
-          body+="Merging this PR rebuilds and publishes a new timestamped image; the deploy workflow then pins the digest and rolls it out automatically."
+          body+="Merging this PR rebuilds and publishes a new timestamped image; the deploy workflow then rolls the new digest out to Fly automatically."
           gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
             --title "chore(deps): update pinned upstream dependencies" \
             --body "$body" \
