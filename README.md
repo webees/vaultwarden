@@ -163,12 +163,12 @@ fly ssh console -C "/restic.sh restore <id>"   # restore snapshot
 | :--- | :--- |
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
-| Log line `[cronloop] supercronic exited` | The scheduler crashed and was restarted by `/cronloop.sh`; check the lines above it |
+| Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
 | Backup failures produce no email | `SMTP_TO`/`SMTP_HOST` unset (the script then skips mail); msmtp writes to stderr, so inspect `fly logs` |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
-| Caddy exited and the proxy stopped responding | `/caddy-loop.sh` restarts Caddy in place; if the whole container dies, Fly restarts the machine because it is no longer marked restartable |
+| Caddy exited and the proxy stopped responding | `/supervise.sh caddy ...` restarts Caddy in place; if the whole container dies, Fly restarts the machine because it is no longer marked restartable |
 
 ## 🛠️ Management & Operations
 
@@ -188,7 +188,6 @@ fly apps restart               # Restart all instances
 /restic.sh snapshots           # List all snapshots
 /restic.sh restore-test        # Restore latest snapshot into /tmp and validate
 /restic.sh restore <id>        # Restore from specific snapshot
-/restic.sh test                # Test email notifications
 ```
 
 ### Log Inspection
@@ -196,6 +195,18 @@ fly apps restart               # Restart all instances
 ```bash
 cat /data/restic-logs/*.log    # Check persisted backup logs
 fly logs                       # Includes msmtp output (logfile is /dev/stderr)
+```
+
+### Verification
+
+```bash
+shellcheck scripts/*.sh          # Static analysis for every helper script
+scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
+scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
+scripts/deps.sh compare ...      # Compare resolved values against the Dockerfile pins
+scripts/deps.sh apk <image>      # List Alpine packages with a pending upgrade
+docker build -t vaultwarden:local .
+docker run --rm --entrypoint caddy vaultwarden:local validate --config /Caddyfile --adapter caddyfile
 ```
 
 ## 🔐 Security Headers

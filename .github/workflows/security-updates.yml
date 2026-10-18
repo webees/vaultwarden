@@ -18,213 +18,104 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: 🔎 Resolve Vaultwarden base image
-        id: upstream
-        run: |
-          set -euo pipefail
-          tag=""
-          for page in $(seq 1 20); do
-            json="$(curl -fsSL "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
-            found="$(jq -r '[.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))] | first' <<< "$json")"
-            if [ -n "$found" ] && [ "$found" != "null" ]; then
-              tag="$found"
-              break
-            fi
-          done
-          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
-            echo "Could not resolve the latest upstream tag" >&2
-            exit 1
-          fi
-          token="$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' \
-            | jq -r .token)"
-          digest="$(curl -fsSI -H "Authorization: Bearer ${token}" \
-            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-            "https://registry-1.docker.io/v2/vaultwarden/server/manifests/${tag}" \
-            | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}')"
-          if [ -z "$digest" ]; then
-            echo "Could not resolve the digest for ${tag}" >&2
-            exit 1
-          fi
-          echo "version=${tag%-alpine}" >> "$GITHUB_OUTPUT"
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: 🔎 Resolve the Vaultwarden base image
+        id: base
+        run: scripts/deps.sh base
 
       - name: 🧰 Resolve supercronic and overmind
         id: tools
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
+        run: scripts/deps.sh tools
 
-          sc_release="$(gh api 'repos/aptible/supercronic/releases?per_page=20' \
-            --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
-          sc_tag="$(jq -r '.tag_name' <<< "$sc_release")"
-          sc_amd64="$(jq -r '.assets[] | select(.name | test("linux-amd64$")) | .browser_download_url' <<< "$sc_release")"
-          sc_arm64="$(jq -r '.assets[] | select(.name | test("linux-arm64$")) | .browser_download_url' <<< "$sc_release")"
-          sc_sha_amd64="$(curl -fsSL "$sc_amd64" | sha256sum | cut -d' ' -f1)"
-          sc_sha_arm64="$(curl -fsSL "$sc_arm64" | sha256sum | cut -d' ' -f1)"
-
-          om_release="$(gh api 'repos/DarthSim/overmind/releases?per_page=20' \
-            --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
-          om_tag="$(jq -r '.tag_name' <<< "$om_release")"
-          om_sha_amd64="$(curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-amd64.gz" \
-            | gunzip -c | sha256sum | cut -d' ' -f1)"
-          om_sha_arm64="$(curl -fsSL "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-arm64.gz" \
-            | gunzip -c | sha256sum | cut -d' ' -f1)"
-
-          {
-            echo "supercronic_version=${sc_tag}"
-            echo "supercronic_sha_amd64=${sc_sha_amd64}"
-            echo "supercronic_sha_arm64=${sc_sha_arm64}"
-            echo "overmind_version=${om_tag}"
-            echo "overmind_sha_amd64=${om_sha_amd64}"
-            echo "overmind_sha_arm64=${om_sha_arm64}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: 📌 Compare pins with upstream
+      - name: 📌 Compare the Dockerfile pins
         id: compare
-        env:
-          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
-          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
-          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
-          SUPERCRONIC_SHA_AMD64: ${{ steps.tools.outputs.supercronic_sha_amd64 }}
-          SUPERCRONIC_SHA_ARM64: ${{ steps.tools.outputs.supercronic_sha_arm64 }}
-          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
-          OVERMIND_SHA_AMD64: ${{ steps.tools.outputs.overmind_sha_amd64 }}
-          OVERMIND_SHA_ARM64: ${{ steps.tools.outputs.overmind_sha_arm64 }}
         run: |
-          set -euo pipefail
-          current() { sed -n "s/^ARG $1=//p" Dockerfile | head -n 1; }
-          compare() {
-            if [ "$(current "$1")" = "$2" ]; then
-              echo "ok   $1"
-            else
-              echo "diff $1: $(current "$1") -> $2"
-              echo changed=true >> "$GITHUB_OUTPUT"
-            fi
-          }
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-          compare VAULTWARDEN_VERSION "$UPSTREAM_VERSION"
-          compare VAULTWARDEN_DIGEST "$UPSTREAM_DIGEST"
-          compare SUPERCRONIC_VERSION "$SUPERCRONIC_VERSION"
-          compare SUPERCRONIC_SHA256_amd64 "$SUPERCRONIC_SHA_AMD64"
-          compare SUPERCRONIC_SHA256_arm64 "$SUPERCRONIC_SHA_ARM64"
-          compare OVERMIND_VERSION "$OVERMIND_VERSION"
-          compare OVERMIND_SHA256_amd64 "$OVERMIND_SHA_AMD64"
-          compare OVERMIND_SHA256_arm64 "$OVERMIND_SHA_ARM64"
+          scripts/deps.sh compare \
+            VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
+            VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
+            SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
+            SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
+            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}" \
+            OVERMIND_VERSION="${{ steps.tools.outputs.overmind_version }}" \
+            OVERMIND_SHA256_amd64="${{ steps.tools.outputs.overmind_sha_amd64 }}" \
+            OVERMIND_SHA256_arm64="${{ steps.tools.outputs.overmind_sha_arm64 }}"
 
-      - name: 📦 Compare Alpine packages
+      - name: 📦 Compare the Alpine packages
         id: apk
         if: steps.compare.outputs.changed == 'true'
-        env:
-          BASE_IMAGE: vaultwarden/server@${{ steps.upstream.outputs.digest }}
+        run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
+
+      - name: 🔧 Update the pins and validate the build
+        if: steps.compare.outputs.changed == 'true'
         run: |
-          set -euo pipefail
-          rows="$(docker run --rm "$BASE_IMAGE" sh -c \
-            'apk update >/dev/null 2>&1; apk version -v -l "<" 2>/dev/null' \
-            | awk 'NF == 3 {print $1, $3}')"
-          count="$(printf '%s\n' "$rows" | grep -c . || true)"
-          {
-            echo "count=${count}"
-            echo "rows<<APK_EOF"
-            printf '%s\n' "$rows"
-            echo "APK_EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "upgradable packages: ${count}"
-          printf '%s\n' "$rows"
+          scripts/deps.sh apply \
+            VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
+            VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
+            SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
+            SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
+            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}" \
+            OVERMIND_VERSION="${{ steps.tools.outputs.overmind_version }}" \
+            OVERMIND_SHA256_amd64="${{ steps.tools.outputs.overmind_sha_amd64 }}" \
+            OVERMIND_SHA256_arm64="${{ steps.tools.outputs.overmind_sha_arm64 }}"
+          docker build --tag dependency-check:local .
+          docker run --rm --entrypoint caddy dependency-check:local \
+            validate --config /Caddyfile --adapter caddyfile
 
-      - name: 🐳 Validate the image builds
-        if: steps.compare.outputs.changed == 'true'
-        run: docker build -t dependency-check:local .
-
-      - name: 🔧 Update pinned versions and checksums
-        if: steps.compare.outputs.changed == 'true'
-        env:
-          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
-          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
-          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
-          SUPERCRONIC_SHA_AMD64: ${{ steps.tools.outputs.supercronic_sha_amd64 }}
-          SUPERCRONIC_SHA_ARM64: ${{ steps.tools.outputs.supercronic_sha_arm64 }}
-          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
-          OVERMIND_SHA_AMD64: ${{ steps.tools.outputs.overmind_sha_amd64 }}
-          OVERMIND_SHA_ARM64: ${{ steps.tools.outputs.overmind_sha_arm64 }}
-        run: |
-          set -euo pipefail
-          set_pin() { sed -i "s|^ARG $1=.*|ARG $1=$2|" Dockerfile; }
-          set_pin VAULTWARDEN_VERSION "$UPSTREAM_VERSION"
-          set_pin VAULTWARDEN_DIGEST "$UPSTREAM_DIGEST"
-          set_pin SUPERCRONIC_VERSION "$SUPERCRONIC_VERSION"
-          set_pin SUPERCRONIC_SHA256_amd64 "$SUPERCRONIC_SHA_AMD64"
-          set_pin SUPERCRONIC_SHA256_arm64 "$SUPERCRONIC_SHA_ARM64"
-          set_pin OVERMIND_VERSION "$OVERMIND_VERSION"
-          set_pin OVERMIND_SHA256_amd64 "$OVERMIND_SHA_AMD64"
-          set_pin OVERMIND_SHA256_arm64 "$OVERMIND_SHA_ARM64"
-          git diff -- Dockerfile
-
-      - name: 📬 Open a pull request
-        if: steps.compare.outputs.changed == 'true'
+      - name: 📬 Open the dependency PR
         id: pr
+        if: steps.compare.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
-          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
-          SUPERCRONIC_VERSION: ${{ steps.tools.outputs.supercronic_version }}
-          OVERMIND_VERSION: ${{ steps.tools.outputs.overmind_version }}
+          VERSION: ${{ steps.base.outputs.version }}
+          DIGEST: ${{ steps.base.outputs.digest }}
+          SUPERCRONIC: ${{ steps.tools.outputs.supercronic_version }}
+          OVERMIND: ${{ steps.tools.outputs.overmind_version }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
           set -euo pipefail
-          branch="deps/upstream-${UPSTREAM_VERSION}"
+          branch="deps/upstream-${VERSION}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Automated daily dependency check."
+            echo
+            echo "| Dependency | Pinned |"
+            echo "| :--- | :--- |"
+            echo "| vaultwarden/server | ${VERSION}-alpine @ ${DIGEST} |"
+            echo "| supercronic | ${SUPERCRONIC} |"
+            echo "| overmind | ${OVERMIND} |"
+            echo
+            echo "Alpine package updates available inside the base image (\`${APK_COUNT:-0}\`):"
+            echo
+            if [ "${APK_COUNT:-0}" -gt 0 ]; then
+              echo "| Installed | Available |"
+              echo "| :--- | :--- |"
+              printf '%s\n' "$APK_ROWS" | awk 'NF {print "| `" $1 "` | `" $2 "` |"}'
+            else
+              echo "_No package upgrades are pending in the pinned base image._"
+            fi
+            echo
+            echo "Merging rebuilds a timestamped image and rolls the new digest out to Fly automatically."
+          } > /tmp/pr-body.md
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add Dockerfile
-          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
-          body="Automated daily dependency check."$'\n\n'
-          body+="| Dependency | Pinned |"$'\n'
-          body+="| :--- | :--- |"$'\n'
-          body+="| vaultwarden/server | ${UPSTREAM_VERSION}-alpine @ ${UPSTREAM_DIGEST} |"$'\n'
-          body+="| supercronic | ${SUPERCRONIC_VERSION} |"$'\n'
-          body+="| overmind | ${OVERMIND_VERSION} |"$'\n\n'
-          body+="Alpine package updates available inside the base image (\`${APK_COUNT}\`):"$'\n\n'
-          if [ "${APK_COUNT:-0}" -gt 0 ]; then
-            body+="| Installed | Available |"$'\n'
-            body+="| :--- | :--- |"$'\n'
-            while read -r installed available; do
-              [ -n "$installed" ] || continue
-              body+="| \`${installed}\` | \`${available}\` |"$'\n'
-            done <<< "$APK_ROWS"
-          else
-            body+="_No package upgrades are pending in the pinned base image._"$'\n'
-          fi
-          body+=$'\n'
-          body+="Merging this PR rebuilds and publishes a new timestamped image; the deploy workflow then rolls the new digest out to Fly automatically."
           gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
             --title "chore(deps): update pinned upstream dependencies" \
-            --body "$body" \
-            || echo "PR already exists"
-
-      - name: 🛠️ Build with the updated pins
-        if: steps.compare.outputs.changed == 'true'
-        run: docker build --tag dependency-check:local .
-
-      - name: 🧪 Validate the patched Caddy configuration
-        if: steps.compare.outputs.changed == 'true'
-        run: |
-          docker run --rm --entrypoint caddy dependency-check:local \
-            validate --config /Caddyfile --adapter caddyfile
+            --body-file /tmp/pr-body.md || echo "PR already exists"
 
       - name: 🔀 Merge the dependency PR
         if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.pr.outputs.branch }}
-        run: |
-          set -euo pipefail
-          gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" \
-            --squash --delete-branch
+        run: gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
