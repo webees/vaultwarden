@@ -91,12 +91,20 @@ fly secrets set SMTP_USERNAME="sender@example.com"
 fly secrets set SMTP_PASSWORD="app-specific-password"
 
 # SMTP_FROM defaults to SMTP_TO when it is left unset, so the app still boots
-# with only the two variables the failure alerts need.
+# when only SMTP_HOST and SMTP_TO are set for the monthly alert email.
+
+# Optional hardening. Registration is closed unless SIGNUPS_ALLOWED is "true",
+# and the admin panel stays disabled while ADMIN_TOKEN is unset.
+fly secrets set SIGNUPS_ALLOWED="false"
+fly secrets set SHOW_PASSWORD_HINT="false"
+# fly secrets set ADMIN_TOKEN="..."   # only when /admin has to be reachable
 
 # Anything saved through the /admin panel is written to /data/config.json, and
-# that file outranks the environment. Vaultwarden logs every key it overrides at
-# startup, so setting one of those keys here changes nothing until it is changed
-# in /admin too, or that key is dropped from /data/config.json.
+# that file outranks the environment. `admin_token`, the `smtp_*` keys and
+# `signups_allowed` are the ones that usually drift: `fly secrets set` changes
+# nothing while the key sits in /data/config.json. Vaultwarden logs every key it
+# overrides at startup, so either change the setting in /admin as well, or drop
+# the key from /data/config.json and restart.
 
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
@@ -235,7 +243,7 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
-| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them: `/data/config.json` was written by the admin panel and outranks the environment. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
+| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email, so check `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` and the `Telegram notification failed` line in the run log in `/data/restic-logs`. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
