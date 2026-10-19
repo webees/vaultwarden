@@ -476,13 +476,25 @@ if [ "$hang_elapsed" -lt 30 ]; then
 else
     bad "the hung backend was not killed (${hang_elapsed}s)"
 fi
+# The captured stream is drained through a pipe, and a pipe only closes once
+# every writer is gone. A helper the timed-out command left behind therefore
+# held the run open past the timeout and kept the backup lock with it, so the
+# timeout has to reach the whole process tree and not just the direct child.
+# `snapshots` is the probe because it is not piped: a surviving helper shows up
+# straight away instead of only once it finally exits on its own, which would
+# let this pass for the wrong reason.
+PATH="$stub_dir:$PATH" RESTIC_QUICK_TIMEOUT=1 RESTIC_LONG_TIMEOUT=1 \
+    RESTIC_REPOSITORY=/tmp/selftest-hang /restic.sh snapshots \
+    >/tmp/selftest-helper.log 2>&1
+same "the timeout signals the helpers a command leaves behind" 0 \
+    "$(pgrep -f 'sleep 300' | grep -c .)"
 same "a hung backend is recorded as failed" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 rm -rf "$stub_dir"
 
-# The run above left stub children alive. They must not have inherited the
-# backup lock: one that outlives the run would block every later backup, and
-# those exits are treated as an intentional concurrent run, so nobody alerts.
+# Nothing the timed-out run spawned may hold the backup lock: a child that
+# outlives the run would block every later backup, and those exits are treated
+# as an intentional concurrent run, so nobody alerts.
 if flock -n /data/restic-logs/backup.lock -c true 2>/dev/null; then
     ok "the killed run did not leak the backup lock to its children"
 else
@@ -537,6 +549,50 @@ if grep -q 'check-freshness' /crontab; then
     ok "the freshness guard is scheduled in /crontab"
 else
     bad "the freshness guard is not scheduled in /crontab"
+fi
+
+# run() caps the stream it captures at 8x RESTIC_LOG_MAX_BYTES. That cap must
+# reach the captured output and nothing else: `ulimit -f` covered every file the
+# wrapped command wrote, so once the SQLite hot copy outgrew it the copy died
+# with SIGXFSZ and every hourly backup failed on a database that had simply
+# grown, while `restic restore` answered "file too large" for any attachment
+# above the same size and could not bring the instance back at all.
+#
+# The probe is three times the documented cap on purpose: a file-size limit
+# reads in 1024-byte blocks under bash, so a probe sized to the cap alone would
+# still pass against the broken doubling.
+# shellcheck disable=SC2016  # the pattern must reach sed with its $ intact
+default_log_bytes="$(sed -n 's/^MAX_LOG_BYTES="\${RESTIC_LOG_MAX_BYTES:-\([0-9][0-9]*\)}".*$/\1/p' /restic.sh)"
+case "$default_log_bytes" in
+    ''|*[!0-9]*)
+        bad "could not read the default RESTIC_LOG_MAX_BYTES out of /restic.sh"
+        default_log_bytes=262144
+        ;;
+esac
+stream_cap=$(( default_log_bytes * 8 ))
+probe_rows=$(( stream_cap * 3 / 1048576 + 1 ))
+su-exec vaultwarden:vaultwarden sqlite3 /data/db.sqlite3 \
+    'CREATE TABLE IF NOT EXISTS cap_probe(v BLOB); DELETE FROM cap_probe;'
+probe_row=0
+while [ "$probe_row" -lt "$probe_rows" ]; do
+    su-exec vaultwarden:vaultwarden sqlite3 /data/db.sqlite3 \
+        'INSERT INTO cap_probe VALUES(zeroblob(1048576));'
+    probe_row=$(( probe_row + 1 ))
+done
+probe_bytes="$(stat -c %s /data/db.sqlite3)"
+if [ "$probe_bytes" -le "$stream_cap" ]; then
+    bad "the cap probe left the database at ${probe_bytes} bytes, not above ${stream_cap}"
+elif /restic.sh backup >/tmp/selftest-cap-copy.log 2>&1; then
+    ok "a database above the ${stream_cap}-byte output cap still backs up (${probe_bytes} bytes)"
+else
+    bad "a database above the ${stream_cap}-byte output cap broke the backup"
+    sed -n '1,20p' /tmp/selftest-cap-copy.log >&2
+fi
+hot_bytes="$(stat -c %s /data/backup.bak 2>/dev/null || echo 0)"
+if [ "$hot_bytes" -gt "$stream_cap" ]; then
+    ok "the drill below carries a ${hot_bytes}-byte hot copy, above the cap"
+else
+    bad "the drill below carries only ${hot_bytes} bytes and would not exercise the cap"
 fi
 
 /restic.sh restore-test >/tmp/selftest-drill.log 2>&1
