@@ -126,7 +126,7 @@ fly deploy
 ## 🔢 Versions & Upgrades
 
 Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST`, the
-`SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `security-updates` workflow
+`SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `dependency-updates` workflow
 runs daily, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
