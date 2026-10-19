@@ -410,7 +410,7 @@ restore() {
 
 # Restore a snapshot into a temporary directory and validate the important files
 restore_test() {
-    local snapshot="${1:-latest}" tmp_parent free_bytes needed_bytes table stats_json
+    local snapshot="${1:-latest}" tmp_parent free_bytes free_kb needed_bytes table stats_json
     tmp_parent="${TMPDIR:-/tmp}"
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
     RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
@@ -436,8 +436,19 @@ restore_test() {
             exit 2
             ;;
     esac
-    free_bytes="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4 * 1024}')"
-    free_bytes="${free_bytes:-0}"
+    # A failed df is not a zero-byte volume: keep the two failure modes apart so
+    # the drill names the real cause instead of claiming the disk is full.
+    if ! free_kb="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4}')"; then
+        log echo -e "${R}Unable to read free space for the restore drill${X}"
+        exit 2
+    fi
+    case "$free_kb" in
+        ''|*[!0-9]*)
+            log echo -e "${R}Unable to read free space for the restore drill${X}"
+            exit 2
+            ;;
+    esac
+    free_bytes=$((free_kb * 1024))
     needed_bytes=$((needed_bytes + needed_bytes / 5 + 67108864))
     if [ "$free_bytes" -lt "$needed_bytes" ]; then
         log echo -e "${R}Not enough free space for the restore drill${X}"
