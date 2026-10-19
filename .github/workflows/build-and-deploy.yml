@@ -142,7 +142,7 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
 
-      # The daily dependency job only reports pending package upgrades. An image
+      # The two-hour dependency job only reports pending package upgrades. An image
       # that is published (and then deployed) with an upgrade already available
       # means the dependency layer is behind, so fail instead of shipping it;
       # re-running the workflow rebuilds with the patched package.

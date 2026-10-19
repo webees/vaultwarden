@@ -211,7 +211,7 @@ esac
 same "a rejected pair leaves earlier pairs unwritten" "$guard_before" \
     "$(cksum < "$apply_tree/Dockerfile")"
 
-# The daily job re-runs apply with identical values, so the rewrite must be a
+# The two-hour job re-runs apply with identical values, so the rewrite must be a
 # no-op then: a growing diff would reopen the PR on every schedule.
 # Stage the applied state first, otherwise the diff below is measured against
 # the pre-apply index and shows the first run's change all over again.
@@ -502,7 +502,7 @@ else
     bad "build-and-deploy.yml does not smoke test the published image, or the smoke test is duplicated inline"
 fi
 
-# The daily dependency job reports pending package upgrades, but nothing failed
+# The two-hour dependency job reports pending package upgrades, but nothing failed
 # when the image that actually gets deployed still carried them.
 if ruby -ryaml -e '
     runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
@@ -675,7 +675,7 @@ if ruby -ryaml -e '
     exit 1 unless (rebuild["if"] || "").include?("success()")
     exit 1 unless (doc["permissions"] || {})["actions"] == "write"
   '; then
-    ok "the daily check probes packages every run and dispatches a rebuild when needed"
+    ok "the two-hour check probes packages every run and dispatches a rebuild when needed"
 else
     bad "package-only updates still wait for the weekly rebuild"
 fi
@@ -1280,6 +1280,26 @@ if [ -z "$missing_keys" ]; then
     ok "the config.json override warning covers every key the README names"
 else
     bad "the config.json override warning misses documented keys:${missing_keys}"
+fi
+
+# The dependency check moved from daily to every two hours, but the operator
+# docs and the nearby comments still described the old cadence. Pin the
+# wording so the runbook cannot quietly drift from the workflow again.
+if stale_cadence="$(grep -nE 'runs dai[l]y|checks them dai[l]y|dai[l]y job|dai[l]y check' \
+    README.md Dockerfile scripts/deps.sh \
+    .github/workflows/build-and-deploy.yml tests/selftest.sh)"; then
+    bad "stale dependency cadence wording remains: ${stale_cadence//$'\n'/; }"
+else
+    stale_status=$?
+    if [ "$stale_status" -eq 1 ]; then
+        if grep -qF 'runs every two hours' README.md; then
+            ok "the dependency docs and comments describe the two-hour cadence"
+        else
+            bad "README does not document the dependency workflow's two-hour cadence"
+        fi
+    else
+        bad "could not scan the repository for stale dependency cadence wording"
+    fi
 fi
 
 echo
