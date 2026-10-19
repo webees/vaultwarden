@@ -3,7 +3,9 @@ name: 🧹 GHCR Cleanup
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * *'
+    # Minute 17, not 0: GitHub queues scheduled runs behind the hourly load
+    # spike, so the top of the hour is the slowest slot to pick.
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
@@ -17,9 +19,14 @@ concurrency:
 jobs:
   cleanup:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The cleanup only talks to the API through the composite action, so
+          # the workflow token does not belong in .git/config.
+          persist-credentials: false
 
       - name: 🔍 Cleanup GHCR
         uses: ./.github/actions/expire-tags
