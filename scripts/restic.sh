@@ -159,25 +159,39 @@ send_mail() {
 # are secrets: the request contains them, but the persistent run log must not.
 send_telegram() {
     [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && return 0
-    local text="$1" out rc
+    local text="$1" out rc status body
     # No --fail on purpose: the API answers a rejection with its own explanation,
     # and --fail discards that body, so the run log kept "exit 22" as the only
     # clue. Success is read from the body below, so a 4xx cannot pass as sent.
     out="$(curl -sS -m 10 --retry 2 \
+        -w '\n%{http_code}' \
         --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=[$APP_NAME] ${text}" \
         "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1)"
     rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+    # curl appends the HTTP status after the body; keep them apart so a JSON
+    # error body is not mistaken for the transport result.
+    status="${out##*$'\n'}"
+    body="${out%$'\n'*}"
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
         log echo -e "${G}Telegram notification sent${X}"
         return 0
     fi
-    log echo -e "${R}Telegram notification failed (exit ${rc})${X}"
+    # `exit 0` here used to mean "curl reached the API and the API said no",
+    # which read like success. Name the HTTP status instead, and keep the curl
+    # exit code only for a transport failure.
+    if [ "$rc" -ne 0 ]; then
+        log echo -e "${R}Telegram notification failed (curl exit ${rc})${X}"
+    elif [ -n "$status" ] && [ "$status" != "000" ]; then
+        log echo -e "${R}Telegram notification failed (HTTP ${status})${X}"
+    else
+        log echo -e "${R}Telegram notification failed (no HTTP response)${X}"
+    fi
     # Record whatever came back — the API's error body or curl's own message —
     # with the token redacted: a proxy error page echoes the URL it refused, and
     # the run log is the only place an operator can see why the alert vanished.
-    [ -n "$out" ] && log printf '%s\n' \
-        "$(printf '%s\n' "$out" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
+    [ -n "$body" ] && log printf '%s\n' \
+        "$(printf '%s\n' "$body" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
     return 0
 }
 

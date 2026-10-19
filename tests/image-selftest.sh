@@ -404,7 +404,7 @@ same "a failed run sends one Telegram message" 1 \
 # the reason the API gave was being thrown away. The assertions below fail until
 # the request stops asking curl to hide it.
 # shellcheck disable=SC2016  # the stub's own $@/$arg must stay literal
-printf '#!/bin/sh\nfail=\nfor arg in "$@"; do case "$arg" in -f|--fail|-*f*) fail=1 ;; esac; done\nif [ -n "$fail" ]; then echo "curl: (22) The requested URL returned error: 401" >&2; exit 22; fi\nprintf "%%s\\n" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\n' \
+printf '#!/bin/sh\nfail=\nformat=\nwhile [ "$#" -gt 0 ]; do case "$1" in -f|--fail|-*f*) fail=1 ;; -w) shift; format="$1" ;; -w*) format="${1#-w}" ;; esac; shift; done\nif [ -n "$fail" ]; then echo "curl: (22) The requested URL returned error: 401" >&2; exit 22; fi\nprintf "%%s" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\nif [ -n "$format" ]; then printf "%%b" "$format" | sed "s/%%{http_code}/401/g"; fi\n' \
     > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
 seed_status "$(date -u +%s)"
@@ -419,6 +419,10 @@ same "a rejected notification redacts the token" 0 \
     "$(grep -c '123456:selftest' /tmp/selftest-tg-reject.log)"
 same "a rejected notification keeps the redaction marker" 1 \
     "$(grep -c '<redacted>' /tmp/selftest-tg-reject.log)"
+same "a rejected notification records the HTTP status" 1 \
+    "$(grep -c 'Telegram notification failed (HTTP 401)' /tmp/selftest-tg-reject.log)"
+same "a rejected notification does not report a successful curl exit" 0 \
+    "$(grep -c 'Telegram notification failed (exit 0)' /tmp/selftest-tg-reject.log)"
 
 TELEGRAM_BOT_TOKEN='123456:selftest' /restic.sh snapshots \
     >/tmp/selftest-tg-half.log 2>&1
