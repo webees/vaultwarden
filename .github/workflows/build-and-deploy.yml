@@ -199,10 +199,25 @@ jobs:
           # Same failure mode, different victim: report the dependency check if
           # it stops firing, without blocking the deploy. Count the workflow_run
           # fallback as an automatic check too; otherwise a healthy fallback
-          # still prints "no scheduled dependency check has ever run".
-          if ! deps_last="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency-updates.yml/runs?per_page=50" \
-            --jq '[.workflow_runs[] | select(.event == "schedule" or .event == "workflow_run")] | first | .created_at // empty')"; then
+          # still prints "no scheduled dependency check has ever run". Query the
+          # two events separately and take the newest: a single windowed query
+          # could push the automatic run past the page limit once enough manual
+          # runs accumulate, and then misreport a healthy check as never run.
+          deps_last=""
+          deps_read_ok=false
+          for deps_event in schedule workflow_run; do
+            if deps_at="$(timeout 30 gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency-updates.yml/runs?event=${deps_event}&per_page=1" \
+              --jq '.workflow_runs[0].created_at // empty')"; then
+              deps_read_ok=true
+              if [ -n "$deps_at" ] && { [ -z "$deps_last" ] || [[ "$deps_at" > "$deps_last" ]]; }; then
+                deps_last="$deps_at"
+              fi
+            else
+              echo "::warning::could not read the dependency check history for event=${deps_event}"
+            fi
+          done
+          if [ "$deps_read_ok" != true ]; then
             echo "::warning::could not read the dependency check history"
           elif [ -z "$deps_last" ]; then
             echo "::warning::no automatic dependency check has ever run"
