@@ -49,7 +49,7 @@ jobs:
           python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
       - name: 🌐 Refresh the Cloudflare ranges
-        run: scripts/refresh-cloudflare-ips.sh
+        run: scripts/refresh_cloudflare_ips.sh
 
       - name: 🧪 Helper self tests
         run: tests/selftest.sh
@@ -61,7 +61,7 @@ jobs:
         if: github.event_name != 'push'
         run: |
           docker build --tag validate:local .
-          python3 tests/runtime-smoke.py validate:local
+          python3 tests/runtime_smoke.py validate:local
 
       # entrypoint.sh has two branches: write /etc/msmtprc from SMTP_*, or leave
       # it empty so alerts are skipped. Both are exercised here.

@@ -143,7 +143,7 @@ fly deploy
 ## 🔢 Versions & Upgrades
 
 Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST`, the
-`SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `dependency-updates` workflow
+`SUPERCRONIC_VERSION` + checksums, and the `OVERMIND_VERSION` + checksums. The `dependency_updates` workflow
 runs every two hours, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
@@ -161,7 +161,7 @@ Every published build also receives a timestamp tag in `Asia/Shanghai`, for exam
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
 Only commits that can change the image rebuild it: `.gitignore`, `README.md`, `LICENSE`, `.github/**` and
 `tests/**` are skipped, while `fly.toml` and everything the `Dockerfile` copies always rebuild and redeploy.
-Timestamp tags older than 30 days are removed by the nightly `ghcr-cleanup` workflow. GitHub stops
+Timestamp tags older than 30 days are removed by the nightly `ghcr_cleanup` workflow. GitHub stops
 scheduled workflows silently, so the build expires them as well whenever that schedule has not run for a
 week; the run log says which path did the work.
 
@@ -198,7 +198,7 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
 scheduler is still alive. A scheduler that has stopped firing entirely is caught by the external watchdog in
-`.github/workflows/dependency-updates.yml`: it runs the same check against the live app every two hours and
+`.github/workflows/dependency_updates.yml`: it runs the same check against the live app every two hours and
 after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
 is the channel that broke. `HEALTHCHECK_URL` remains an optional third channel for a dedicated
 dead-man's-switch service.
@@ -247,7 +247,7 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
+| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare_ips.caddy` from Cloudflare before every image build |
 | A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (HTTP N)` or `(curl exit N)` followed by the API's own explanation with the token replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
@@ -288,16 +288,16 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 ### Verification
 
 The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
-production access) and `tests/runtime-smoke.py` (boots the image). The image ships no Python on purpose, so
-`tests/image-selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
+production access) and `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
+`tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
 
 ```bash
 shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
-tests/selftest.sh                # supervise.sh, refresh-cloudflare-ips.sh and deps.sh failure paths
-tests/runtime-smoke.py <image>   # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
-scripts/refresh-cloudflare-ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
+tests/selftest.sh                 # supervise.sh, refresh_cloudflare_ips.sh and deps.sh failure paths
+tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
+scripts/refresh_cloudflare_ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
 scripts/deps.sh compare ...      # Compare resolved values against the Dockerfile pins

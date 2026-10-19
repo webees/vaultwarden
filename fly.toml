@@ -1,5 +1,5 @@
 # The app name is intentionally not committed: it is passed at deploy time
-# with `--app` from a repository secret (see .github/workflows/build-and-deploy.yml).
+# with `--app` from a repository secret (see .github/workflows/build_and_deploy.yml).
 # Running `flyctl` by hand needs `--app <name>` too.
 kill_signal = "SIGINT"
 kill_timeout = "5s"

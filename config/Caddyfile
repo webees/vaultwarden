@@ -85,7 +85,7 @@
 		# at the edge, so a direct client cannot impersonate one; only then is
 		# CF-Connecting-IP trusted.
 		@via_cloudflare {
-			import /cloudflare-ips.caddy
+			import /cloudflare_ips.caddy
 			header CF-Connecting-IP *
 		}
 		handle @via_cloudflare {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Refresh config/cloudflare-ips.caddy from Cloudflare's published origin ranges.
+# Refresh config/cloudflare_ips.caddy from Cloudflare's published origin ranges.
 # The Caddyfile trusts CF-Connecting-IP only when Fly-Client-IP falls inside one
 # of these ranges, so a stale file silently degrades client IP accuracy.
 # Run from the repository root; CI runs it before every image build.
@@ -8,7 +8,7 @@ set -euo pipefail
 # Resolve the target from the script location so it works from any directory.
 cd "$(dirname "$0")/.."
 
-readonly TARGET="config/cloudflare-ips.caddy"
+readonly TARGET="config/cloudflare_ips.caddy"
 readonly V4_URL="https://www.cloudflare.com/ips-v4"
 readonly V6_URL="https://www.cloudflare.com/ips-v6"
 # A truncated response must never overwrite the checked-in list.
