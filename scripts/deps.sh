@@ -1,5 +1,5 @@
 #!/bin/bash
-# Dependency pin resolver used by .github/workflows/security-updates.yml.
+# Dependency pin resolver used by .github/workflows/dependency-updates.yml.
 # Usage: deps.sh <base|tools|compare|apply|rebuild-needed> [args...]
 #        deps.sh apk <image>
 # Every resolved or changed value is written to $GITHUB_OUTPUT (or stdout).
