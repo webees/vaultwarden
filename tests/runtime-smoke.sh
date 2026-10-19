@@ -93,10 +93,38 @@ probe_code -H 'Host: example.com' -H 'Fly-Client-IP: 203.0.113.9' \
 probe_code -H 'Host: example.com' -H 'CF-Connecting-IP: 203.0.113.99' \
     http://127.0.0.1:8080/api/config >/dev/null
 
-probe_secret="smoke-cred-$$"
-probe_code -H 'Host: example.com' -H "Authorization: Bearer ${probe_secret}" \
-    -H "Cookie: session=${probe_secret}" -H "X-Api-Key: ${probe_secret}" \
-    http://127.0.0.1:8080/api/config >/dev/null
+# The filter lists ten headers, but this probe used to send three of them: a
+# typo, or a deleted line, in any of the others let that header reach the access
+# log with nothing to notice it. Read the list out of the Caddyfile so the test
+# cannot drift from the config, and send every header it claims to strip.
+filter_headers="$(sed -n 's/.*request>headers>\([^ ]*\) delete.*/\1/p' "$tests_dir/../config/Caddyfile")"
+filter_count="$(printf '%s\n' "$filter_headers" | grep -c .)"
+if [ "$filter_count" -lt 5 ]; then
+    echo "FAIL only ${filter_count} header filter lines were found in the Caddyfile" >&2
+    exit 1
+fi
+probe_args=(-H 'Host: example.com')
+probe_values=""
+probe_count=0
+while IFS= read -r header; do
+    [ -n "$header" ] || continue
+    header_key="$(printf '%s' "$header" | tr '[:upper:]' '[:lower:]')"
+    # Fly-Client-IP is the address Caddy parses into the log's client_ip field,
+    # so its value belongs there and only its key can be asserted below.
+    if [ "$header_key" = "fly-client-ip" ]; then
+        continue
+    fi
+    case "$header_key" in
+        x-forwarded-for) value=198.51.100.11 ;;
+        x-real-ip)       value=198.51.100.12 ;;
+        *)               value="smoke-${header}-$$" ;;
+    esac
+    probe_args+=(-H "${header}: ${value}")
+    probe_values="${probe_values}${value}
+"
+    probe_count=$((probe_count + 1))
+done <<< "$filter_headers"
+probe_code "${probe_args[@]}" http://127.0.0.1:8080/api/config >/dev/null
 sleep 3
 
 # Captured once, and proven non-empty first: an empty string would make both
@@ -124,11 +152,24 @@ if printf '%s\n' "$access_log" | grep -q '"client_ip": "203.0.113.99"'; then
 fi
 echo "a spoofed CF-Connecting-IP is not trusted as the client address"
 
-if printf '%s\n' "$access_log" | grep -q "$probe_secret"; then
-    echo "FAIL credentials reached the access log" >&2
+leaked=""
+while IFS= read -r value; do
+    [ -n "$value" ] || continue
+    if printf '%s\n' "$access_log" | grep -qF "$value"; then
+        leaked="${leaked}${value} "
+    fi
+done <<< "$probe_values"
+# Fly-Client-IP is the one filtered header whose value belongs in the log, as
+# client_ip, so only its header key can be asserted: a filter line that does not
+# match the canonical key leaves the header itself in the logged map.
+if printf '%s\n' "$access_log" | grep -qi 'fly-client-ip'; then
+    leaked="${leaked}Fly-Client-IP-header "
+fi
+if [ -n "$leaked" ]; then
+    echo "FAIL filtered headers reached the access log: ${leaked}" >&2
     exit 1
 fi
-echo "credentials sent to the proxy never reach the access log"
+echo "every header the Caddyfile filters stays out of the access log (${probe_count} values, plus Fly-Client-IP as client_ip)"
 
 docker cp "$tests_dir/lib.sh" "$container:/tmp/lib.sh"
 docker cp "$tests_dir/image-selftest.sh" "$container:/tmp/image-selftest.sh"
@@ -159,6 +200,23 @@ if "$tests_dir/../scripts/deps.sh" apk "$apk_stub_image" >/tmp/deps-apk-stub.log
 fi
 echo "deps.sh apk fails loudly when the index refresh fails"
 rm -f /tmp/deps-apk-stub.log
+
+# Every tool the stack runs has to be in the image: an apk edit that drops one of
+# them only shows up at runtime, in a container that is already serving traffic.
+# (`openssl` is deliberately absent from this list: it comes from the pinned base
+# image, which installs it, and nothing here calls it.)
+required_tools="bash caddy curl mail msmtp restic sqlite3 su-exec tini tmux supercronic overmind"
+missing_tools="$(docker run --rm --entrypoint sh "$image" -c '
+    for tool in '"$required_tools"'; do
+        command -v "$tool" >/dev/null || echo "$tool"
+    done
+' 2>&1)"
+if [ -z "$missing_tools" ]; then
+    echo "the image carries every tool the stack runs (${required_tools})"
+else
+    echo "FAIL missing from the image: $(printf '%s' "$missing_tools" | tr '\n' ' ')" >&2
+    exit 1
+fi
 
 # Email is the only channel that reports a broken backup, and every other check
 # stubs `mail` out. Nothing proved that mailx, the sendmail symlink, msmtp and
