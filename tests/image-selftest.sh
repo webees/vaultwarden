@@ -368,7 +368,13 @@ same "a failed run sends one Telegram message" 1 \
 # token and an unreachable API looked identical in the run log. Record the API's
 # own answer instead, redacted: it names the problem, and a proxy error page can
 # echo the request URL that carries the token.
-printf '#!/bin/sh\nprintf "%%s\\n" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\nexit 0\n' \
+#
+# The stub models real curl, which is the part the previous stub got wrong: with
+# `--fail` curl exits non-zero and prints no response body on an HTTP error, so
+# the reason the API gave was being thrown away. The assertions below fail until
+# the request stops asking curl to hide it.
+# shellcheck disable=SC2016  # the stub's own $@/$arg must stay literal
+printf '#!/bin/sh\nfail=\nfor arg in "$@"; do case "$arg" in -f|--fail|-*f*) fail=1 ;; esac; done\nif [ -n "$fail" ]; then echo "curl: (22) The requested URL returned error: 401" >&2; exit 22; fi\nprintf "%%s\\n" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\n' \
     > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
 seed_status "$(date -u +%s)"
@@ -381,6 +387,8 @@ same "a rejected notification records the API answer" 1 \
     "$(grep -c 'Unauthorized' /tmp/selftest-tg-reject.log)"
 same "a rejected notification redacts the token" 0 \
     "$(grep -c '123456:selftest' /tmp/selftest-tg-reject.log)"
+same "a rejected notification keeps the redaction marker" 1 \
+    "$(grep -c '<redacted>' /tmp/selftest-tg-reject.log)"
 
 TELEGRAM_BOT_TOKEN='123456:selftest' /restic.sh snapshots \
     >/tmp/selftest-tg-half.log 2>&1
