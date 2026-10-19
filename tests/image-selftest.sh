@@ -752,6 +752,21 @@ same "restore drill reports the missing snapshot size" 1 \
     "$(grep -c 'Unable to size snapshot' /tmp/selftest-stats-empty.log)"
 rm -rf "$stats_stub_dir"
 
+# A failed df is not a full disk. The drill must stop with the real cause
+# instead of reporting a made-up zero-byte reading as a capacity failure.
+df_stub_dir="$(mktemp -d)"
+chmod 755 "$df_stub_dir"
+printf '#!/bin/sh\nexit 1\n' > "$df_stub_dir/df"
+chmod 755 "$df_stub_dir/df"
+PATH="$df_stub_dir:$PATH" /restic.sh restore-test \
+    >/tmp/selftest-drill-df.log 2>&1
+same "restore drill refuses when free space cannot be read" 2 "$?"
+same "restore drill reports the free-space read failure" 1 \
+    "$(grep -c 'Unable to read free space' /tmp/selftest-drill-df.log)"
+same "restore drill does not misreport an unreadable free-space check as a full disk" 0 \
+    "$(grep -c 'Not enough free space' /tmp/selftest-drill-df.log)"
+rm -rf "$df_stub_dir"
+
 # restore overwrites /data on purpose, so it runs last and the container is
 # thrown away afterwards. It is also the only command that can destroy a live
 # instance, so the destructive path sits behind an explicit confirmation.
