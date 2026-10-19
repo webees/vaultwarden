@@ -137,6 +137,20 @@ jobs:
       # main now requires the `validate` check, so the merge is armed instead of
       # performed: GitHub merges only once that check passes. Without --auto the
       # merge is refused outright, which is what used to hide the missing gate.
+      #
+      # A pull request opened with GITHUB_TOKEN does not trigger `pull_request`
+      # workflows, so the required check would never register and the merge
+      # would sit armed forever. workflow_dispatch is exempt from that rule, so
+      # run validate on the pushed branch ourselves before arming.
+      - name: ✅ Register the required validate check
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          gh workflow run validate.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
       - name: 🔀 Arm auto-merge on the dependency PR
         id: arm
         if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
