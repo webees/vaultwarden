@@ -162,7 +162,7 @@ jobs:
       - name: 🚑 Runtime smoke test the published image
         env:
           DIGEST: ${{ steps.digest.outputs.digest }}
-        run: bash tests/runtime-smoke.sh "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+        run: python3 tests/runtime-smoke.py "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       # GitHub stops scheduled workflows without saying so: this repository's
       # nightly cleanup last ran on 2026-01-03, so the 30-day tag expiry the
