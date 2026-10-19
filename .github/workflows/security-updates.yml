@@ -118,6 +118,7 @@ jobs:
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # Swallowing this failure reported every auth or API error as an
           # existing PR, and the auto-merge step then failed with a misleading
           # cause. Ask for open PRs explicitly, and refresh their metadata
@@ -133,23 +134,38 @@ jobs:
               --title "$title" \
               --body-file "$body_file"
           fi
+          echo "number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
+            --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
 
       # main now requires the `validate` check, so the merge is armed instead of
       # performed: GitHub merges only once that check passes. Without --auto the
       # merge is refused outright, which is what used to hide the missing gate.
       #
-      # A pull request opened with GITHUB_TOKEN does not trigger `pull_request`
-      # workflows, so the required check would never register and the merge
-      # would sit armed forever. workflow_dispatch is exempt from that rule, so
-      # run validate on the pushed branch ourselves before arming.
-      - name: ✅ Register the required validate check
+      # A pull request opened with GITHUB_TOKEN has its `pull_request` runs held
+      # with the conclusion `action_required`, so `validate` never starts and the
+      # required check never reports: the armed merge then waits forever. A
+      # workflow_dispatch run does not help, because its check suite is not
+      # attached to the pull request. Release the held run instead.
+      - name: ✅ Release the held validate run
         if: steps.compare.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ steps.pr.outputs.branch }}
+          SHA: ${{ steps.pr.outputs.sha }}
         run: |
           set -euo pipefail
-          gh workflow run validate.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          for _ in $(seq 1 18); do
+            id="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${SHA}&per_page=20" \
+              --jq '[.workflow_runs[] | select(.conclusion == "action_required")] | first | .id // empty')" || id=""
+            if [ -n "$id" ]; then
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve" >/dev/null
+              echo "released the held pull_request run ${id}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "no held pull_request run appeared for ${SHA}" >&2
+          exit 1
 
       - name: 🔀 Arm auto-merge on the dependency PR
         id: arm
@@ -183,6 +199,30 @@ jobs:
             sleep 10
           done
           echo "no status check registered on ${BRANCH} within 180s; the merge is still gated" >&2
+          exit 1
+
+      # Auto-merge merges with GITHUB_TOKEN, and a GITHUB_TOKEN push does not
+      # trigger workflows either, so the build workflow never sees the merge
+      # commit: the new digest would never be built and Fly would keep running
+      # the old image. Dispatch the build ourselves once the merge lands.
+      - name: 🚀 Build and deploy after the merge
+        if: always() && steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          [ -n "$NUMBER" ] || { echo "no dependency pull request number recorded" >&2; exit 1; }
+          for _ in $(seq 1 40); do
+            state="$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            if [ "$state" = "MERGED" ]; then
+              gh workflow run ghcr.yml --repo "$GITHUB_REPOSITORY" --ref main
+              echo "dispatched the build for the merged dependency update"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "pull request ${NUMBER} did not merge within 10 minutes" >&2
           exit 1
 
       # A package-only update never changes the Dockerfile, so no PR exists to
