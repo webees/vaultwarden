@@ -101,8 +101,8 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 
-# Optional: notify after every successful backup. Telegram only, so an hourly
-# backup does not fill the mailbox that incidents use.
+# Optional: notify after every successful backup. Telegram only, like every
+# other hourly alert, so the mailbox stays reserved for the monthly check.
 fly secrets set BACKUP_NOTIFY_ON_SUCCESS="true"
 
 # Optional Telegram notifications. The bot must be able to post to the target.
@@ -174,7 +174,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email and Telegram on failure, a Telegram-only success notification when `BACKUP_NOTIFY_ON_SUCCESS=true`, hourly staleness and volume checks, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
+| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check also emails. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
@@ -185,12 +185,12 @@ fly ssh console -C "/restic.sh check-disk"     # how full the data volume is
 fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
 ```
 
-`/restic.sh check-freshness` runs at `:45` every hour and emails when no backup has succeeded for
+`/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
 scheduler is still alive. A scheduler that has stopped firing entirely is only visible through
 `HEALTHCHECK_URL`, so point that at a dead-man's-switch service if you want a second, independent channel.
 
-`/restic.sh check-disk` runs at `:35` every hour and alerts when `/data` is at least
+`/restic.sh check-disk` runs at `:35` every hour and alerts over Telegram when `/data` is at least
 `BACKUP_MAX_USAGE_PERCENT` full (default 85). Attachments, the icon cache and the database all live on
 that volume and it is grown by migrating the data rather than in place, so this is the warning that leaves
 time to do that deliberately. A reading that never arrives is reported as a failure rather than a healthy
@@ -236,7 +236,7 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
 | A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them: `/data/config.json` was written by the admin panel and outranks the environment. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
-| Backup failures produce no email | Check the run log in `/data/restic-logs`: it records `Alert email sent to …` or `Alert email failed (exit N)` with the mailer's error. Mail is skipped entirely when `SMTP_TO` is unset, and an unset `SMTP_HOST` fails with `account default not found` |
+| No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email, so check `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` and the `Telegram notification failed` line in the run log in `/data/restic-logs`. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |

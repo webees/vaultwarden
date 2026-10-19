@@ -180,8 +180,10 @@ send_telegram() {
     return 0
 }
 
-# One notification entry point for email and Telegram. Each channel is optional.
-notify() {
+# The rare channel: email and Telegram. A job that runs every hour would repeat
+# this alert up to 24 times a day, so the hourly jobs ping Telegram only and
+# keep this for the monthly integrity check. Each channel is optional.
+notify_rare() {
     local subject="$1"
     send_mail "$subject"
     send_telegram "$subject"
@@ -304,7 +306,7 @@ trim_logs() {
 backup() {
     trap 'rc=$?; if [ "${rc:-0}" -ne 0 ] && [ "${rc:-0}" -ne 3 ]; then
         write_status failed "Task failed: ${CURRENT_STEP:-backup} (exit ${rc})"
-        notify "Task Failed: ${CURRENT_STEP:-backup}"
+        send_telegram "Task Failed: ${CURRENT_STEP:-backup}"
         heartbeat fail
     fi' EXIT
 
@@ -353,9 +355,9 @@ backup() {
     LAST_SUCCESS="$(date -u +%s)"
     write_status ok "Backup complete${trim_message}"
     log echo -e "${G}Backup process complete ✨${X}"
-    # The per-backup notification is Telegram only. It fires every hour, and
-    # email is the channel for incidents: notify() still reaches both on the
-    # failure paths above, where a duplicate is worth having.
+    # Every hourly alert — success or failure — stays on Telegram. Repeating an
+    # email 24 times a day trains the operator to filter it, so email is kept
+    # for the monthly integrity check only.
     if [ -n "$trim_message" ]; then
         heartbeat fail
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
@@ -499,7 +501,7 @@ verify() {
     # container log. Alert the way the backup does instead.
     trap 'rc=$?; if [ "${rc:-0}" -ne 0 ]; then
         write_status failed "Repository verification failed (exit ${rc})"
-        notify "Repository verification failed"
+        notify_rare "Repository verification failed"
         heartbeat fail
     fi' EXIT
     clear_stale_locks
@@ -511,10 +513,11 @@ verify() {
     heartbeat ok
 }
 
-# Alert when the newest successful backup is older than BACKUP_MAX_AGE. Email on
-# failure already covers a backup that runs and breaks; this covers a backup that
-# silently stops running while the scheduler is still alive. A scheduler that has
-# stopped entirely still needs HEALTHCHECK_URL, which is an external service.
+# Alert when the newest successful backup is older than BACKUP_MAX_AGE. The
+# backup's own trap already covers a backup that runs and breaks; this covers one
+# that silently stops running while the scheduler is still alive. A scheduler
+# that has stopped entirely still needs HEALTHCHECK_URL, an external service.
+# Every branch here runs hourly, so the alert stays on Telegram.
 check_freshness() {
     local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s lock_state
     now="$(date -u +%s)"
@@ -529,7 +532,7 @@ check_freshness() {
             0) ;;
             1) log echo -e "${R}The last backup started but never finished${X}"
                write_status failed "Backup did not finish"
-               notify "Backup did not finish"
+               send_telegram "Backup did not finish"
                heartbeat fail
                exit 2 ;;
             2) log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}" ;;
@@ -552,7 +555,7 @@ check_freshness() {
     fi
     log echo -e "${R}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
     write_status failed "No successful backup for ${age}s"
-    notify "Backup stale"
+    send_telegram "Backup stale"
     heartbeat fail
     exit 2
 }
@@ -571,7 +574,7 @@ check_disk() {
         ''|*[!0-9]*)
             log echo -e "${R}Cannot read the usage of ${DATA}${X}"
             write_status failed "Cannot read the usage of ${DATA}"
-            notify "Cannot read the usage of ${DATA}"
+            send_telegram "Cannot read the usage of ${DATA}"
             heartbeat fail
             exit 2
             ;;
@@ -582,7 +585,7 @@ check_disk() {
     fi
     log echo -e "${R}${DATA} is ${used_percent}% full (limit ${limit}%)${X}"
     write_status failed "Data volume is ${used_percent}% full"
-    notify "Data volume is ${used_percent}% full"
+    send_telegram "Data volume is ${used_percent}% full"
     heartbeat fail
     exit 2
 }
