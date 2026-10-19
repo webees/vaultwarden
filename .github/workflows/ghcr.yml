@@ -30,7 +30,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     outputs:
-      tag: ${{ steps.digest.outputs.tag }}
       digest: ${{ steps.digest.outputs.digest }}
     permissions:
       actions: read
@@ -100,7 +99,6 @@ jobs:
           echo "Timestamp tag verified: ${expected}"
 
       - name: 🚀 Build and push Docker image (Multi-Arch)
-        id: build-and-push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -123,12 +121,7 @@ jobs:
           digest="$(docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
             --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
           test -n "$digest"
-          echo "tag=${TIMESTAMP_TAG}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          {
-            echo "tag=${TIMESTAMP_TAG}"
-            echo "digest=${digest}"
-          } > build-output.txt
           echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
 
       # The daily dependency job only reports pending package upgrades. An image
@@ -155,13 +148,6 @@ jobs:
         env:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: bash tests/runtime-smoke.sh "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
-
-      - name: 📤 Upload the build output
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: build-output
-          path: build-output.txt
-          retention-days: 7
 
       # GitHub stops scheduled workflows without saying so: this repository's
       # nightly cleanup last ran on 2026-01-03, so the 30-day tag expiry the

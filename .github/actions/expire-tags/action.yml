@@ -8,10 +8,6 @@ inputs:
   package:
     description: Package name to clean up.
     required: true
-  retention:
-    description: How old a timestamp tag must be before it is deleted.
-    required: false
-    default: 30 days
   delete-untagged:
     description: Also delete untagged images (the nightly sweep does this).
     required: false
@@ -32,7 +28,7 @@ runs:
         packages: ${{ inputs.package }}
         use-regex: true
         delete-tags: '^[0-9]{12}$'
-        older-than: ${{ inputs.retention }}
+        older-than: 30 days
         delete-untagged: ${{ inputs.delete-untagged == 'true' }}
         delete-ghost-images: ${{ inputs.delete-broken == 'true' }}
         delete-partial-images: ${{ inputs.delete-broken == 'true' }}
