@@ -11,8 +11,6 @@ ARG TARGETARCH
 ARG SUPERCRONIC_VERSION=v0.2.50
 ARG OVERMIND_VERSION=v2.5.1
 
-# e2e probe: stale pin on purpose, the daily dependency job must correct it.
-
 # Artifact digests, so a replaced or truncated download fails the build.
 # supercronic is hashed as downloaded; overmind is hashed after gunzip.
 ARG SUPERCRONIC_SHA256_amd64=d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0
