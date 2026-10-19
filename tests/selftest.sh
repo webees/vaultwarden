@@ -842,6 +842,47 @@ else
     bad "the dependency-check warning is skipped by an early exit"
 fi
 
+# A single windowed query (`per_page=50` then filter) misreports a healthy check
+# as never run once enough manual runs push the automatic one off the page.
+# Query each automatic event directly and keep the newest.
+if grep -q 'per_page=50' .github/workflows/build-and-deploy.yml; then
+    bad "the dependency check still relies on a fixed page window"
+else
+    ok "the dependency check queries each automatic event directly"
+fi
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+run_guard_events() {
+    : > "$guard_out"
+    # The step parses timestamps with GNU `date -d`, which BSD date lacks. The
+    # step runs on ubuntu-latest, so stub the clock to keep this test hermetic
+    # and let it exercise the real event-selection code on any host.
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" 1700000000\n'
+    } > "$guard_stub/date"
+    chmod +x "$guard_stub/date"
+    {
+        printf '#!/bin/sh\n'
+        printf 'case "$*" in\n'
+        printf '  *ghcr-cleanup.yml/runs*) printf "%%s\\n" %s ;;\n' "'$now_iso'"
+        printf '  *dependency-updates.yml/runs?event=schedule*) printf "%%s\\n" %s ;;\n' \
+            "'2000-01-01T00:00:00Z'"
+        printf '  *dependency-updates.yml/runs?event=workflow_run*) printf "%%s\\n" %s ;;\n' \
+            "'$now_iso'"
+        printf '  *) exit 1 ;;\n'
+        printf 'esac\n'
+    } > "$guard_stub/gh"
+    chmod +x "$guard_stub/gh"
+    GITHUB_OUTPUT="$guard_out" GITHUB_REPOSITORY=example/repo \
+        PATH="$guard_stub:$PATH" bash "$work/cleanup-check.sh" > "$work/guard-run.log" 2>&1
+}
+run_guard_events
+if grep -q "last automatic dependency check: ${now_iso} " "$work/guard-run.log"; then
+    ok "the newest automatic dependency run wins across both events"
+else
+    bad "the dependency-check report did not pick the newest event"
+fi
+
 # `paths-ignore` means a README-only commit never triggers this workflow, so
 # "main moved" is not proof that a newer build will take over. A doc-only merge
 # during a build window used to cancel the deployment of the commit being built,
