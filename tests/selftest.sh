@@ -642,6 +642,25 @@ else
     bad "the dependency check still runs only once a day"
 fi
 
+# A scheduled workflow is best-effort: GitHub can delay it and disables it for
+# an inactive repository. A completed build is a real event, so use it as a
+# fallback trigger and keep the automatic merge decision in sync with it.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    on = doc["on"] || doc[true] || {}
+    run = on["workflow_run"]
+    exit 1 if run.nil?
+    exit 1 unless Array(run["workflows"]).any? { |w| w.include?("Build and Deploy") }
+    exit 1 unless Array(run["types"]).include?("completed")
+    exit 1 unless Array(run["branches"]).include?("main")
+    gate = (doc["jobs"]["check"]["env"] || {})["AUTO_MERGE"].to_s
+    exit 1 unless gate.include?("workflow_run")
+  '; then
+    ok "a completed build also triggers the dependency check"
+else
+    bad "the dependency check still depends only on GitHub's best-effort schedule"
+fi
+
 # The dependency check only opened a PR when a pin changed, so an Alpine-only
 # security update waited for the weekly rebuild. The apk probe has to run every
 # day, and a non-zero count has to dispatch the build workflow.
@@ -659,6 +678,21 @@ if ruby -ryaml -e '
     ok "the daily check probes packages every run and dispatches a rebuild when needed"
 else
     bad "package-only updates still wait for the weekly rebuild"
+fi
+
+# The apk probe reads the pinned base image, so it keeps reporting the same
+# upgrades after our build has already applied them. A workflow_run fallback
+# that also dispatched package-only rebuilds would loop build -> check -> build.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    steps = doc["jobs"]["check"]["steps"]
+    rebuild = steps.find { |s| (s["run"] || "").include?("rebuild-needed") }
+    exit 1 if rebuild.nil?
+    exit 1 unless (rebuild["if"] || "").include?("workflow_run")
+  '; then
+    ok "the package-only rebuild cannot loop when a build triggers the check"
+else
+    bad "a build-triggered dependency check can dispatch builds forever"
 fi
 
 # workflow_run never fired for a workflow_dispatch build, so a manual rebuild
