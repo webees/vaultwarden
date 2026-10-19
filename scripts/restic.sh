@@ -86,17 +86,34 @@ require_positive_int() {
     }
 }
 
-# Run a command without the backup lock. A child that outlives the run would
-# keep the lock forever, and every later backup would exit 3 as a "concurrent
-# run" - an exit that is deliberately not alerted.
-no_lock() ( exec 9>&-; exec "$@" )
+# Run a command under a hard timeout and then signal whatever it left behind.
+# BusyBox `timeout` reaches its direct child only, so a helper the command
+# spawned outlives it: the helper holds a captured pipe open, which makes the
+# run outlive its own timeout, and a lock it inherited never clears. `setsid`
+# puts the tree in a session of its own so the group signal below reaches it,
+# and the subshell keeps the backup lock out of the command's hands - a child
+# that outlives the run would hold it forever, and every later backup would
+# exit 3 as a "concurrent run", an exit that is deliberately not alerted.
+timed() {
+    local seconds="$1"
+    shift
+    (
+        exec 9>&-
+        setsid timeout -k 30 "$seconds" "$@" &
+        timed_pid=$!
+        wait "$timed_pid"
+        timed_rc=$?
+        kill -TERM -"$timed_pid" 2>/dev/null
+        exit "$timed_rc"
+    )
+}
 
 # Remove locks left behind by a run that was killed mid-flight. restic keeps
 # locks whose process is still alive, so this cannot disturb a running backup,
 # but without it one interrupted run makes verify/restore fail with "repository
 # is already locked" until the next hourly backup happens to clear it.
 clear_stale_locks() {
-    no_lock timeout -k 30 "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
+    timed "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
 }
 
 # Whether another run holds the backup lock, as three states:
@@ -196,18 +213,20 @@ run() {
     raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" \
         || { rm -f "$out_file"; die "Unable to create temporary output file"; }
     log echo -en "${B}${label}${X} "
-    # Hard-cap raw command output on disk at 8x the retained log size, so a
-    # runaway command cannot fill the volume before the tail truncation runs.
-    local raw_limit_kb=$(( (MAX_LOG_BYTES * 8 + 1023) / 1024 ))
+    # Cap the captured stream at 8x the retained log size, so a runaway command
+    # cannot fill the disk before the tail truncation runs. The cap belongs on
+    # the stream: `ulimit -f` bounded every file the command wrote as well, so
+    # the SQLite hot copy died with SIGXFSZ once the database outgrew it and
+    # `restic restore` answered "file too large" for any attachment above the
+    # same size, which is the one path that has to work during a recovery.
+    local raw_limit=$((MAX_LOG_BYTES * 8))
     rc=0
     (
-        # Never hand the backup lock to a child: a helper that outlives this run
-        # would keep the lock forever, and every later backup would exit 3 as a
-        # "concurrent run" without alerting anyone.
+        # `tail` is the other half of the pipeline, so it needs the backup lock
+        # closed here; `timed` does the same for the command itself.
         exec 9>&-
-        ulimit -f "$((raw_limit_kb * 2))"
-        timeout -k 30 "$timeout_seconds" "$@"
-    ) > "$raw_file" 2>&1 || rc=$?
+        timed "$timeout_seconds" "$@" 2>&1 | tail -c "$raw_limit" > "$raw_file"
+    ) || rc=$?
     tail -c "$MAX_LOG_BYTES" "$raw_file" > "$out_file"
     rm -f "$raw_file"
     if [ "$rc" -eq 0 ]; then
@@ -297,7 +316,7 @@ backup() {
     # Initialise only when the repository really is missing (restic exit code 10).
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
     # otherwise "restic init" answers with a misleading "already initialized" error.
-    no_lock timeout -k 30 "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
+    timed "$QUICK_TIMEOUT" restic cat config >/dev/null 2>&1 && rc=0 || rc=$?
     case "${rc:-1}" in
         0)  ;;
         10) log echo -e "${Y}Repository not initialized, initializing...${X}"
@@ -376,7 +395,7 @@ restore_test() {
     # Sizing has three distinct outcomes: a real number, a successful response
     # without total_size, and a failed read. Treating either failure mode as
     # zero bytes made the drill proceed without knowing whether it had space.
-    if ! stats_json="$(timeout -k 30 "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>&1)"; then
+    if ! stats_json="$(timed "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>&1)"; then
         log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
         [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
         exit 2
@@ -578,7 +597,7 @@ case "${1:-}" in
     check-freshness) check_freshness ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
-    snapshots)       clear_stale_locks; timeout -k 30 "$QUICK_TIMEOUT" restic snapshots ;;
+    snapshots)       clear_stale_locks; timed "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
     *)               echo "Usage: $0 {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac

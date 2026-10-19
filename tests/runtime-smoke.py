@@ -213,7 +213,10 @@ def check_redaction(container: str, log: str) -> None:
 
 def check_required_tools(image: str) -> None:
     """An apk edit that drops a tool only shows up at runtime, in production."""
-    required = "bash caddy curl mail msmtp restic sqlite3 su-exec tini tmux supercronic overmind".split()
+    # setsid gives every captured command its own session, so the timeout can
+    # signal the whole tree instead of the direct child BusyBox `timeout`
+    # reaches.
+    required = "bash caddy curl mail msmtp restic setsid sqlite3 su-exec tini tmux supercronic overmind".split()
     missing = docker(
         "run",
         "--rm",

@@ -1067,6 +1067,26 @@ else
     bad "README does not explain the database swap after restore"
 fi
 
+# Every header the Caddyfile keeps out of the access log is a promise about what
+# a log line can contain. The watchdog that introduced `X-Backup-Status-Token`
+# was deleted and its filter outlived it, so the README listed nine headers
+# while Caddy filtered ten and neither list could be trusted.
+log_filters="$(sed -n 's/.*request>headers>\([^ ]*\) delete.*/\1/p' config/Caddyfile)"
+filter_count="$(printf '%s\n' "$log_filters" | grep -c .)"
+if [ "$filter_count" -lt 5 ]; then
+    bad "only ${filter_count} Caddy log filters were found; the extraction is broken"
+else
+    undocumented=""
+    for header in $log_filters; do
+        grep -qi -- "\`${header}\`" README.md || undocumented="${undocumented} ${header}"
+    done
+    if [ -z "$undocumented" ]; then
+        ok "README documents all ${filter_count} headers the Caddyfile filters"
+    else
+        bad "README does not document these Caddy log filters:${undocumented}"
+    fi
+fi
+
 # The README documents these knobs and the template is what a local run copies,
 # so a missing entry means the operator silently gets a default instead.
 missing_env=""
