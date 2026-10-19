@@ -458,7 +458,7 @@ mkdir -p "$tg_dir"
 chmod 777 "$tg_dir"
 : > "$tg_calls"
 chmod 666 "$tg_calls"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nexit 0\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "200"\nexit 0\n' \
     "$tg_calls" > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
 PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
@@ -482,6 +482,20 @@ PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
     /restic.sh check-freshness >/tmp/selftest-tg-fail.log 2>&1
 same "a failed run sends one Telegram message" 1 \
     "$(grep -c 'Backup stale' "$tg_calls")"
+
+# HTTP success and API success are separate facts. A proxy or misbehaving
+# endpoint can return a non-2xx status with an `"ok": true` body; treating that
+# as delivered hides the alert failure that this channel exists to report.
+printf '#!/bin/sh\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "500"\nexit 0\n' \
+    > "$tg_dir/curl"
+chmod 755 "$tg_dir/curl"
+PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
+    /restic.sh backup >/tmp/selftest-tg-http500.log 2>&1
+same "a Telegram notification requires HTTP 200" 1 \
+    "$(grep -c 'Telegram notification failed (HTTP 500)' /tmp/selftest-tg-http500.log)"
+same "a non-2xx response with ok=true is not reported as sent" 0 \
+    "$(grep -c 'Telegram notification sent' /tmp/selftest-tg-http500.log)"
 
 # A rejected notification used to leave only an exit code behind, so a wrong
 # token and an unreachable API looked identical in the run log. Record the API's
