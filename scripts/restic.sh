@@ -160,7 +160,10 @@ send_mail() {
 send_telegram() {
     [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && return 0
     local text="$1" out rc
-    out="$(curl -fsS -m 10 --retry 2 \
+    # No --fail on purpose: the API answers a rejection with its own explanation,
+    # and --fail discards that body, so the run log kept "exit 22" as the only
+    # clue. Success is read from the body below, so a 4xx cannot pass as sent.
+    out="$(curl -sS -m 10 --retry 2 \
         --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=[$APP_NAME] ${text}" \
         "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1)"
@@ -170,13 +173,11 @@ send_telegram() {
         return 0
     fi
     log echo -e "${R}Telegram notification failed (exit ${rc})${X}"
-    # The API answers with its own error body, which names the problem without
-    # the token; curl's own message repeats the request URL, so it stays out of
-    # the log. Redact the token anyway: a proxy error page echoes the URL it
-    # refused, and the run log is the only place an operator can see this.
-    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
-        log printf '%s\n' "$(printf '%s\n' "$out" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
-    fi
+    # Record whatever came back — the API's error body or curl's own message —
+    # with the token redacted: a proxy error page echoes the URL it refused, and
+    # the run log is the only place an operator can see why the alert vanished.
+    [ -n "$out" ] && log printf '%s\n' \
+        "$(printf '%s\n' "$out" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
     return 0
 }
 
