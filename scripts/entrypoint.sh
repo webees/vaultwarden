@@ -62,14 +62,21 @@ apply_pending_restore() {
         return 0
     fi
     chown vaultwarden:vaultwarden "$new"
-    # The old write-ahead log belongs to the database being replaced and must
-    # not be replayed on top of the new one.
-    rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm
+    # Install the replacement before touching the old sidecars. The rename is
+    # atomic, so a failure here leaves the live database and the write-ahead log
+    # that belongs to it exactly as they were. Deleting the log first threw away
+    # the transactions that were only in it whenever the rename then failed,
+    # which is the opposite of "leaving the database alone".
     if ! mv -f "$new" /data/db.sqlite3; then
         echo "could not replace /data/db.sqlite3; leaving the database alone" >&2
         rm -f "$new"
         return 0
     fi
+    # The old write-ahead log belongs to the database that was just replaced and
+    # must not be replayed on top of the new one. Nothing opens the database
+    # between the rename above and this line, and a crash in between leaves the
+    # marker set, so the next start runs this whole block again.
+    rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm
     rm -f /data/restore-pending
     echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
 }
