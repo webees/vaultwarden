@@ -101,6 +101,36 @@ smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
     SMTP_PASSWORD=secret >/dev/null 2>&1
 same "an SMTP password without a username is rejected" 1 "$?"
 
+# ── config.json secret overrides ─────────────────────────────────────────────
+# Vaultwarden gives /data/config.json priority over the environment. A secret
+# left there silently overrides the Fly secret of the same name, so the
+# entrypoint has to keep the file owner-only and name the overriding keys
+# without printing their values.
+config_backup=/tmp/selftest-config.json
+rm -f "$config_backup"
+[ -f /data/config.json ] && cp /data/config.json "$config_backup"
+cat > /data/config.json <<'JSON'
+{
+  "admin_token": "selftest-admin-token",
+  "smtp_username": "selftest-smtp-user",
+  "smtp_password": "selftest-smtp-password"
+}
+JSON
+chmod 644 /data/config.json
+entry_out="$(/entrypoint.sh true 2>&1)"
+same "config.json is 0600 after the entrypoint" 600 "$(stat -c %a /data/config.json)"
+same "the config.json warning names the overriding admin_token" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'admin_token')"
+same "the config.json warning names the overriding smtp_password" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'smtp_password')"
+same "the config.json warning does not print the secret value" 0 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'selftest-smtp-password')"
+if [ -f "$config_backup" ]; then
+    mv "$config_backup" /data/config.json
+else
+    rm -f /data/config.json
+fi
+
 # ── restic.sh ────────────────────────────────────────────────────────────────
 echo "--- restic.sh"
 export RESTIC_PASSWORD=selftest

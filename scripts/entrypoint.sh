@@ -10,6 +10,28 @@ if [ ! -f /data/backup-status.txt ]; then
 fi
 chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs
 
+# The admin panel persists every non-default setting, secrets included, in
+# /data/config.json, and Vaultwarden gives that file priority over the
+# environment. Keep it owner-only and name the overriding secret keys in the
+# log so a Fly secret that "does nothing" has a visible cause. Values are never
+# printed: the log is shipped off-box.
+harden_config_json() {
+    local config=/data/config.json key overriding=""
+    [ -f "$config" ] || return 0
+    chown vaultwarden:vaultwarden "$config"
+    chmod 600 "$config"
+    for key in admin_token smtp_username smtp_password; do
+        if grep -Eq "\"${key}\"[[:space:]]*:" "$config"; then
+            overriding="${overriding}${overriding:+, }${key}"
+        fi
+    done
+    if [ -n "$overriding" ]; then
+        echo "WARNING: /data/config.json overrides these environment variables: ${overriding}" >&2
+        echo "WARNING: remove those keys from /data/config.json and restart so the Fly secrets apply" >&2
+    fi
+}
+harden_config_json
+
 # A snapshot never carries the live db.* files: the consistent database travels
 # as backup.bak. Swapping it in has to happen while Vaultwarden is not running,
 # so `restore` arms the swap with a marker and this applies it before the app

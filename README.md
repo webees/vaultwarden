@@ -102,9 +102,10 @@ fly secrets set SHOW_PASSWORD_HINT="false"
 # Anything saved through the /admin panel is written to /data/config.json, and
 # that file outranks the environment. `admin_token`, the `smtp_*` keys and
 # `signups_allowed` are the ones that usually drift: `fly secrets set` changes
-# nothing while the key sits in /data/config.json. Vaultwarden logs every key it
-# overrides at startup, so either change the setting in /admin as well, or drop
-# the key from /data/config.json and restart.
+# nothing while the key sits in /data/config.json. The entrypoint keeps that
+# file at 0600 and logs which secret keys it found, without printing their
+# values, so the override is visible in `fly logs`; either change the setting in
+# /admin as well, or drop the key from /data/config.json and restart.
 
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
@@ -243,7 +244,7 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
-| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
+| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (exit N)` followed by the API's own explanation with the token replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
