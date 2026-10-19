@@ -2,6 +2,10 @@
 
 *.log
 
+# Byte-compiled test scripts
+__pycache__/
+*.pyc
+
 # Local secret store; the committed template is .env.example
 .env
 .env.*
