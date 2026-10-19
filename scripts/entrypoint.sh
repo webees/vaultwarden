@@ -20,7 +20,7 @@ harden_config_json() {
     [ -f "$config" ] || return 0
     chown vaultwarden:vaultwarden "$config"
     chmod 600 "$config"
-    for key in admin_token smtp_username smtp_password; do
+    for key in admin_token smtp_username smtp_password signups_allowed; do
         if grep -Eq "\"${key}\"[[:space:]]*:" "$config"; then
             overriding="${overriding}${overriding:+, }${key}"
         fi
