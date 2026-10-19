@@ -637,6 +637,20 @@ else
     bad "the monthly verify fires at minute 0, the same minute as @hourly backup"
 fi
 
+# The drill is the only job that proves a snapshot still restores and boots, and
+# nothing scheduled it: a repository that had quietly become unrestorable was
+# only found when someone ran the drill by hand. Keep it on a fixed day of the
+# month and off the top of the hour, where it would fight the hourly backup for
+# the repository lock.
+drill_schedule="$(awk '/\/restic\.sh restore-test$/ {print $1, $2, $3, $4, $5}' config/crontab | head -n 1)"
+drill_minute="${drill_schedule%% *}"
+drill_dom="$(printf '%s\n' "$drill_schedule" | awk '{print $3}')"
+if [ -n "$drill_schedule" ] && [ "$drill_minute" != "0" ] && [ "$drill_dom" != "*" ]; then
+    ok "the restore drill is scheduled monthly, away from the hourly backup (minute ${drill_minute}, day ${drill_dom})"
+else
+    bad "the restore drill is unscheduled, or it runs every day at minute 0 next to the hourly backup"
+fi
+
 # A dependency check that ran once a day left an upstream release unnoticed for
 # most of that day, and the build workflow only warns after three silent days,
 # so the schedule has already aged out by the time anyone hears about it. Pin a
@@ -1224,9 +1238,9 @@ fi
 
 # The alert channels follow how often a job can repeat its warning. A job on
 # `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
-# on Telegram and only the monthly integrity check keeps the incident email. A
-# regression that routes an hourly job back through the mailer is invisible
-# until the mailbox fills, so pin the split to the source.
+# on Telegram and only the monthly jobs keep the incident email. A regression
+# that routes an hourly job back through the mailer is invisible until the
+# mailbox fills, so pin the split to the source.
 for job in backup check_freshness check_disk; do
     body="$(sed -n "/^${job}() {/,/^}/p" scripts/restic.sh)"
     if ! printf '%s\n' "$body" | grep -q 'send_telegram'; then
@@ -1241,6 +1255,11 @@ if sed -n '/^verify() {/,/^}/p' scripts/restic.sh | grep -q 'notify_rare'; then
     ok "the monthly verify() keeps the incident email"
 else
     bad "verify() lost the incident email channel"
+fi
+if sed -n '/^restore_test() {/,/^}/p' scripts/restic.sh | grep -q 'notify_rare'; then
+    ok "the monthly restore drill keeps the incident email"
+else
+    bad "restore_test() lost the incident email channel"
 fi
 
 # The README documents these knobs and the template is what a local run copies,
