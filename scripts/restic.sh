@@ -32,18 +32,26 @@ NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 STATUS_FILE="/data/backup-status.txt"
-# The marker is validated once, here. `check-freshness` compares it with shell
-# arithmetic, which reads a non-numeric value as a variable name and aborts with
-# "unbound variable" under `set -u`: a corrupt file silently disabled the one
-# guard that notices a scheduler which stopped firing. A missing marker (a fresh
-# volume) and an unusable one stay distinct, so the check can alert instead of
-# reading a corrupt file as a young instance.
-LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
-LAST_SUCCESS_USABLE=true
-case "${LAST_SUCCESS:-}" in
-    '') LAST_SUCCESS=0 ;;
-    *[!0-9]*) LAST_SUCCESS=0; LAST_SUCCESS_USABLE=false ;;
-esac
+# Read the marker once and keep its outcomes distinct. An ignored pipeline used
+# to turn an unreadable file, a missing field, and a fresh volume all into
+# last_success=0, so the guard could report the wrong cause and replace the
+# evidence with a synthetic marker. `check-freshness` alerts on any read or
+# schema failure, while only an actually absent marker means "no data yet".
+STATUS_STATE=""
+STATUS_MARKER_ERROR=""
+LAST_SUCCESS=0
+if [ -e "$STATUS_FILE" ]; then
+    if status_body="$(cat "$STATUS_FILE" 2>/dev/null)"; then
+        STATUS_STATE="$(printf '%s\n' "$status_body" | sed -n 's/^state=//p' | head -n 1)"
+        LAST_SUCCESS="$(printf '%s\n' "$status_body" | sed -n 's/^last_success=//p' | head -n 1)"
+        case "${LAST_SUCCESS:-}" in
+            '') STATUS_MARKER_ERROR=missing; LAST_SUCCESS=0 ;;
+            *[!0-9]*) STATUS_MARKER_ERROR=invalid; LAST_SUCCESS=0 ;;
+        esac
+    else
+        STATUS_MARKER_ERROR=unreadable
+    fi
+fi
 CURRENT_STEP=""
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
@@ -598,7 +606,7 @@ check_freshness() {
     # A run that was killed mid-flight leaves the status at "running" forever.
     # Only report that when the lock is readable and free: an uninspectable lock
     # is unknown, and guessing "finished" would raise a false alert.
-    if [ "$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)" = "running" ]; then
+    if [ "$STATUS_STATE" = "running" ]; then
         backup_is_running
         lock_state=$?
         case "$lock_state" in
@@ -612,10 +620,22 @@ check_freshness() {
         esac
     fi
 
-    # A marker that cannot be read as a timestamp says nothing about freshness,
-    # and the check above already proved the backup is not running. Alert instead
-    # of letting the arithmetic below decide.
-    if [ "$LAST_SUCCESS_USABLE" != true ]; then
+    # A marker that cannot be read is not "no data"; it cannot prove anything
+    # about freshness. Leave the file untouched so the reason is still visible
+    # after the alert, and do not synthesize a zero timestamp.
+    if [ "$STATUS_MARKER_ERROR" = "unreadable" ]; then
+        log echo -e "${R}Cannot read ${STATUS_FILE}; backup freshness is unknown${X}"
+        send_telegram "Backup marker is unreadable"
+        heartbeat fail
+        exit 2
+    fi
+    if [ "$STATUS_MARKER_ERROR" = "missing" ]; then
+        log echo -e "${R}${STATUS_FILE} does not contain last_success${X}"
+        send_telegram "Backup marker is missing last_success"
+        heartbeat fail
+        exit 2
+    fi
+    if [ "$STATUS_MARKER_ERROR" = "invalid" ]; then
         log echo -e "${R}${STATUS_FILE} has an unusable last_success value${X}"
         write_guard_status failed "last_success in ${STATUS_FILE} is not a number"
         send_telegram "Backup marker is unusable"
