@@ -267,3 +267,27 @@ jobs:
           if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
             gh workflow run build-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
+
+  watchdog:
+    # The app's scheduler cannot report its own silence. This job runs on the
+    # same external triggers as the dependency check and asks the live app
+    # whether its last successful backup is still fresh. A failure fails this
+    # workflow, which is the second channel: GitHub emails the repository owner
+    # even when Telegram is the thing that broke.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: 🚀 Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: 💓 Check the production backup heartbeat
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+        run: |
+          set -euo pipefail
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          flyctl ssh console --app "$FLY_APP" --command "/restic.sh check-freshness"
