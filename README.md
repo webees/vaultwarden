@@ -83,7 +83,7 @@ fly secrets set AWS_ACCESS_KEY_ID="your-r2-id"
 fly secrets set AWS_SECRET_ACCESS_KEY="your-r2-key"
 
 # SMTP notification settings
-fly secrets set SMTP_HOST="smtp.gmail.com"
+fly secrets set SMTP_HOST="smtp.example.com"
 fly secrets set SMTP_PORT="587"
 fly secrets set SMTP_FROM="sender@example.com"
 fly secrets set SMTP_TO="admin@example.com"
@@ -197,7 +197,9 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
-scheduler is still alive. A scheduler that has stopped firing entirely is caught by the external watchdog in
+scheduler is still alive. A marker it cannot read as a timestamp — corrupt, or stamped in the future by a
+clock that moved backwards — is reported instead of being read as a fresh backup. A scheduler that has
+stopped firing entirely is caught by the external watchdog in
 `.github/workflows/dependency_updates.yml`: it runs the same check against the live app every two hours and
 after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
 is the channel that broke. `HEALTHCHECK_URL` remains an optional third channel for a dedicated
@@ -286,8 +288,9 @@ fly apps restart               # Restart all instances
 ### Log Inspection
 
 ```bash
-cat /data/restic-logs/*.log    # Check persisted backup logs
-fly logs                       # Includes msmtp output (logfile is /dev/stderr)
+cat /data/restic-logs/*.log     # Check persisted backup logs
+cat /data/restic-logs/msmtp.log # Delivery log written by the alert mailer
+fly logs                        # Container output, including mailer errors
 ```
 
 ### Verification

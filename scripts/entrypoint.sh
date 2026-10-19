@@ -129,7 +129,13 @@ if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
         fi
         printf 'tls on\n'
         printf 'tls_trust_file /etc/ssl/certs/ca-certificates.crt\n'
-        printf 'logfile /dev/stderr\n'
+        # msmtp opens this file itself, as the unprivileged user that sends the
+        # alert. /dev/stderr of the root process that writes this config cannot
+        # be reopened by `vaultwarden`, so every send printed "cannot log to
+        # /dev/stderr: cannot open: Permission denied" and the delivery line
+        # reached no log. Keep it on the volume: restic.sh caps and rotates the
+        # *.log files in this directory, and it is excluded from snapshots.
+        printf 'logfile /data/restic-logs/msmtp.log\n'
         printf 'timeout %s\n' "${SMTP_TIMEOUT:-15}"
         printf 'account default\n'
         printf 'host %s\n' "$SMTP_HOST"
