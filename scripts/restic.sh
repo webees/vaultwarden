@@ -224,6 +224,11 @@ RESTORE_BOOT_LOG=""
 cleanup_restore_tmp() {
     [ -n "$RESTORE_TMP_DIR" ] && rm -rf "$RESTORE_TMP_DIR"
     [ -n "$RESTORE_BOOT_LOG" ] && rm -f "$RESTORE_BOOT_LOG"
+    # Bash keeps an EXIT trap set after the function that armed it returns, so
+    # the same cleanup runs a second time at script exit. Clearing the paths
+    # makes that second pass a no-op instead of a second recursive delete.
+    RESTORE_TMP_DIR=""
+    RESTORE_BOOT_LOG=""
     return 0
 }
 
@@ -416,7 +421,11 @@ restore_test() {
     RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
     RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")"
     local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
-    trap cleanup_restore_tmp EXIT
+    # The README promises the dead-man's-switch ping covers the drill and uses
+    # the /fail URL when the run fails. Only the failure ping was missing, so a
+    # broken drill left the switch armed as if nothing had run. Cleanup and the
+    # ping share one trap so the two cannot drift apart.
+    trap 'rc=$?; cleanup_restore_tmp; [ "$rc" -eq 0 ] || heartbeat fail' EXIT
 
     clear_stale_locks
     # Sizing has three distinct outcomes: a real number, a successful response
