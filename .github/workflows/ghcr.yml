@@ -13,8 +13,10 @@ on:
       - README.md
       - LICENSE
   schedule:
-    # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes flowing
-    - cron: '0 4 * * 1'
+    # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes
+    # flowing. Minute 23, not 0: GitHub queues scheduled runs behind the hourly
+    # load spike, so the top of the hour is the slowest slot to pick.
+    - cron: '23 4 * * 1'
 
 env:
   REGISTRY: ghcr.io
@@ -29,6 +31,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
     permissions:
@@ -39,6 +42,10 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, so the workflow token does not belong in
+          # .git/config where a later step could reuse it.
+          persist-credentials: false
 
       - name: 🌐 Refresh Cloudflare IP ranges
         run: scripts/refresh-cloudflare-ips.sh
@@ -212,6 +219,7 @@ jobs:
     # rolled out.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     concurrency:
       group: fly-deploy
       cancel-in-progress: false
