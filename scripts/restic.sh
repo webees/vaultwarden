@@ -346,15 +346,18 @@ backup() {
     LAST_SUCCESS="$(date -u +%s)"
     write_status ok "Backup complete${trim_message}"
     log echo -e "${G}Backup process complete ✨${X}"
+    # The per-backup notification is Telegram only. It fires every hour, and
+    # email is the channel for incidents: notify() still reaches both on the
+    # failure paths above, where a duplicate is worth having.
     if [ -n "$trim_message" ]; then
         heartbeat fail
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            notify "Backup succeeded with warnings"
+            send_telegram "Backup succeeded with warnings"
         fi
     else
         heartbeat ok
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            notify "Backup succeeded"
+            send_telegram "Backup succeeded"
         fi
     fi
 }
