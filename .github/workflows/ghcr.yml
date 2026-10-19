@@ -188,7 +188,7 @@ jobs:
           # Same failure mode, different victim: report the daily dependency
           # check if its schedule stops firing, without blocking the deploy.
           if ! deps_last="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/security-updates.yml/runs?event=schedule&per_page=1" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency-updates.yml/runs?event=schedule&per_page=1" \
             --jq '.workflow_runs[0].created_at // empty')"; then
             echo "::warning::could not read the dependency check schedule"
           elif [ -z "$deps_last" ]; then

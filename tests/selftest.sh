@@ -560,7 +560,7 @@ fi
 # security update waited for the weekly rebuild. The apk probe has to run every
 # day, and a non-zero count has to dispatch the build workflow.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
     steps = doc["jobs"]["check"]["steps"]
     apk = steps.find { |s| (s["run"] || "").include?("deps.sh apk") }
     exit 1 if apk.nil? || apk.key?("if")
@@ -718,7 +718,7 @@ fi
 # that read an API error as "no checks registered". Both leave the operator
 # chasing the wrong cause, so assert the behaviour with stubs.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     exit 1 if step.nil?
     body = step["run"] || ""
@@ -736,7 +736,7 @@ fi
 # and body when it already has an open PR.
 # shellcheck disable=SC2016  # Ruby source, not shell expansion
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     body = step && (step["run"] || "")
     exit 1 if body.nil? || body.empty?
@@ -754,7 +754,7 @@ fi
 # branch is not just present in YAML: an existing open PR is updated in place,
 # and a missing PR is created.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     print step["run"] if step
   ' > "$work/pr-step.sh" || true
@@ -810,7 +810,7 @@ else
 fi
 
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/security-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "arm" }
     print step["run"] if step
   ' > "$work/arm-merge.sh" || true
