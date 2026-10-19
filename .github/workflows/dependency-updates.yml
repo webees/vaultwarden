@@ -16,7 +16,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: security-updates
+  group: dependency-updates
   cancel-in-progress: false
 
 jobs:
