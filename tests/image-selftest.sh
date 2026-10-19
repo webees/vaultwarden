@@ -191,6 +191,40 @@ same "freshness guard explains the alert" 1 \
 same "freshness guard records the stale state" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
+# The log directory has its own cap, but the volume also holds attachments, the
+# icon cache and the database. Once it fills, Vaultwarden's writes and the
+# backup fail together, and a Fly volume can only be grown by migrating the
+# data, so the hourly guard has to report the approach while there is room. The
+# limit is the knob: one percent forces the alert without filling anything.
+seed_status "$(date -u +%s)"
+BACKUP_MAX_USAGE_PERCENT=1 /restic.sh check-disk >/tmp/selftest-disk-full.log 2>&1
+same "a volume past the limit fails the check" 2 "$?"
+same "the full volume is explained" 1 \
+    "$(grep -c '% full' /tmp/selftest-disk-full.log)"
+same "the full volume is recorded" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+BACKUP_MAX_USAGE_PERCENT=100 /restic.sh check-disk \
+    >/tmp/selftest-disk-ok.log 2>&1
+same "a volume under the limit is quiet" 0 "$?"
+
+# "Cannot read the usage" is not "the volume is fine". A guard that reads a
+# failed df as a healthy volume stops guarding anything, silently.
+df_stub_dir="$(mktemp -d)"
+chmod 755 "$df_stub_dir"
+printf '#!/bin/sh\nexit 1\n' > "$df_stub_dir/df"
+chmod 755 "$df_stub_dir/df"
+PATH="$df_stub_dir:$PATH" /restic.sh check-disk >/tmp/selftest-disk-unknown.log 2>&1
+same "an unreadable volume reading fails the check" 2 "$?"
+same "the unreadable reading is explained" 1 \
+    "$(grep -c 'Cannot read the usage' /tmp/selftest-disk-unknown.log)"
+rm -rf "$df_stub_dir"
+
+BACKUP_MAX_USAGE_PERCENT=101 /restic.sh snapshots >/tmp/selftest-disk-bad.log 2>&1
+bad_limit_rc=$?
+same "a usage limit outside 1-100 fails the run" 2 "$bad_limit_rc"
+same "a usage limit outside 1-100 is explained" 1 \
+    "$(grep -c 'BACKUP_MAX_USAGE_PERCENT must be between' /tmp/selftest-disk-bad.log)"
+
 # A run that is killed mid-flight leaves the status at "running" forever. That
 # has to be reported once nothing holds the lock, and left alone while a real
 # backup is still working.
@@ -566,12 +600,14 @@ same "a failed verification names the failing step" 1 \
     "$(grep -c 'Repository verification failed' /data/backup-status.txt)"
 seed_status "$(date -u +%s)"
 
-# the guard is only useful if the scheduler actually calls it
-if grep -q 'check-freshness' /crontab; then
-    ok "the freshness guard is scheduled in /crontab"
-else
-    bad "the freshness guard is not scheduled in /crontab"
-fi
+# a guard is only useful if the scheduler actually calls it
+for guard in check-freshness check-disk; do
+    if grep -q "/restic.sh ${guard}\$" /crontab; then
+        ok "the ${guard} guard is scheduled in /crontab"
+    else
+        bad "the ${guard} guard is not scheduled in /crontab"
+    fi
+done
 
 # run() caps the stream it captures at 8x RESTIC_LOG_MAX_BYTES. That cap must
 # reach the captured output and nothing else: `ulimit -f` covered every file the

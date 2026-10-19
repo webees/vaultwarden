@@ -2,7 +2,7 @@
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-# Usage: /restic.sh {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}
+# Usage: /restic.sh {backup|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}
 #        `restore <id>` overwrites the live /data and needs RESTORE_CONFIRM=yes.
 
 set -uo pipefail
@@ -557,6 +557,36 @@ check_freshness() {
     exit 2
 }
 
+# Alert before the data volume fills. The log directory has its own cap, but the
+# volume also holds attachments, the icon cache and the database, and the
+# snapshot's total size grows with them. A Fly volume is grown by migrating the
+# data rather than in place, so the operator needs the warning while there is
+# still room instead of once Vaultwarden's writes start failing.
+check_disk() {
+    local limit="${BACKUP_MAX_USAGE_PERCENT:-85}" used_percent
+    used_percent="$(df -P "$DATA" 2>/dev/null | awk 'NR == 2 {gsub(/%/, "", $5); print $5}')"
+    # Three states, not two: a reading that never arrived is not a healthy
+    # volume. Reading it as one leaves the guard quietly guarding nothing.
+    case "$used_percent" in
+        ''|*[!0-9]*)
+            log echo -e "${R}Cannot read the usage of ${DATA}${X}"
+            write_status failed "Cannot read the usage of ${DATA}"
+            notify "Cannot read the usage of ${DATA}"
+            heartbeat fail
+            exit 2
+            ;;
+    esac
+    if [ "$used_percent" -lt "$limit" ]; then
+        log echo -e "${G}${DATA} is ${used_percent}% full (limit ${limit}%)${X}"
+        return 0
+    fi
+    log echo -e "${R}${DATA} is ${used_percent}% full (limit ${limit}%)${X}"
+    write_status failed "Data volume is ${used_percent}% full"
+    notify "Data volume is ${used_percent}% full"
+    heartbeat fail
+    exit 2
+}
+
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 require_positive_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES"
@@ -564,6 +594,11 @@ require_positive_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES"
 require_positive_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT"
 require_positive_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT"
 require_positive_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}"
+require_positive_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}"
+if [ "${BACKUP_MAX_USAGE_PERCENT:-85}" -gt 100 ]; then
+    echo "Error: BACKUP_MAX_USAGE_PERCENT must be between 1 and 100, got '${BACKUP_MAX_USAGE_PERCENT}'" >&2
+    exit 2
+fi
 case "$NOTIFY_ON_SUCCESS" in
     true|false) ;;
     *)
@@ -605,9 +640,10 @@ fi
 case "${1:-}" in
     backup)          backup ;;
     check-freshness) check_freshness ;;
+    check-disk)      check_disk ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
     snapshots)       clear_stale_locks; timed "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
-    *)               echo "Usage: $0 {backup|check-freshness|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
+    *)               echo "Usage: $0 {backup|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
