@@ -695,6 +695,30 @@ else
     bad "a build-triggered dependency check can dispatch builds forever"
 fi
 
+# The app's own scheduler cannot report its own silence, so the external
+# dependency-check workflow also has to ask the live app whether the backup
+# heartbeat is fresh. A failure there fails the workflow, which gives GitHub's
+# own notification as a second channel when Telegram is the thing that broke.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    job = doc["jobs"]["watchdog"]
+    exit 1 if job.nil?
+    gate = job["if"].to_s
+    exit 1 unless gate.include?("schedule") && gate.include?("workflow_run")
+    steps = job["steps"] || []
+    setup = steps.find { |s| (s["uses"] || "").include?("setup-flyctl") }
+    exit 1 if setup.nil? || !(setup["uses"] || "").match?(/@[0-9a-f]{40}/)
+    check = steps.find { |s| (s["run"] || "").include?("/restic.sh check-freshness") }
+    exit 1 if check.nil?
+    exit 1 unless (check["run"] || "").include?("flyctl ssh console")
+    env = check["env"] || {}
+    exit 1 unless env.keys.include?("FLY_API_TOKEN") && env.keys.include?("FLY_APP")
+  '; then
+    ok "the external dependency workflow checks the production backup heartbeat"
+else
+    bad "a silent scheduler still has no external backup-heartbeat check"
+fi
+
 # workflow_run never fired for a workflow_dispatch build, so a manual rebuild
 # published an image that never reached Fly. The deploy has to live in the same
 # workflow, and the separate workflow must be gone to avoid double deploys.
@@ -812,10 +836,10 @@ fi
 same "an unreadable cleanup schedule still requests the sweep" "needed=true" \
     "$(grep '^needed=' "$guard_out" | tail -n 1)"
 run_guard 0
-if grep -q 'no scheduled dependency check has ever run' "$work/guard-run.log"; then
-    ok "the dependency-schedule warning still runs when the cleanup has no record"
+if grep -q 'no automatic dependency check has ever run' "$work/guard-run.log"; then
+    ok "the dependency-check warning still runs when the cleanup has no record"
 else
-    bad "the dependency-schedule warning is skipped by an early exit"
+    bad "the dependency-check warning is skipped by an early exit"
 fi
 
 # `paths-ignore` means a README-only commit never triggers this workflow, so
