@@ -569,6 +569,62 @@ def check_restore_chown_failure(image: str) -> None:
     suite.report()
 
 
+def check_entrypoint_symlink_safety(image: str) -> None:
+    """Root must not chown or chmod files reached through links under /data."""
+    container = scratch(image, f"entrypoint-links-{os.getpid()}")
+    shell_in(
+        container,
+        "rm -rf /data/*\n"
+        "mkdir -p /target/logs\n"
+        "printf config > /target/config.json\n"
+        "printf status > /target/status\n"
+        "chmod 0644 /target/config.json /target/status\n"
+        "chmod 0755 /target/logs\n"
+        "chown -R root:root /target\n"
+        "ln -s /target/config.json /data/config.json\n"
+        "ln -s /target/status /data/backup-status.txt\n"
+        "ln -s /target/logs /data/restic-logs\n",
+    )
+    before = {
+        path: exec_in(container, "stat", "-c", "%u:%g:%a", path).stdout.strip()
+        for path in ("/target/config.json", "/target/status", "/target/logs")
+    }
+    started = shell_in(container, "/entrypoint.sh true", check=False)
+    after = {
+        path: exec_in(container, "stat", "-c", "%u:%g:%a", path).stdout.strip()
+        for path in ("/target/config.json", "/target/status", "/target/logs")
+    }
+
+    for label, path in (
+        ("config.json", "/target/config.json"),
+        ("backup status", "/target/status"),
+        ("log directory", "/target/logs"),
+    ):
+        suite.same(
+            f"the entrypoint leaves a symlink target unchanged for {label}",
+            before[path],
+            after[path],
+        )
+
+    config_is_link = exec_in(container, "test", "-L", "/data/config.json", check=False).returncode == 0
+    status_is_file = exec_in(container, "test", "-f", "/data/backup-status.txt", check=False).returncode == 0
+    status_is_link = exec_in(container, "test", "-L", "/data/backup-status.txt", check=False).returncode == 0
+    logs_is_dir = exec_in(container, "test", "-d", "/data/restic-logs", check=False).returncode == 0
+    logs_is_link = exec_in(container, "test", "-L", "/data/restic-logs", check=False).returncode == 0
+    status_meta = exec_in(container, "stat", "-c", "%U:%a", "/data/backup-status.txt", check=False).stdout.strip()
+    logs_meta = exec_in(container, "stat", "-c", "%U:%a", "/data/restic-logs", check=False).stdout.strip()
+
+    if started.returncode != 0:
+        suite.bad("the entrypoint refused to start with untrusted links under /data")
+    suite.same("a symlinked config.json is preserved but skipped", True, config_is_link)
+    suite.same("a symlinked backup status is replaced by a regular file", True, status_is_file and not status_is_link)
+    suite.same("the replacement backup status is private to vaultwarden", "vaultwarden:600", status_meta)
+    suite.same("a symlinked log directory is replaced by a real directory", True, logs_is_dir and not logs_is_link)
+    suite.same("the replacement log directory is private to vaultwarden", "vaultwarden:700", logs_meta)
+    if suite.failures:
+        print(combined(started), file=sys.stderr)
+
+
 def check_restore_swap_failure(image: str) -> None:
     """A rename that fails must not take the live write-ahead log with it.
 
@@ -670,6 +726,7 @@ def main() -> int:
     check_restore_with_corrupt_hot_copy(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
+    check_entrypoint_symlink_safety(image)
     check_restore_swap_failure(image)
     check_log_mode(image)
 
