@@ -113,7 +113,8 @@ cat > /data/config.json <<'JSON'
 {
   "admin_token": "selftest-admin-token",
   "smtp_username": "selftest-smtp-user",
-  "smtp_password": "selftest-smtp-password"
+  "smtp_password": "selftest-smtp-password",
+  "signups_allowed": true
 }
 JSON
 chmod 644 /data/config.json
@@ -123,6 +124,8 @@ same "the config.json warning names the overriding admin_token" 1 \
     "$(printf '%s\n' "$entry_out" | grep -c 'admin_token')"
 same "the config.json warning names the overriding smtp_password" 1 \
     "$(printf '%s\n' "$entry_out" | grep -c 'smtp_password')"
+same "the config.json warning names the overriding signups_allowed" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'signups_allowed')"
 same "the config.json warning does not print the secret value" 0 \
     "$(printf '%s\n' "$entry_out" | grep -c 'selftest-smtp-password')"
 if [ -f "$config_backup" ]; then
