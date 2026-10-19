@@ -91,7 +91,12 @@ fly secrets set SMTP_USERNAME="sender@example.com"
 fly secrets set SMTP_PASSWORD="app-specific-password"
 
 # SMTP_FROM defaults to SMTP_TO when it is left unset, so the app still boots
-# with only the two variables the backup alerts need.
+# with only the two variables the failure alerts need.
+
+# Anything saved through the /admin panel is written to /data/config.json, and
+# that file outranks the environment. Vaultwarden logs every key it overrides at
+# startup, so setting one of those keys here changes nothing until it is changed
+# in /admin too, or that key is dropped from /data/config.json.
 
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
@@ -222,6 +227,7 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare-ips.caddy` from Cloudflare before every image build |
+| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them: `/data/config.json` was written by the admin panel and outranks the environment. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | Backup failures produce no email | Check the run log in `/data/restic-logs`: it records `Alert email sent to …` or `Alert email failed (exit N)` with the mailer's error. Mail is skipped entirely when `SMTP_TO` is unset, and an unset `SMTP_HOST` fails with `account default not found` |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
