@@ -443,6 +443,21 @@ same "a backup with an untrimmable log directory still completes" 0 "$frozen_bac
 same "the successful backup records the log trim failure" 1 \
     "$(grep -c 'log trim failed' /data/backup-status.txt)"
 
+# "Cannot read the log directory" is not "the log directory is empty". The size
+# probe used to print its fallback on top of awk's own zero, and the cap
+# comparison then rejected the two-line value as a non-integer: an unreadable
+# directory reached the alert channel as a false "trim failed" on a run that had
+# nothing to trim.
+mkdir -p /data/selftest-blocked
+chmod 000 /data/selftest-blocked
+blocked_out="$(RESTIC_LOG_DIR=/data/selftest-blocked /restic.sh snapshots 2>&1)"
+chmod 700 /data/selftest-blocked
+rmdir /data/selftest-blocked
+same "an unreadable log directory is reported as unreadable" 1 \
+    "$(printf '%s\n' "$blocked_out" | grep -c 'cannot read')"
+same "an unreadable log directory is not measured as an empty one" 0 \
+    "$(printf '%s\n' "$blocked_out" | grep -c 'integer expected')"
+
 # A backend that never answers must be killed by the command timeout and
 # recorded as a failure, instead of holding the lock until the next run.
 stub_dir=/tmp/selftest-stub

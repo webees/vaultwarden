@@ -206,6 +206,10 @@ fly ssh console -C "touch /data/restore-pending"                  # arm the data
 fly apps restart                                                  # entrypoint swaps, then starts
 ```
 
+The swap is refused, and the marker kept, when `/data/backup.bak` is missing or is not a readable
+database: the machine keeps running on the database it already has, and the reason is in `fly logs`.
+Fix the file and restart to retry, instead of booting on a database Vaultwarden cannot open.
+
 `/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
 Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong.
 

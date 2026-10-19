@@ -13,6 +13,12 @@ if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1; then
     exec su-exec vaultwarden:vaultwarden "$0" "$@"
 fi
 
+# The run logs and the status file carry the repository's own output, so they
+# stay private to their owner whichever umask the caller had: `fly ssh console`
+# starts as root with 022, which used to leave world-readable logs next to the
+# 0600 ones the scheduler wrote.
+umask 077
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 APP_NAME="${FLY_APP_NAME:-Vaultwarden}"
 DATA="/data"
@@ -224,8 +230,11 @@ run() {
 # size or mtime query that relies on one fails silently and turns the directory
 # cap into a no-op. stat -c is available in the same BusyBox.
 log_dir_size() {
-    find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%s' {} + 2>/dev/null \
-        | awk '{total += $1} END {print total + 0}' || echo 0
+    local sizes
+    # A read that failed is not an empty directory: falling back to "0 bytes"
+    # turned an unreadable log directory into a silent breach of the cap.
+    sizes="$(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%s' {} + 2>/dev/null)" || return 2
+    printf '%s\n' "$sizes" | awk '{total += $1} END {print total + 0}'
 }
 
 # Drop logs older than 10 hours, cap oversized files, then trim the directory.
@@ -246,7 +255,10 @@ trim_logs() {
             fi
         fi
     done
-    total="$(log_dir_size)"
+    if ! total="$(log_dir_size)"; then
+        echo "Warning: cannot read ${LOG_DIR}; the log directory cap was not checked" >&2
+        return 1
+    fi
     [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && return 0
     while IFS= read -r file; do
         [ -e "$file" ] || continue
