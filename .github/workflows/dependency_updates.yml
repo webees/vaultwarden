@@ -28,7 +28,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: dependency-updates
+  group: dependency_updates
   cancel-in-progress: false
 
 jobs:
@@ -240,7 +240,7 @@ jobs:
           for _ in $(seq 1 40); do
             state="$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             if [ "$state" = "MERGED" ]; then
-              gh workflow run build-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+              gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
               echo "dispatched the build for the merged dependency update"
               exit 0
             fi
@@ -265,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
           if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
-            gh workflow run build-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+            gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
 
   watchdog:
