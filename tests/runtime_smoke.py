@@ -211,6 +211,30 @@ def check_redaction(container: str, log: str) -> None:
     )
 
 
+def check_query_redaction(container: str) -> None:
+    """Query strings can carry one-time credentials and belong out of the log."""
+    path_marker = f"smoke-query-{os.getpid()}"
+    secret_marker = f"secret-query-{os.getpid()}"
+    path = f"/query-probe-{path_marker}"
+    query = f"token={secret_marker}&email={secret_marker}%40example.invalid"
+    probe_code(container, "-H", "Host: example.com", f"http://127.0.0.1:8080{path}?{query}")
+    time.sleep(3)
+
+    log = access_log(container)
+    def fail(message: str) -> None:
+        suite.bad(message)
+        print("\n".join(line for line in log.splitlines() if "query-probe" in line), file=sys.stderr)
+        suite.report()
+
+    if f'"uri": "{path}' not in log:
+        fail("the query-redaction probe did not reach the access log")
+    if secret_marker in log:
+        fail("a query string value reached the access log")
+    if f'"uri": "{path}?redacted"' not in log:
+        fail("the access log does not retain a redacted query marker")
+    suite.ok("query string values stay out of the access log")
+
+
 def response_headers(container: str, *args: str) -> dict[str, str]:
     """Return the response headers, keyed case-insensitively."""
     raw = exec_in(container, "curl", "-sS", "-D", "-", "-o", "/dev/null", *args).stdout
@@ -632,6 +656,7 @@ def main() -> int:
     check_security_headers(container)
     log = check_access_log(container)
     check_redaction(container, log)
+    check_query_redaction(container)
 
     docker("cp", str(TESTS_DIR / "lib.sh"), f"{container}:/tmp/lib.sh")
     docker("cp", str(TESTS_DIR / "image_selftest.sh"), f"{container}:/tmp/image_selftest.sh")
