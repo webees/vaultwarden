@@ -33,16 +33,21 @@
 			fields {
 				# Caddy already hides Authorization/Cookie/Set-Cookie; the token
 				# headers below are not covered by that and need this filter.
+				#
+				# The field names have to be the canonical header keys Caddy
+				# logs: `X-Real-IP`, `Fly-Client-IP` and `CF-Access-Jwt-Assertion`
+				# matched nothing at all, so those three headers were written to
+				# the access log while this list said otherwise.
 				request>headers>Authorization delete
 				request>headers>Cookie delete
 				request>headers>Proxy-Authorization delete
 				request>headers>X-Api-Key delete
 				request>headers>X-Auth-Token delete
 				request>headers>X-Backup-Status-Token delete
-				request>headers>CF-Access-Jwt-Assertion delete
+				request>headers>Cf-Access-Jwt-Assertion delete
 				request>headers>X-Forwarded-For delete
-				request>headers>X-Real-IP delete
-				request>headers>Fly-Client-IP delete
+				request>headers>X-Real-Ip delete
+				request>headers>Fly-Client-Ip delete
 			}
 		}
 	}
