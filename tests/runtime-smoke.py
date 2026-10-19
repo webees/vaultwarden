@@ -259,7 +259,7 @@ def check_apk_stub(work: Path, image: str) -> None:
 
 
 def check_smtp_delivery(work: Path, image: str) -> None:
-    """Email is the only channel that reports a broken backup end to end."""
+    """The monthly integrity check is the one job that still reports by email."""
     global sink
     smtp_dir = work / "smtp"
     smtp_dir.mkdir()
@@ -319,12 +319,13 @@ def check_smtp_delivery(work: Path, image: str) -> None:
     docker("cp", str(cert), f"{container}:/tmp/sink-ca.pem")
     shell_in(container, "cat /tmp/sink-ca.pem >> /etc/ssl/certs/ca-certificates.crt")
 
-    # A stale freshness check is the cheapest real failure path that sends mail.
+    # The hourly jobs stay on Telegram, so drive the rare email path instead:
+    # point the monthly integrity check at a repository that does not exist.
     result = exec_in(
         container,
         "/restic.sh",
-        "check-freshness",
-        env={"RESTIC_PASSWORD": "selftest", "BACKUP_MAX_AGE": "1"},
+        "verify",
+        env={"RESTIC_PASSWORD": "selftest", "RESTIC_REPOSITORY": "/tmp/no-such-repository"},
         check=False,
     )
     smtp_run.write_text(combined(result))
@@ -339,7 +340,11 @@ def check_smtp_delivery(work: Path, image: str) -> None:
     suite.ok("a real alert reached the SMTP sink over STARTTLS")
 
     delivered = message.read_text(errors="replace")
-    suite.same("the delivered message carries the alert subject", True, "Subject: [Vaultwarden] Backup stale" in delivered)
+    suite.same(
+        "the delivered message carries the alert subject",
+        True,
+        "Subject: [Vaultwarden] Repository verification failed" in delivered,
+    )
     if "ops@example.com" not in delivered:
         suite.bad("the delivered message lost its recipient")
         print("\n".join(delivered.splitlines()[:15]), file=sys.stderr)
