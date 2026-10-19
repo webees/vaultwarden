@@ -258,10 +258,16 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 
 ### Verification
 
+The host-side suites are Python (`tests/selftest.py` and `tests/runtime-smoke.py` share `tests/lib.py`). Shell
+stays only where the environment forces it: `tests/image-selftest.sh` and `tests/lib.sh` run inside the image,
+which ships no Python on purpose, and the snippets a Python test hands to `sh` in a container are single
+commands.
+
 ```bash
 shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
+python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
 tests/selftest.sh                # supervise.sh, refresh-cloudflare-ips.sh and deps.sh failure paths
-tests/runtime-smoke.sh <image>   # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
+tests/runtime-smoke.py <image>   # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/refresh-cloudflare-ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums

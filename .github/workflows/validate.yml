@@ -27,11 +27,12 @@ jobs:
           # .git/config where a later step could reuse it.
           persist-credentials: false
 
-      - name: 🐚 Shell scripts
+      - name: 🐚 Shell and Python scripts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh tests/*.sh
+          python3 -m py_compile tests/*.py
 
       # Every YAML file under .github, not a list of names: the composite action
       # that expires GHCR tags was never parsed, so a syntax error there would
@@ -60,7 +61,7 @@ jobs:
         if: github.event_name != 'push'
         run: |
           docker build --tag validate:local .
-          bash tests/runtime-smoke.sh validate:local
+          python3 tests/runtime-smoke.py validate:local
 
       # entrypoint.sh has two branches: write /etc/msmtprc from SMTP_*, or leave
       # it empty so alerts are skipped. Both are exercised here.
