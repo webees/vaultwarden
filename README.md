@@ -183,7 +183,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check also emails. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails |
+| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check also emails. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build, so a fully silent scheduler still fails an external workflow and GitHub notifies the repository owner |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
@@ -196,8 +196,11 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
-scheduler is still alive. A scheduler that has stopped firing entirely is only visible through
-`HEALTHCHECK_URL`, so point that at a dead-man's-switch service if you want a second, independent channel.
+scheduler is still alive. A scheduler that has stopped firing entirely is caught by the external watchdog in
+`.github/workflows/dependency-updates.yml`: it runs the same check against the live app every two hours and
+after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
+is the channel that broke. `HEALTHCHECK_URL` remains an optional third channel for a dedicated
+dead-man's-switch service.
 
 `/restic.sh check-disk` runs at `:35` every hour and alerts over Telegram when `/data` is at least
 `BACKUP_MAX_USAGE_PERCENT` full (default 85). Attachments, the icon cache and the database all live on

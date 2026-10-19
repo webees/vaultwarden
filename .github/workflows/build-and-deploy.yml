@@ -197,18 +197,20 @@ jobs:
           echo "needed=${needed}" >> "$GITHUB_OUTPUT"
 
           # Same failure mode, different victim: report the dependency check if
-          # its schedule stops firing, without blocking the deploy.
+          # it stops firing, without blocking the deploy. Count the workflow_run
+          # fallback as an automatic check too; otherwise a healthy fallback
+          # still prints "no scheduled dependency check has ever run".
           if ! deps_last="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency-updates.yml/runs?event=schedule&per_page=1" \
-            --jq '.workflow_runs[0].created_at // empty')"; then
-            echo "::warning::could not read the dependency check schedule"
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency-updates.yml/runs?per_page=50" \
+            --jq '[.workflow_runs[] | select(.event == "schedule" or .event == "workflow_run")] | first | .created_at // empty')"; then
+            echo "::warning::could not read the dependency check history"
           elif [ -z "$deps_last" ]; then
-            echo "::warning::no scheduled dependency check has ever run"
+            echo "::warning::no automatic dependency check has ever run"
           else
             deps_age=$(( ( $(date -u +%s) - $(date -u -d "$deps_last" +%s) ) / 86400 ))
-            echo "last scheduled dependency check: ${deps_last} (${deps_age} days ago)"
+            echo "last automatic dependency check: ${deps_last} (${deps_age} days ago)"
             if [ "$deps_age" -ge 3 ]; then
-              echo "::warning::the dependency check schedule has not fired for ${deps_age} days"
+              echo "::warning::the automatic dependency check has not run for ${deps_age} days"
             fi
           fi
 
