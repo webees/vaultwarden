@@ -9,7 +9,7 @@ FROM vaultwarden/server:${VAULTWARDEN_VERSION}-alpine@${VAULTWARDEN_DIGEST}
 # ── Build Args ────────────────────────────────────────────────────────────────
 ARG TARGETARCH
 ARG SUPERCRONIC_VERSION=v0.2.50
-ARG OVERMIND_VERSION=v2.5.0
+ARG OVERMIND_VERSION=v2.5.1
 
 # e2e probe: stale pin on purpose, the daily dependency job must correct it.
 
