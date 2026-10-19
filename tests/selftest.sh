@@ -414,6 +414,8 @@ echo "--- workflow config"
 # Every push to main rolled a new production release, including commits that can
 # not change the image at all: the workflow rename on 2026-10-19T02:10Z rebuilt
 # both architectures and deployed a release for a `.github`-only change.
+# `.gitignore` slipped through the same way on 2026-10-19T04:23Z, so it is
+# asserted separately: the smoke-suite commit touched nothing else that builds.
 #
 # The ignore list has to stay inside what `.dockerignore` keeps out of the build
 # context, so nothing the image is built from can ever be skipped. fly.toml is
@@ -432,6 +434,7 @@ if ruby -ryaml -e '
     end
     exit 1 unless ignored.include?(".github/**")
     exit 1 unless ignored.include?("tests/**")
+    exit 1 unless ignored.include?(".gitignore")
   '; then
     ok "the build runs for every commit that can change the image, and skips the rest"
 else
