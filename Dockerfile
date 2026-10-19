@@ -12,7 +12,7 @@ ARG TARGETARCH
 # checks them daily, opens a PR with the newest release, and merges it once
 # validate passes, which rebuilds the image and rolls it out to Fly.
 ARG SUPERCRONIC_VERSION=v0.2.50
-ARG OVERMIND_VERSION=v2.5.0
+ARG OVERMIND_VERSION=v2.5.1
 
 # Artifact digests, so a replaced or truncated download fails the build.
 # supercronic is hashed as downloaded; overmind is hashed after gunzip.
