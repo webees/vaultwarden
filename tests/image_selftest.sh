@@ -770,6 +770,12 @@ same "restore drill reports the missing snapshot size" 1 \
 # The README promises the dead-man's-switch ping covers the restore drill and
 # uses the /fail URL when the run fails. The drill had no failure ping at all,
 # so a broken drill left the switch armed as if nothing had run.
+#
+# The ping is optional, so it cannot be the only channel: with HEALTHCHECK_URL
+# unset a failed drill reached nobody at all, while the monthly verify next to
+# it emails and notifies Telegram. A drill that fails is the one warning that
+# the snapshots cannot be restored, so assert the rare channel and the recorded
+# state, not just the ping.
 hb_drill_dir="$(mktemp -d)"
 chmod 777 "$hb_drill_dir"
 hb_drill_calls="$hb_drill_dir/calls"
@@ -778,12 +784,21 @@ chmod 666 "$hb_drill_calls"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' \
     "$hb_drill_calls" > "$hb_drill_dir/curl"
 chmod 755 "$hb_drill_dir/curl"
+# Seed a known state: the assertion below has to see this run's failure, not a
+# leftover from an earlier case that happens to contain the same word.
+printf 'state=ok\nupdated_at=0\nlast_success=0\nmessage=seeded\n' > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
 PATH="$hb_drill_dir:$stats_stub_dir:$PATH" HEALTHCHECK_URL=http://hb.invalid/ping \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
     STATS_MODE=fail /restic.sh restore-test >/tmp/selftest-drill-heartbeat.log 2>&1
 same "a failed restore drill pings the failure URL" 1 \
     "$(grep -c ' http://hb.invalid/ping/fail$' "$hb_drill_calls")"
 same "a failed restore drill does not ping the success URL" 0 \
     "$(grep -c ' http://hb.invalid/ping$' "$hb_drill_calls")"
+same "a failed restore drill reaches the rare alert channel" 1 \
+    "$(grep -c 'api.telegram.org' "$hb_drill_calls")"
+same "a failed restore drill records the failed state" 1 \
+    "$(grep -c '^state=failed' /data/backup-status.txt)"
 rm -rf "$hb_drill_dir"
 rm -rf "$stats_stub_dir"
 

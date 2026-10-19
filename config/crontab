@@ -20,3 +20,12 @@
 # Repository damage is the one thing only this job can find, so a failure emails
 # the operator and records the failed state in backup-status.txt.
 30 3 1 * * /restic.sh verify
+
+# Monthly restore drill: the only job that proves a snapshot still restores and
+# boots, rather than only that the repository is readable. Runs after verify and
+# away from the top of the hour so the two never want the repository lock at the
+# same time; a failure emails the operator, notifies Telegram and records the
+# failed state in backup-status.txt. Measured on production: the cold boot left
+# 65 MiB of the 207 MiB the guest reports free, and the drill checks free space
+# before it unpacks anything.
+15 4 1 * * /restic.sh restore-test
