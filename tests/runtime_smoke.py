@@ -502,6 +502,47 @@ def check_restore_copy_failure(image: str) -> None:
     suite.report()
 
 
+def check_restore_swap_failure(image: str) -> None:
+    """A rename that fails must not take the live write-ahead log with it.
+
+    The old order deleted db.sqlite3-wal and db.sqlite3-shm before the rename.
+    When the rename then failed, the machine kept the old database but lost the
+    log that held its committed transactions, so "leaving the database alone"
+    was only half true.
+    """
+    container = scratch(image, f"restore-swapfail-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data /stub\n"
+        'printf "#!/bin/sh\\nexit 1\\n" > /stub/mv\n'
+        "chmod +x /stub/mv\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "cp /data/db.sqlite3 /tmp/live-before\n"
+        'printf "live-wal" > /data/db.sqlite3-wal\n'
+        'printf "live-shm" > /data/db.sqlite3-shm\n'
+        "touch /data/restore-pending\n",
+    )
+    shell_in(container, 'PATH="/stub:$PATH" /entrypoint.sh true', check=False)
+    # cmp, not sqlite3: the point of the case is that the file is untouched, and
+    # a deliberately invalid WAL must not be what decides the assertion.
+    unchanged = exec_in(container, "cmp", "-s", "/data/db.sqlite3", "/tmp/live-before", check=False).returncode == 0
+    wal_left = exec_in(container, "test", "-e", "/data/db.sqlite3-wal", check=False).returncode == 0
+    shm_left = exec_in(container, "test", "-e", "/data/db.sqlite3-shm", check=False).returncode == 0
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    if unchanged and wal_left and shm_left and marker_left and not scratch_left:
+        suite.ok("a failed restore swap keeps the live write-ahead log")
+        return
+    suite.bad("a failed restore swap removed the live write-ahead log")
+    print(
+        f"unchanged={unchanged} wal_left={wal_left} shm_left={shm_left} "
+        f"marker_left={marker_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
 def check_log_mode(image: str) -> None:
     """The caller's umask must not decide whether a run log is world-readable."""
     mode = docker(
@@ -560,6 +601,7 @@ def main() -> int:
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
     check_restore_copy_failure(image)
+    check_restore_swap_failure(image)
     check_log_mode(image)
 
     suite.report()
