@@ -329,6 +329,25 @@ PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
     /restic.sh check-freshness >/tmp/selftest-tg-fail.log 2>&1
 same "a failed run sends one Telegram message" 1 \
     "$(grep -c 'Backup stale' "$tg_calls")"
+
+# A rejected notification used to leave only an exit code behind, so a wrong
+# token and an unreachable API looked identical in the run log. Record the API's
+# own answer instead, redacted: it names the problem, and a proxy error page can
+# echo the request URL that carries the token.
+printf '#!/bin/sh\nprintf "%%s\\n" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\nexit 0\n' \
+    > "$tg_dir/curl"
+chmod 755 "$tg_dir/curl"
+seed_status "$(date -u +%s)"
+PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
+    /restic.sh backup >/tmp/selftest-tg-reject.log 2>&1
+same "a rejected Telegram notification is recorded as failed" 1 \
+    "$(grep -c 'Telegram notification failed' /tmp/selftest-tg-reject.log)"
+same "a rejected notification records the API answer" 1 \
+    "$(grep -c 'Unauthorized' /tmp/selftest-tg-reject.log)"
+same "a rejected notification redacts the token" 0 \
+    "$(grep -c '123456:selftest' /tmp/selftest-tg-reject.log)"
+
 TELEGRAM_BOT_TOKEN='123456:selftest' /restic.sh snapshots \
     >/tmp/selftest-tg-half.log 2>&1
 same "a Telegram token without a chat id is rejected" 2 "$?"
