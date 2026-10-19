@@ -61,7 +61,6 @@ RUN set -eu; \
         curl \
         su-exec \
         ca-certificates \
-        openssl \
         tzdata \
         caddy \
         restic \
