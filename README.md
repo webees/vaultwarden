@@ -335,7 +335,9 @@ replaced with `?redacted`, because one-time credentials and addresses do not bel
 the path remains visible for diagnosis.
 
 The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` fixes ownership on `/data` and
-`/app`, then drops privileges with `su-exec` before starting Overmind.
+`/app`, then drops privileges with `su-exec` before starting Overmind. Because Vaultwarden can write under
+`/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
+links with private files/directories, and it refuses to chmod or chown a symlinked `config.json`.
 
 ## 📝 License
 
