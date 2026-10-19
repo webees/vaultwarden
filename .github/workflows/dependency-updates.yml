@@ -25,6 +25,11 @@ jobs:
     # The post-merge step alone waits up to ten minutes for the pull request to
     # land, so bound the whole job rather than the six-hour default.
     timeout-minutes: 40
+    # One decision for "this run merges the dependency PR": the schedule always
+    # merges, a manual dispatch only when asked to. The merge and the dispatch
+    # that follows it both read this value, so the two cannot disagree.
+    env:
+      AUTO_MERGE: ${{ github.event_name == 'schedule' || inputs.auto_merge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -172,7 +177,7 @@ jobs:
 
       - name: 🔀 Arm auto-merge on the dependency PR
         id: arm
-        if: steps.compare.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.auto_merge)
+        if: steps.compare.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.pr.outputs.branch }}
@@ -208,8 +213,12 @@ jobs:
       # trigger workflows either, so the build workflow never sees the merge
       # commit: the new digest would never be built and Fly would keep running
       # the old image. Dispatch the build ourselves once the merge lands.
+      #
+      # Only when this run is the one merging: with the merge left to a human
+      # (a manual dispatch with auto_merge off) that merge arrives as an ordinary
+      # push, and polling for ten minutes only failed a run that did its job.
       - name: 🚀 Build and deploy after the merge
-        if: always() && steps.compare.outputs.changed == 'true'
+        if: always() && steps.compare.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.pr.outputs.number }}
@@ -219,7 +228,7 @@ jobs:
           for _ in $(seq 1 40); do
             state="$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             if [ "$state" = "MERGED" ]; then
-              gh workflow run ghcr.yml --repo "$GITHUB_REPOSITORY" --ref main
+              gh workflow run build-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
               echo "dispatched the build for the merged dependency update"
               exit 0
             fi
@@ -239,5 +248,5 @@ jobs:
         run: |
           set -euo pipefail
           if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
-            gh workflow run ghcr.yml --repo "$GITHUB_REPOSITORY" --ref main
+            gh workflow run build-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
