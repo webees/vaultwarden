@@ -502,6 +502,49 @@ def check_restore_copy_failure(image: str) -> None:
     suite.report()
 
 
+def check_restore_chown_failure(image: str) -> None:
+    """A failed chown is a pre-swap failure, exactly like a failed copy.
+
+    The entrypoint runs with `set -e`, so an unguarded chown aborted it: the
+    machine exited instead of keeping the database it had and starting, which
+    crash-loops on a restore that cannot be applied.
+    """
+    container = scratch(image, f"restore-chownfail-{os.getpid()}")
+    # Fail only for the scratch copy the swap creates, so the ownership fixes the
+    # entrypoint makes on /data and /app still succeed. `%b` turns the escapes
+    # into newlines and the single-quoted section keeps `$*` literal for the stub.
+    shell_in(
+        container,
+        "mkdir -p /data /stub\n"
+        'real="$(command -v chown)"\n'
+        "printf '%b' '#!/bin/sh\\ncase \"$*\" in *db.sqlite3.new*) exit 1 ;; esac\\nexec '\"$real\"' $*\\n' > /stub/chown\n"
+        "chmod +x /stub/chown\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, 'PATH="/stub:$PATH" /entrypoint.sh echo started', check=False)
+    value = exec_in(container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and value == "2"
+        and marker_left
+        and not scratch_left
+    ):
+        suite.ok("a failed restore chown keeps the database and still starts the app")
+        return
+    suite.bad("a failed restore chown aborted the entrypoint instead of starting the app")
+    print(
+        f"rc={started.returncode} stdout={started.stdout.strip()!r} value={value} "
+        f"marker_left={marker_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
 def check_restore_swap_failure(image: str) -> None:
     """A rename that fails must not take the live write-ahead log with it.
 
@@ -601,6 +644,7 @@ def main() -> int:
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
     check_restore_copy_failure(image)
+    check_restore_chown_failure(image)
     check_restore_swap_failure(image)
     check_log_mode(image)
 
