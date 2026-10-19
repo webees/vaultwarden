@@ -59,6 +59,22 @@ write_status() {
     printf '%s' "$body" > "$STATUS_FILE" 2>/dev/null || true
 }
 
+# The volume guard and the monthly verify are not backup runs, and `state` is the
+# backup job's in-flight marker: `check-freshness` reads `state=running` to tell
+# a backup that started but never finished. The guard at :35 used to overwrite
+# that marker before the check at :45 could read it, which replaced the
+# immediate "did not finish" alert with a much later stale-backup one. Keep the
+# marker and carry the guard's own alert in the message instead.
+write_guard_status() {
+    local state="$1" message="$2" current
+    current="$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
+    if [ "$current" = "running" ]; then
+        write_status running "${message} (backup in flight)"
+    else
+        write_status "$state" "$message"
+    fi
+}
+
 # Optional dead-man's-switch ping (e.g. healthchecks.io). No-op when HEALTHCHECK_URL is unset.
 heartbeat() {
     [ -z "${HEALTHCHECK_URL:-}" ] && return 0
@@ -535,7 +551,7 @@ verify() {
     # 2 with nothing but a log line: corruption waited for someone to read the
     # container log. Alert the way the backup does instead.
     trap 'rc=$?; if [ "${rc:-0}" -ne 0 ]; then
-        write_status failed "Repository verification failed (exit ${rc})"
+        write_guard_status failed "Repository verification failed (exit ${rc})"
         notify_rare "Repository verification failed"
         heartbeat fail
     fi' EXIT
@@ -608,7 +624,7 @@ check_disk() {
     case "$used_percent" in
         ''|*[!0-9]*)
             log echo -e "${R}Cannot read the usage of ${DATA}${X}"
-            write_status failed "Cannot read the usage of ${DATA}"
+            write_guard_status failed "Cannot read the usage of ${DATA}"
             send_telegram "Cannot read the usage of ${DATA}"
             heartbeat fail
             exit 2
@@ -619,7 +635,7 @@ check_disk() {
         return 0
     fi
     log echo -e "${R}${DATA} is ${used_percent}% full (limit ${limit}%)${X}"
-    write_status failed "Data volume is ${used_percent}% full"
+    write_guard_status failed "Data volume is ${used_percent}% full"
     send_telegram "Data volume is ${used_percent}% full"
     heartbeat fail
     exit 2
