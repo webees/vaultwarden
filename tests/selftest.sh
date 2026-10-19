@@ -520,6 +520,12 @@ if ruby -ryaml -e '
     exit 1 if expiry.empty?
     exit 1 if expiry.all? { |s| (s["if"] || "").empty? }
     exit 1 unless steps.any? { |s| (s["run"] || "").include?("event=schedule") }
+    best_effort = expiry.find { |s| s["continue-on-error"] == true }
+    exit 1 if best_effort.nil? || best_effort["id"].to_s.empty?
+    exit 1 unless steps.any? { |s|
+      (s["run"] || "").include?("::warning::") &&
+        (s["if"] || "").include?("steps.#{best_effort["id"]}.outcome")
+    }
     nightly = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["jobs"]["cleanup"]["steps"]
     exit 1 unless nightly.any? { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
     shared = YAML.load_file(".github/actions/expire-tags/action.yml")
@@ -527,7 +533,7 @@ if ruby -ryaml -e '
   '; then
     ok "the build expires old timestamp tags when the nightly cleanup is behind"
 else
-    bad "tag expiry depends on a GitHub schedule that can stop silently, or the two call sites diverged"
+    bad "tag expiry depends on a GitHub schedule that can stop silently, its best-effort failure is not reported, or the two call sites diverged"
 fi
 
 if ruby -ryaml -e '
