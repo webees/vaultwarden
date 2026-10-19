@@ -626,7 +626,23 @@ else
     bad "the monthly verify fires at minute 0, the same minute as @hourly backup"
 fi
 
-# The daily check only opened a PR when a pin changed, so an Alpine-only
+# A dependency check that ran once a day left an upstream release unnoticed for
+# most of that day, and the build workflow only warns after three silent days,
+# so the schedule has already aged out by the time anyone hears about it. Pin a
+# sub-daily cadence rather than the exact cron, so it can be retuned later.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    on = doc["on"] || doc[true] || {}
+    entries = Array(on["schedule"])
+    exit 1 if entries.empty?
+    exit 1 unless entries.all? { |e| e["cron"].to_s.split(" ")[1].to_s.match?(/[*,\-]/) }
+  '; then
+    ok "the dependency check runs more than once a day"
+else
+    bad "the dependency check still runs only once a day"
+fi
+
+# The dependency check only opened a PR when a pin changed, so an Alpine-only
 # security update waited for the weekly rebuild. The apk probe has to run every
 # day, and a non-zero count has to dispatch the build workflow.
 if ruby -ryaml -e '

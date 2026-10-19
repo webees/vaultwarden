@@ -1,4 +1,4 @@
-name: 🛡️ Daily Dependency Updates
+name: 🛡️ Dependency Updates
 
 on:
   workflow_dispatch:
@@ -8,7 +8,10 @@ on:
         type: boolean
         default: true
   schedule:
-    - cron: '23 2 * * *'
+    # Every two hours: a Vaultwarden release should not wait a full day to be
+    # noticed. Minute 41 keeps the run out of the top-of-the-hour queue spike,
+    # and a run whose pins already match is a no-op that opens no PR.
+    - cron: '41 */2 * * *'
 
 permissions:
   actions: write
@@ -98,7 +101,7 @@ jobs:
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
 
           {
-            echo "Automated daily dependency check."
+            echo "Automated dependency check."
             echo
             echo "| Dependency | Pinned |"
             echo "| :--- | :--- |"
