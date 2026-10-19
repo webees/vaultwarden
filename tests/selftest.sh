@@ -254,7 +254,7 @@ fi
 # The image ships BusyBox find, which rejects -printf. A GNU-only log size or
 # mtime query fails silently there and turns the log directory cap into a no-op.
 # selftest.sh itself is excluded: it carries the pattern being searched for.
-if grep -q -- '-printf' scripts/*.sh tests/image-selftest.sh tests/runtime-smoke.sh; then
+if grep -q -- '-printf' scripts/*.sh tests/image-selftest.sh tests/runtime-smoke.py; then
     bad "a script uses find -printf, which the image's BusyBox find does not support"
 else
     ok "no script relies on the GNU-only find -printf"
@@ -489,9 +489,9 @@ fi
 if ruby -ryaml -e '
     runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
               .map { |s| s["run"] || "" }.join("\n")
-    exit 1 unless runs.include?("tests/runtime-smoke.sh")
+    exit 1 unless runs.include?("tests/runtime-smoke.py")
     steps = YAML.load_file(".github/workflows/validate.yml")["jobs"]["validate"]["steps"]
-    exit 1 unless steps.any? { |s| (s["run"] || "").include?("tests/runtime-smoke.sh") }
+    exit 1 unless steps.any? { |s| (s["run"] || "").include?("tests/runtime-smoke.py") }
     exit 1 if steps.any? { |s| (s["run"] || "").include?("docker cp tests/") }
   '; then
     ok "the published image is smoke tested, through one shared script"
@@ -1042,10 +1042,10 @@ fi
 
 # The runtime smoke test is the only check that proves a message is delivered,
 # so the verification list has to point at it instead of leaving it undiscovered.
-if grep -q 'runtime-smoke.sh' README.md; then
+if grep -q 'runtime-smoke.py' README.md; then
     ok "README lists the runtime smoke test in its verification commands"
 else
-    bad "README does not mention tests/runtime-smoke.sh"
+    bad "README does not mention tests/runtime-smoke.py"
 fi
 
 # A destructive command that is documented without its guard is a trap: the
