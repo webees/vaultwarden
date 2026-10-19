@@ -61,7 +61,15 @@ apply_pending_restore() {
         rm -f "$new"
         return 0
     fi
-    chown vaultwarden:vaultwarden "$new"
+    # A failed chown belongs to the same class as a failed copy: the machine
+    # keeps the database it has and starts. Left unguarded, `set -e` aborted the
+    # entrypoint right here, so a restore that could not be applied crash-looped
+    # the machine - the opposite of what this function promises.
+    if ! chown vaultwarden:vaultwarden "$new"; then
+        echo "could not take ownership of the restored database; leaving the database alone" >&2
+        rm -f "$new"
+        return 0
+    fi
     # Install the replacement before touching the old sidecars. The rename is
     # atomic, so a failure here leaves the live database and the write-ahead log
     # that belongs to it exactly as they were. Deleting the log first threw away
