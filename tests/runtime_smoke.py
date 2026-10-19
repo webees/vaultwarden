@@ -6,7 +6,7 @@ the backup paths have to work inside the image, and the proxy has to keep
 credentials out of its access log. Shared by the validate and build workflows so
 the merge path tests the exact digest it publishes.
 
-Usage: tests/runtime-smoke.py <image>
+Usage: tests/runtime_smoke.py <image>
 
 Everything that runs inside the image is one command or a short `sh` snippet:
 the image ships no Python on purpose, so that part cannot move here.
@@ -325,7 +325,7 @@ def check_smtp_delivery(work: Path, image: str) -> None:
     )
     sink = subprocess.Popen(
         [
-            sys.executable, str(TESTS_DIR / "smtp-sink.py"),
+            sys.executable, str(TESTS_DIR / "smtp_sink.py"),
             "--cert", str(cert), "--key", str(key),
             "--out", str(message), "--ready", str(ready), "--timeout", "120",
         ]
@@ -524,7 +524,7 @@ def check_log_mode(image: str) -> None:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: tests/runtime-smoke.py <image>", file=sys.stderr)
+        print("usage: tests/runtime_smoke.py <image>", file=sys.stderr)
         return 2
     image = sys.argv[1]
     work = Path(tempfile.mkdtemp(prefix="smoke-"))
@@ -550,8 +550,8 @@ def main() -> int:
     check_redaction(container, log)
 
     docker("cp", str(TESTS_DIR / "lib.sh"), f"{container}:/tmp/lib.sh")
-    docker("cp", str(TESTS_DIR / "image-selftest.sh"), f"{container}:/tmp/image-selftest.sh")
-    docker("exec", container, "sh", "/tmp/image-selftest.sh", stream=True)
+    docker("cp", str(TESTS_DIR / "image_selftest.sh"), f"{container}:/tmp/image_selftest.sh")
+    docker("exec", container, "sh", "/tmp/image_selftest.sh", stream=True)
 
     check_apk_stub(work, image)
     check_required_tools(image)

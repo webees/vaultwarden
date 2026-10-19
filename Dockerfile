@@ -8,7 +8,7 @@ FROM vaultwarden/server:${VAULTWARDEN_VERSION}-alpine@${VAULTWARDEN_DIGEST}
 
 # ── Build Args ────────────────────────────────────────────────────────────────
 ARG TARGETARCH
-# Upstream pins live here on purpose: .github/workflows/dependency-updates.yml
+# Upstream pins live here on purpose: .github/workflows/dependency_updates.yml
 # checks them every two hours, opens a PR with the newest release, and merges it once
 # validate passes, which rebuilds the image and rolls it out to Fly.
 ARG SUPERCRONIC_VERSION=v0.2.50
@@ -36,7 +36,7 @@ WORKDIR $WORKDIR
 COPY config/crontab \
     config/Procfile \
     config/Caddyfile \
-    config/cloudflare-ips.caddy \
+    config/cloudflare_ips.caddy \
     scripts/entrypoint.sh \
     scripts/restic.sh \
     scripts/supervise.sh \
