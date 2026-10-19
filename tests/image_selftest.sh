@@ -272,6 +272,22 @@ same "check-freshness flags a backup that never finished" 2 "$?"
 same "the stuck run is recorded as failed" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
+# The volume guard at :35 is not a backup run, and it runs before the freshness
+# check at :45. Overwriting `state=running` there erased the marker the check
+# reads, so a backup that started and never finished was reported as quiet and
+# only surfaced much later through the stale-backup path.
+seed_running
+BACKUP_MAX_USAGE_PERCENT=1 /restic.sh check-disk >/tmp/selftest-disk-running.log 2>&1
+same "the volume guard still fails a full volume" 2 "$?"
+same "a full volume does not erase the in-flight marker" "running" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+same "the full-volume alert is recorded next to the marker" 1 \
+    "$(grep -c 'backup in flight' /data/backup-status.txt)"
+/restic.sh check-freshness >/tmp/selftest-disk-running-fresh.log 2>&1
+same "the freshness check still sees the unfinished backup" 2 "$?"
+same "the unfinished backup is named after a volume alert" 1 \
+    "$(grep -c 'never finished' /tmp/selftest-disk-running-fresh.log)"
+
 seed_running
 exec 9>/data/restic-logs/backup.lock
 if flock -n 9; then
