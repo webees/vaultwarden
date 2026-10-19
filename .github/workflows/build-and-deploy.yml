@@ -1,4 +1,6 @@
-name: 🐳 Docker (Multi-Arch)
+# Named for what it does, not for the registry it pushes to: this workflow
+# builds the multi-arch image, publishes it and rolls that digest out to Fly.
+name: 🐳 Build and Deploy
 
 on:
   workflow_dispatch: {}
@@ -9,9 +11,15 @@ on:
     # fly.toml is a production input: it carries the machine config that only
     # `flyctl deploy` applies. Ignoring it here meant a config-only commit built
     # nothing and deployed nothing, so the change silently never reached Fly.
+    #
+    # Everything else in this list cannot reach the image: `.dockerignore` keeps
+    # these paths out of the build context. Without them every `.github`-only or
+    # tests-only commit rebuilt both architectures and rolled production anyway.
     paths-ignore:
       - README.md
       - LICENSE
+      - .github/**
+      - tests/**
   schedule:
     # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes
     # flowing. Minute 23, not 0: GitHub queues scheduled runs behind the hourly
@@ -220,9 +228,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    concurrency:
-      group: fly-deploy
-      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -243,7 +248,7 @@ jobs:
           set -euo pipefail
           skip=false
           if ! newest="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr.yml/runs?branch=main&per_page=1" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-and-deploy.yml/runs?branch=main&per_page=1" \
             --jq '.workflow_runs[0].head_sha // empty')"; then
             newest=""
           fi

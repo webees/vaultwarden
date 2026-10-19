@@ -363,19 +363,79 @@ else
     bad "jq is required to test the version ordering guard"
 fi
 
+# ── .github naming ────────────────────────────────────────────────────────────
+echo "--- .github naming"
+# GitHub resolves these files by name, prints that name in the Actions UI and
+# puts it in every API path, so keep one convention: lowercase kebab-case, and
+# `.yml` everywhere so a `*.yml` glob cannot silently miss a file.
+if ruby -e '
+    kebab = /\A[a-z0-9]+(-[a-z0-9]+)*\z/
+    problems = []
+    Dir.glob(".github/**/*").sort.each do |path|
+      next if File.directory?(path)
+      base = File.basename(path)
+      dir = File.dirname(path)
+      ext = File.extname(base)
+      problems << "#{path}: expected the .yml extension" if ext != ".yml"
+      problems << "#{path}: file name is not kebab-case" unless base.delete_suffix(ext).match?(kebab)
+      if dir.start_with?(".github/actions/") && !File.basename(dir).match?(kebab)
+        problems << "#{path}: action folder is not kebab-case"
+      end
+    end
+    problems.each { |problem| warn problem }
+    exit 1 unless problems.empty?
+  '; then
+    ok "every .github file and action folder is lowercase kebab-case and .yml"
+else
+    bad "a .github file name or action folder breaks the kebab-case convention"
+fi
+
+# The file name is what `gh workflow run`, the API paths and the Actions UI
+# all reference. A file named after its registry (the old `ghcr.yml`) hid the
+# fact that this workflow also rolls the image out to production, and a file
+# name that drifts from the display name makes the two disagree in the UI.
+if ruby -ryaml -e '
+    Dir[".github/workflows/*.yml"].sort.each do |path|
+      stem = File.basename(path, ".yml")
+      display = (YAML.load_file(path)["name"] || "").downcase.gsub(/[^a-z0-9]+/, "-")
+      unless display.include?(stem)
+        warn "#{path}: display name #{display.inspect} does not contain #{stem.inspect}"
+        exit 1
+      end
+    end
+  '; then
+    ok "every workflow file is named after what it does, and matches its display name"
+else
+    bad "a workflow file name does not describe the workflow, or disagrees with its display name"
+fi
+
 # ── workflow config ───────────────────────────────────────────────────────────
 echo "--- workflow config"
-# fly.toml carries the machine config, and only a deploy applies it. If the
-# build workflow ignores fly.toml, a config-only commit deploys nothing at all.
+# Every push to main rolled a new production release, including commits that can
+# not change the image at all: the workflow rename on 2026-10-19T02:10Z rebuilt
+# both architectures and deployed a release for a `.github`-only change.
+#
+# The ignore list has to stay inside what `.dockerignore` keeps out of the build
+# context, so nothing the image is built from can ever be skipped. fly.toml is
+# the deliberate exception: it is not in the image, but only `flyctl deploy`
+# applies the machine config, so a config-only commit still has to deploy.
 # Psych parses the bare `on:` key as boolean true, hence the fallback.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     push = (doc["on"] || doc[true])["push"] || {}
-    exit 1 if Array(push["paths-ignore"]).include?("fly.toml")
+    ignored = Array(push["paths-ignore"])
+    excluded = File.readlines(".dockerignore").map(&:strip)
+    exit 1 if ignored.empty?
+    exit 1 if ignored.include?("fly.toml")
+    ignored.each do |entry|
+      exit 1 unless excluded.include?(entry.sub(%r{/\*\*\z}, ""))
+    end
+    exit 1 unless ignored.include?(".github/**")
+    exit 1 unless ignored.include?("tests/**")
   '; then
-    ok "ghcr.yml rebuilds and redeploys when fly.toml changes"
+    ok "the build runs for every commit that can change the image, and skips the rest"
 else
-    bad "ghcr.yml ignores fly.toml, so a config-only commit would never deploy"
+    bad "a commit that cannot change the image still rebuilds and redeploys, or an ignored path is built into the image"
 fi
 
 # The Fly app name is personal data, so it must never be committed: fly.toml
@@ -383,7 +443,7 @@ fi
 # which also makes flyctl's own output masked in this public repo's logs.
 if ruby -ryaml -e '
     exit 1 if File.read("fly.toml") =~ /^\s*app\s*=/
-    release = YAML.load_file(".github/workflows/ghcr.yml")
+    release = YAML.load_file(".github/workflows/build-and-deploy.yml")
       .dig("jobs", "deploy", "steps")
       .find { |s| s["name"].to_s.include?("Release") }
     exit 1 unless release
@@ -399,7 +459,8 @@ fi
 # A push to main already builds the multi-arch image in the Docker workflow and
 # deploys that exact digest. Rebuilding the same Dockerfile in Validate doubles
 # every merge's build work, so the image steps must stay on the pre-merge
-# events and ghcr.yml must not keep conditions for an event it never receives.
+# events and build-and-deploy.yml must not keep conditions for an event it
+# never receives.
 if ruby -ryaml -e '
     doc = YAML.load_file(".github/workflows/validate.yml")
     steps = doc["jobs"]["validate"]["steps"]
@@ -414,19 +475,19 @@ fi
 
 # shellcheck disable=SC2016  # the literal workflow expression, not shell code
 if ! ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     exit 1 if (doc["on"] || doc[true]).key?("pull_request")
-  ' || grep -qF "github.event_name != 'pull_request'" .github/workflows/ghcr.yml; then
-    bad "ghcr.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
+  ' || grep -qF "github.event_name != 'pull_request'" .github/workflows/build-and-deploy.yml; then
+    bad "build-and-deploy.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
 else
-    ok "ghcr.yml has no conditions for an event it never receives"
+    ok "build-and-deploy.yml has no conditions for an event it never receives"
 fi
 
 # The image that actually reaches Fly is the one the Docker workflow publishes.
 # Booting that exact digest before the artifact is uploaded is the only runtime
 # gate on the merge path, and both workflows share one implementation.
 if ruby -ryaml -e '
-    runs = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+    runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
               .map { |s| s["run"] || "" }.join("\n")
     exit 1 unless runs.include?("tests/runtime-smoke.sh")
     steps = YAML.load_file(".github/workflows/validate.yml")["jobs"]["validate"]["steps"]
@@ -435,13 +496,13 @@ if ruby -ryaml -e '
   '; then
     ok "the published image is smoke tested, through one shared script"
 else
-    bad "ghcr.yml does not smoke test the published image, or the smoke test is duplicated inline"
+    bad "build-and-deploy.yml does not smoke test the published image, or the smoke test is duplicated inline"
 fi
 
 # The daily dependency job reports pending package upgrades, but nothing failed
 # when the image that actually gets deployed still carried them.
 if ruby -ryaml -e '
-    runs = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+    runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
               .map { |s| s["run"] || "" }.join("\n")
     exit 1 unless runs.include?("deps.sh apk")
   '; then
@@ -454,7 +515,7 @@ fi
 # last ran on 2026-01-03, so the 30-day expiry the README promises was not
 # enforced. The build has to expire old tags itself when the schedule is stale.
 if ruby -ryaml -e '
-    steps = YAML.load_file(".github/workflows/ghcr.yml")["jobs"]["build"]["steps"]
+    steps = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
     expiry = steps.select { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
     exit 1 if expiry.empty?
     exit 1 if expiry.all? { |s| (s["if"] || "").empty? }
@@ -483,7 +544,7 @@ fi
 # publish. Put both workflows in one repository-wide concurrency group so the
 # registry is mutated by one workflow at a time.
 if ruby -ryaml -e '
-    build = YAML.load_file(".github/workflows/ghcr.yml")["concurrency"] || {}
+    build = YAML.load_file(".github/workflows/build-and-deploy.yml")["concurrency"] || {}
     cleanup = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["concurrency"] || {}
     exit 1 unless build["group"] == "ghcr-registry"
     exit 1 unless cleanup["group"] == "ghcr-registry"
@@ -579,7 +640,7 @@ fi
 # published an image that never reached Fly. The deploy has to live in the same
 # workflow, and the separate workflow must be gone to avoid double deploys.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     deploy = doc["jobs"]["deploy"]
     exit 1 if deploy.nil?
     exit 1 unless Array(deploy["needs"]).include?("build")
@@ -592,7 +653,6 @@ if ruby -ryaml -e '
     exit 1 if release.nil?
     exit 1 unless (release["run"] || "").include?("--image")
     exit 1 unless (release["if"] || "").include?("steps.guard.outputs.skip")
-    exit 1 unless (deploy["concurrency"] || {})["group"] == "fly-deploy"
     exit 1 if File.exist?(".github/workflows/deploy.yml")
   '; then
     ok "the build workflow deploys its own digest, for pushes and manual rebuilds"
@@ -600,24 +660,74 @@ else
     bad "manual rebuilds publish an image that never reaches Fly, or deploys are duplicated"
 fi
 
-# The `gh api` calls in ghcr.yml need the same bound as the ones in deps.sh:
-# gh has no timeout flag of its own.
+# One serialization mechanism per workflow. The run-wide `ghcr-registry` group
+# already serializes every job in this run - including the deploy - against the
+# other runs and the cleanup workflow. A job-level group can only duplicate that
+# lock, and reusing the run-wide name inside the run deadlocks it: the job waits
+# for a slot its own run is holding.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    Dir[".github/workflows/*.yml"].sort.each do |path|
+      doc = YAML.load_file(path)
+      (doc["jobs"] || {}).each do |id, job|
+        next unless job.is_a?(Hash)
+        next if (job["concurrency"] || {}).empty?
+        warn "#{path}: job #{id} declares its own concurrency group"
+        exit 1
+      end
+    end
+  '; then
+    ok "each workflow serializes through one run-wide concurrency group"
+else
+    bad "a workflow job declares a second concurrency group that can duplicate or deadlock the run-wide one"
+fi
+
+# The lint step parsed `.github/workflows/*.yml` and dependabot.yml by name, so
+# the composite action that expires GHCR tags was never parsed: a syntax error
+# there would only surface when a run reached that step. Execute the real step
+# against a copy of the tree, then break the action file and require it to fail.
+ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/validate.yml")
+    step = doc["jobs"]["validate"]["steps"].find { |s| (s["run"] || "").include?("tomllib") }
+    exit 1 if step.nil?
+    print step["run"]
+  ' > "$work/yaml-lint.sh" || true
+if ! [ -s "$work/yaml-lint.sh" ]; then
+    bad "validate.yml no longer parses its YAML files"
+elif ! command -v python3 >/dev/null 2>&1; then
+    bad "python3 is required to execute the CI syntax step"
+else
+    lint_tree="$work/lint-tree"
+    mkdir -p "$lint_tree"
+    cp -R .github "$lint_tree/"
+    cp fly.toml "$lint_tree/"
+    ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint.log" 2>&1
+    same "the CI syntax step accepts the tree as committed" 0 "$?"
+    printf 'inputs: [\n' >> "$lint_tree/.github/actions/expire-tags/action.yml"
+    if ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint-broken.log" 2>&1; then
+        bad "the CI syntax step never parses the composite action"
+    else
+        ok "a broken composite action fails the CI syntax step"
+    fi
+fi
+
+# The `gh api` calls in build-and-deploy.yml need the same bound as the ones in
+# deps.sh: gh has no timeout flag of its own.
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     runs = doc["jobs"].values.flat_map { |j| (j["steps"] || []).map { |s| s["run"] || "" } }.join("\n")
     unbounded = runs.lines.select { |l| l.include?("gh api") && !l.include?("timeout") }
     exit 1 unless unbounded.empty?
   '; then
-    ok "ghcr.yml bounds every gh api call"
+    ok "build-and-deploy.yml bounds every gh api call"
 else
-    bad "ghcr.yml calls gh api without a timeout"
+    bad "build-and-deploy.yml calls gh api without a timeout"
 fi
 
 # The cleanup guard used to swallow an unreadable schedule with `|| true`, so an
 # API failure was reported as "no scheduled run found", and the early exit also
 # skipped the dependency-schedule warning. Run the real step body with a stub gh.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     step = doc["jobs"]["build"]["steps"].find { |s| s["id"] == "cleanup-check" }
     print step["run"]
   ' > "$work/cleanup-check.sh"
@@ -655,7 +765,7 @@ fi
 # leaving the code change unpublished until the next code push. Run the real
 # guard body with a stub gh that answers both queries.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/ghcr.yml")
+    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
     deploy = doc["jobs"]["deploy"]
     step = (deploy["steps"] || []).find { |s| s["id"] == "guard" }
     exit 1 if step.nil?
@@ -671,7 +781,7 @@ if [ -s "$work/deploy-guard.sh" ]; then
             printf '#!/bin/sh\n'
             printf 'case "$*" in\n'
             printf '  *git/ref/heads/main*) printf "%%s\\n" %s ;;\n' "'$1'"
-            printf '  *workflows/ghcr.yml/runs*)\n'
+            printf '  *workflows/build-and-deploy.yml/runs*)\n'
             if [ "$3" = "0" ]; then
                 printf '    printf "%%s\\n" %s\n' "'$2'"
             fi
@@ -854,6 +964,30 @@ if [ -s "$work/arm-merge.sh" ]; then
     fi
 else
     bad "the auto-merge step is missing or has no id to select it by"
+fi
+
+# The dispatch after the merge waits up to ten minutes for the pull request to
+# land, so it must only run when this run is the one merging the PR. A manual
+# dispatch that leaves the merge to a human - the documented `auto_merge: false`
+# path - used to poll for ten minutes and fail a run that did exactly what was
+# asked. Both steps now read one decision, so they cannot drift apart.
+if ruby -ryaml -e '
+    job = YAML.load_file(".github/workflows/dependency-updates.yml")["jobs"]["check"]
+    gate = (job["env"] || {})["AUTO_MERGE"].to_s
+    exit 1 unless gate.include?("inputs.auto_merge")
+    exit 1 unless gate.include?("github.event_name")
+    exit 1 unless gate.include?("schedule")
+    steps = job["steps"]
+    arm = steps.find { |s| s["id"] == "arm" }
+    dispatch = steps.find { |s| (s["run"] || "").include?("did not merge within") }
+    exit 1 if arm.nil? || dispatch.nil?
+    exit 1 unless (arm["if"] || "").include?("env.AUTO_MERGE")
+    exit 1 unless (dispatch["if"] || "").include?("env.AUTO_MERGE")
+    exit 1 unless (dispatch["if"] || "").include?("always()")
+  '; then
+    ok "the post-merge dispatch is gated on the same auto-merge decision as the merge"
+else
+    bad "the post-merge dispatch runs on a run that is not merging the pull request"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────

@@ -33,12 +33,18 @@ jobs:
           sudo apt-get install -y -qq shellcheck
           shellcheck scripts/*.sh tests/*.sh
 
-      - name: 🧾 Workflow YAML and fly.toml
+      # Every YAML file under .github, not a list of names: the composite action
+      # that expires GHCR tags was never parsed, so a syntax error there would
+      # only surface when a run reached that step.
+      - name: 🧾 Workflow, action and fly.toml syntax
         run: |
-          for file in .github/workflows/*.yml .github/dependabot.yml; do
-            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$file"
-            echo "ok ${file}"
-          done
+          set -euo pipefail
+          files="$(find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)"
+          # An empty list means the search broke, not that there is nothing to check.
+          test -n "$files"
+          while IFS= read -r file; do
+            ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "ok #{ARGV[0]}"' "$file"
+          done <<< "$files"
           python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
       - name: 🌐 Refresh the Cloudflare ranges
