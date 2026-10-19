@@ -211,6 +211,58 @@ def check_redaction(container: str, log: str) -> None:
     )
 
 
+def response_headers(container: str, *args: str) -> dict[str, str]:
+    """Return the response headers, keyed case-insensitively."""
+    raw = exec_in(container, "curl", "-sS", "-D", "-", "-o", "/dev/null", *args).stdout
+    headers: dict[str, str] = {}
+    for line in raw.splitlines():
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+def check_security_headers(container: str) -> None:
+    """Every security header has to survive both a served and a denied request."""
+    expected = {
+        "strict-transport-security": "max-age=31536000;",
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
+        "x-xss-protection": "1; mode=block",
+        "referrer-policy": "strict-origin-when-cross-origin",
+        "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+        "x-robots-tag": "noindex, nofollow",
+    }
+    expected_absent = {"server", "x-powered-by", "last-modified"}
+    probes = (
+        ("allowed request", "example.com", "/api/config"),
+        ("host-denied request", "evil.example", "/api/config"),
+    )
+    for label, host, path in probes:
+        actual = response_headers(
+            container, "-H", f"Host: {host}", f"http://127.0.0.1:8080{path}"
+        )
+        wrong = [
+            f"{name}={actual.get(name)!r} (want {value!r})"
+            for name, value in expected.items()
+            if actual.get(name) != value
+        ]
+        leaked = [name for name in sorted(expected_absent) if name in actual]
+        if wrong or leaked:
+            details = []
+            if wrong:
+                details.append("wrong or missing: " + ", ".join(wrong))
+            if leaked:
+                details.append("not removed: " + ", ".join(leaked))
+            suite.bad(f"{label} security headers: {'; '.join(details)}")
+            suite.report()
+        suite.ok(
+            f"{label} carries every configured security header "
+            f"({len(expected)} set, {len(expected_absent)} removed)"
+        )
+
+
 def check_required_tools(image: str) -> None:
     """An apk edit that drops a tool only shows up at runtime, in production."""
     # setsid gives every captured command its own session, so the timeout can
@@ -493,6 +545,7 @@ def main() -> int:
     # security controls, and neither was asserted anywhere.
     check_host_whitelist(container)
     check_client_ip(container)
+    check_security_headers(container)
     log = check_access_log(container)
     check_redaction(container, log)
 
