@@ -495,6 +495,57 @@ else
     bad "GHCR cleanup can race an in-flight image push"
 fi
 
+# A job with no timeout-minutes holds its runner for the six-hour default, so a
+# wedged docker build or a hung API call burns a runner for the rest of the day.
+if ruby -ryaml -e '
+    Dir[".github/workflows/*.yml"].each do |f|
+      (YAML.load_file(f)["jobs"] || {}).each_value do |job|
+        exit 1 unless job.is_a?(Hash) && job["timeout-minutes"]
+      end
+    end
+  '; then
+    ok "every workflow job bounds its own runtime"
+else
+    bad "a workflow job can hang for the six-hour default"
+fi
+
+# actions/checkout writes the workflow token into .git/config by default, which
+# every later step can then reuse. Only the dependency job pushes, so only that
+# one needs the credential to survive.
+if ruby -ryaml -e '
+    Dir[".github/workflows/*.yml"].each do |f|
+      (YAML.load_file(f)["jobs"] || {}).each_value do |job|
+        steps = job["steps"] || []
+        next if steps.any? { |s| (s["run"] || "").include?("git push") }
+        steps.each do |s|
+          next unless s["uses"].to_s.start_with?("actions/checkout@")
+          with = s["with"]
+          exit 1 unless with.is_a?(Hash) && with["persist-credentials"] == false
+        end
+      end
+    end
+  '; then
+    ok "checkouts that never push drop the persisted credential"
+else
+    bad "a checkout leaves the workflow token in .git/config"
+fi
+
+# GitHub documents that scheduled runs queue up behind the hourly load spike, so
+# a cron on minute 0 is the slowest slot to pick.
+if ruby -ryaml -e '
+    Dir[".github/workflows/*.yml"].each do |f|
+      doc = YAML.load_file(f)
+      on = doc["on"] || doc[true] || {}
+      Array(on["schedule"]).each do |entry|
+        exit 1 if entry["cron"].to_s.split(" ")[0] == "0"
+      end
+    end
+  '; then
+    ok "no scheduled workflow queues at the top of the hour"
+else
+    bad "a scheduled workflow runs at minute 0, when the GitHub queue is longest"
+fi
+
 # The monthly verify must not share a minute with the hourly backup: restic
 # refuses the exclusive lock by default, so the check failed instantly with
 # "repo already locked" instead of verifying anything.
