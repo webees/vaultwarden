@@ -14,16 +14,46 @@ chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs
 # as backup.bak. Swapping it in has to happen while Vaultwarden is not running,
 # so `restore` arms the swap with a marker and this applies it before the app
 # opens the database on the next start.
-if [ -f /data/restore-pending ]; then
-    if [ -f /data/backup.bak ]; then
-        rm -f /data/db.sqlite3 /data/db.sqlite3-wal /data/db.sqlite3-shm
-        cp /data/backup.bak /data/db.sqlite3
-        chown vaultwarden:vaultwarden /data/db.sqlite3
-        rm -f /data/restore-pending
-        echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
-    else
+#
+# Every failure here keeps the existing database, keeps the marker so the
+# operator can fix the file and restart, and lets the app start: exiting would
+# crash-loop the machine on a restore that cannot be applied.
+apply_pending_restore() {
+    local new=/data/db.sqlite3.new
+    if [ ! -f /data/backup.bak ]; then
         echo "restore-pending is set but /data/backup.bak is missing; leaving the database alone" >&2
+        return 0
     fi
+    # A hot copy that is not a database would replace a working one with
+    # something Vaultwarden cannot open at all.
+    if ! sqlite3 /data/backup.bak 'PRAGMA integrity_check' 2>/dev/null | grep -qx ok; then
+        echo "restore-pending is set but /data/backup.bak is not a readable database; leaving the database alone" >&2
+        return 0
+    fi
+    # Write the replacement next to the live file and rename it into place: the
+    # old rm-then-cp left a window with no database at all, so a failure in
+    # between (or a crash) let Vaultwarden start on a fresh empty one.
+    rm -f "$new"
+    if ! cp /data/backup.bak "$new"; then
+        echo "could not copy /data/backup.bak into place; leaving the database alone" >&2
+        rm -f "$new"
+        return 0
+    fi
+    chown vaultwarden:vaultwarden "$new"
+    # The old write-ahead log belongs to the database being replaced and must
+    # not be replayed on top of the new one.
+    rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm
+    if ! mv -f "$new" /data/db.sqlite3; then
+        echo "could not replace /data/db.sqlite3; leaving the database alone" >&2
+        rm -f "$new"
+        return 0
+    fi
+    rm -f /data/restore-pending
+    echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
+}
+
+if [ -f /data/restore-pending ]; then
+    apply_pending_restore
 fi
 
 # Write the SMTP config as root, then hand it to the unprivileged user.
