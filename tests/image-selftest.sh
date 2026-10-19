@@ -282,10 +282,13 @@ same "a successful backup does not email by default" 0 \
     "$(wc -l < "$success_mail_log" | tr -d ' ')"
 PATH="$success_mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
     /restic.sh backup >/tmp/selftest-mail-success.log 2>&1
-same "a successful backup sends one notification" 1 \
-    "$(grep -c 'Backup succeeded' "$success_mail_log")"
-same "the success notification is recorded" 1 \
-    "$(grep -c 'Alert email sent' /tmp/selftest-mail-success.log)"
+# The per-backup notification is Telegram only: it fires every hour, and the
+# mailbox is for incidents. Email that arrives on every success is the noise the
+# operator asked to remove, and the failure paths still cover both channels.
+same "an opt-in success notification does not email" 0 \
+    "$(wc -l < "$success_mail_log" | tr -d ' ')"
+same "an opt-in success notification records no email attempt" 0 \
+    "$(grep -c 'Alert email' /tmp/selftest-mail-success.log)"
 same "the recipient is not written to the run log" 0 \
     "$(grep -c 'ops@example.com' /tmp/selftest-mail-success.log)"
 rm -rf "$success_mail_dir"
