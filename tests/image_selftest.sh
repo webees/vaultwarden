@@ -93,6 +93,17 @@ same "unauthenticated SMTP writes no empty user line" 0 \
 same "unauthenticated SMTP writes no empty password line" 0 \
     "$(grep -c '^password ' /etc/msmtprc)"
 
+# msmtp opens its logfile as the unprivileged user that sends the alert. Pointed
+# at the /dev/stderr of the root process that wrote the config, that path cannot
+# be reopened by `vaultwarden`: every send printed "cannot log to /dev/stderr:
+# cannot open: Permission denied" and the delivery line never reached any log.
+# The relay is unreachable on purpose, so the probe exercises the logfile
+# without delivering anything.
+smtp_env SMTP_HOST=127.0.0.1 SMTP_PORT=1 SMTP_TO=ops@example.com >/dev/null
+mail_probe="$(su-exec vaultwarden sh -c 'echo probe | mail -s probe ops@example.com' 2>&1)"
+same "the alert mailer can open the logfile it is configured with" 0 \
+    "$(printf '%s\n' "$mail_probe" | grep -c 'cannot log to')"
+
 # A half-configured credential pair is a typo, not a valid relay mode.
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
 SMTP_USERNAME=***REMOVED***
@@ -223,6 +234,29 @@ same "freshness guard explains the alert" 1 \
     "$(grep -c 'Last successful backup was' /tmp/selftest-stale.log)"
 same "freshness guard records the stale state" "failed" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
+# A marker that cannot be trusted is not a fresh backup. A timestamp in the
+# future was subtracted into a negative age that passed the freshness test
+# ("was -86400s ago"), and a non-numeric one aborted the arithmetic with
+# "unbound variable", so the guard either reported a healthy backup or died
+# without alerting anyone.
+seed_status "$(( $(date -u +%s) + 86400 ))"
+/restic.sh check-freshness >/tmp/selftest-future.log 2>&1
+future_rc=$?
+same "freshness guard refuses a last_success in the future" 2 "$future_rc"
+same "freshness guard explains the future timestamp" 1 \
+    "$(grep -c 'in the future' /tmp/selftest-future.log)"
+same "freshness guard records the unusable timestamp" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
+printf 'state=ok\nupdated_at=0\nlast_success=not-a-number\nmessage=corrupt\n' \
+    > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+/restic.sh check-freshness >/tmp/selftest-corrupt.log 2>&1
+corrupt_rc=$?
+same "freshness guard refuses a corrupt last_success" 2 "$corrupt_rc"
+same "a corrupt last_success is not an arithmetic crash" 0 \
+    "$(grep -c 'unbound variable\|syntax error' /tmp/selftest-corrupt.log)"
 
 # The log directory has its own cap, but the volume also holds attachments, the
 # icon cache and the database. Once it fills, Vaultwarden's writes and the
