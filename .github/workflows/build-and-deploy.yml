@@ -15,7 +15,10 @@ on:
     # Everything else in this list cannot reach the image: `.dockerignore` keeps
     # these paths out of the build context. Without them every `.github`-only or
     # tests-only commit rebuilt both architectures and rolled production anyway.
+    # `.gitignore` counts too: it is excluded from the build context, yet the
+    # smoke-suite commit on 2026-10-19T04:23Z rebuilt and redeployed through it.
     paths-ignore:
+      - .gitignore
       - README.md
       - LICENSE
       - .github/**
