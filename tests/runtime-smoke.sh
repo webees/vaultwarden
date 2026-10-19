@@ -275,16 +275,17 @@ fi
 # This runs in a throwaway container: the one above keeps its own /data.
 restore_out="$(docker run --rm --entrypoint sh "$image" -c '
     mkdir -p /data
-    printf "restored-database" > /data/backup.bak
+    sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"
     printf "stale-database" > /data/db.sqlite3
     printf "stale-wal" > /data/db.sqlite3-wal
     touch /data/restore-pending
-    /entrypoint.sh sh -c "cat /data/db.sqlite3; echo; test -e /data/db.sqlite3-wal && echo wal-left || echo wal-removed; test -e /data/restore-pending && echo marker-left || echo marker-applied; stat -c %U /data/db.sqlite3"
+    /entrypoint.sh sh -c "sqlite3 /data/db.sqlite3 \"SELECT v FROM t\"; test -e /data/db.sqlite3-wal && echo wal-left || echo wal-removed; test -e /data/restore-pending && echo marker-left || echo marker-applied; stat -c %U /data/db.sqlite3; test -e /data/db.sqlite3.new && echo scratch-left || echo no-scratch"
 ' 2>&1)"
-if printf '%s\n' "$restore_out" | grep -qx 'restored-database' \
+if printf '%s\n' "$restore_out" | grep -qx '7' \
     && printf '%s\n' "$restore_out" | grep -qx 'wal-removed' \
     && printf '%s\n' "$restore_out" | grep -qx 'marker-applied' \
-    && printf '%s\n' "$restore_out" | grep -qx 'vaultwarden'; then
+    && printf '%s\n' "$restore_out" | grep -qx 'vaultwarden' \
+    && printf '%s\n' "$restore_out" | grep -qx 'no-scratch'; then
     echo "an armed restore swaps backup.bak in before the app starts"
 else
     echo "FAIL an armed restore did not swap the database cleanly" >&2
@@ -306,5 +307,64 @@ if printf '%s\n' "$unarmed_out" | grep -qx 'stale-database' \
 else
     echo "FAIL an armed restore without backup.bak changed the database" >&2
     printf '%s\n' "$unarmed_out" >&2
+    exit 1
+fi
+
+# A hot copy that is not a readable database would replace a working one with
+# something Vaultwarden cannot open. Refuse the swap, keep the marker so the
+# operator can replace the file and restart, and still start the app: exiting
+# here would crash-loop the machine on a restore that cannot be applied.
+corrupt_out="$(docker run --rm --entrypoint sh "$image" -c '
+    mkdir -p /data
+    printf "not-a-database" > /data/backup.bak
+    sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(1);"
+    touch /data/restore-pending
+    /entrypoint.sh sh -c "sqlite3 /data/db.sqlite3 \"SELECT v FROM t\"; test -e /data/restore-pending && echo marker-left; echo started"
+' 2>&1)"
+if printf '%s\n' "$corrupt_out" | grep -qx '1' \
+    && printf '%s\n' "$corrupt_out" | grep -qx 'marker-left' \
+    && printf '%s\n' "$corrupt_out" | grep -qx 'started'; then
+    echo "an armed restore with an unreadable hot copy leaves the database alone"
+else
+    echo "FAIL a corrupt backup.bak replaced the live database" >&2
+    printf '%s\n' "$corrupt_out" >&2
+    exit 1
+fi
+
+# The copy can fail for reasons the check above cannot see, a full volume being
+# the obvious one. The live database has to survive it: the old code removed
+# db.sqlite3 first, so a failed copy left the volume without any database.
+copyfail_out="$(docker run --rm --entrypoint sh "$image" -c '
+    mkdir -p /data /stub
+    printf "#!/bin/sh\nexit 1\n" > /stub/cp
+    chmod +x /stub/cp
+    sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"
+    sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"
+    touch /data/restore-pending
+    PATH="/stub:$PATH" /entrypoint.sh sh -c "sqlite3 /data/db.sqlite3 \"SELECT v FROM t\"; test -e /data/restore-pending && echo marker-left"
+' 2>&1)"
+if printf '%s\n' "$copyfail_out" | grep -qx '2' \
+    && printf '%s\n' "$copyfail_out" | grep -qx 'marker-left'; then
+    echo "a failed restore copy leaves the live database in place"
+else
+    echo "FAIL a failed restore copy destroyed the live database" >&2
+    printf '%s\n' "$copyfail_out" >&2
+    exit 1
+fi
+
+# restic.sh re-executes through su-exec, so the umask of whoever launched it
+# (`fly ssh console` starts as root with 022) used to decide the mode of the run
+# log. Production held a mix of 0600 and 0644 files written by the same script.
+log_mode="$(docker run --rm --entrypoint sh "$image" -c '
+    mkdir -p /data
+    umask 000
+    /entrypoint.sh true >/dev/null 2>&1
+    /restic.sh snapshots >/dev/null 2>&1
+    stat -c %a "$(ls -t /data/restic-logs/*.log | head -n 1)"
+' 2>&1)"
+if [ "$log_mode" = "600" ]; then
+    echo "restic run logs stay private whatever umask the caller has"
+else
+    echo "FAIL a restic run log was created with mode ${log_mode}" >&2
     exit 1
 fi
