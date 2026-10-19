@@ -1,6 +1,15 @@
 name: 🛡️ Dependency Updates
 
 on:
+  # GitHub's schedule is best-effort: it can be delayed for tens of minutes and
+  # is disabled for an inactive repository. A completed build is a real event
+  # that proves the repository is active, so use it as a fallback trigger. The
+  # check is a no-op when the pins already match, and the concurrency group
+  # keeps it from overlapping the schedule.
+  workflow_run:
+    workflows: ["🐳 Build and Deploy"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       auto_merge:
@@ -32,7 +41,7 @@ jobs:
     # merges, a manual dispatch only when asked to. The merge and the dispatch
     # that follows it both read this value, so the two cannot disagree.
     env:
-      AUTO_MERGE: ${{ github.event_name == 'schedule' || inputs.auto_merge }}
+      AUTO_MERGE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_run' || inputs.auto_merge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -243,8 +252,13 @@ jobs:
       # A package-only update never changes the Dockerfile, so no PR exists to
       # merge. Rebuild the published image directly instead of waiting for the
       # weekly schedule; the build workflow upgrades the packages and deploys.
+      #
+      # Skip this for a workflow_run fallback: the apk probe reads the pinned
+      # base image, which still lists the same upgrades after our build has
+      # already applied them, so allowing it there would loop build -> check ->
+      # build. The schedule and the weekly rebuild still cover package updates.
       - name: ♻️ Rebuild when only Alpine packages moved
-        if: success() && steps.compare.outputs.changed != 'true'
+        if: success() && steps.compare.outputs.changed != 'true' && github.event_name != 'workflow_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
