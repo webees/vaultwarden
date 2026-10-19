@@ -62,15 +62,18 @@ same "a supervisor without a child command is rejected" 2 "$?"
 
 # ── refresh_cloudflare_ips.sh ─────────────────────────────────────────────────
 echo "--- refresh_cloudflare_ips.sh"
-# Build a stub `curl` that answers with exactly N ranges per call.
+# Build a stub `curl` that answers with exactly N lines per call, each rendered
+# from a printf template that takes the line number. `10.0.%s.0/24` models a
+# healthy response; an HTML error page models what Cloudflare answers during an
+# outage, which is long enough to pass a count-only check.
 # shellcheck disable=SC2016  # the $i belongs to the generated stub, not here
-fake_curl() { # dir, ranges-per-call
+fake_curl() { # dir, lines-per-call, line-template
     mkdir -p "$1"
     {
         printf '#!/bin/sh\n'
         printf 'i=0\n'
         printf 'while [ "$i" -lt %s ]; do\n' "$2"
-        printf '    printf "10.0.%%s.0/24\\n" "$i"\n'
+        printf '    printf "%s\\n" "$i"\n' "$3"
         printf '    i=$((i + 1))\n'
         printf 'done\n'
     } > "$1/curl"
@@ -84,7 +87,7 @@ printf 'client_ip 203.0.113.0/24\n' > "$cf/config/cloudflare_ips.caddy"
 seeded="$(cksum < "$cf/config/cloudflare_ips.caddy")"
 target="$cf/config/cloudflare_ips.caddy"
 
-fake_curl "$work/shim-low" 3
+fake_curl "$work/shim-low" 3 '10.0.%s.0/24'
 ( cd / && PATH="$work/shim-low:$PATH" "$cf/scripts/refresh_cloudflare_ips.sh" ) \
     >"$work/low.out" 2>&1
 low_status=$?
@@ -92,7 +95,15 @@ same "refuses a truncated Cloudflare response" 1 "$low_status"
 same "keeps the existing list when the fetch is truncated" "$seeded" \
     "$(cksum < "$target")"
 
-fake_curl "$work/shim-high" 12
+fake_curl "$work/shim-html" 25 '<html><body>error %s</body></html>'
+( cd / && PATH="$work/shim-html:$PATH" "$cf/scripts/refresh_cloudflare_ips.sh" ) \
+    >"$work/html.out" 2>&1
+html_status=$?
+same "refuses a response that is not a list of address ranges" 1 "$html_status"
+same "keeps the existing list when the response is not address ranges" "$seeded" \
+    "$(cksum < "$target")"
+
+fake_curl "$work/shim-high" 12 '10.0.%s.0/24'
 ( cd / && PATH="$work/shim-high:$PATH" "$cf/scripts/refresh_cloudflare_ips.sh" ) \
     >"$work/high.out" 2>&1
 high_status=$?
