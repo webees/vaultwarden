@@ -32,8 +32,18 @@ NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 STATUS_FILE="/data/backup-status.txt"
+# The marker is validated once, here. `check-freshness` compares it with shell
+# arithmetic, which reads a non-numeric value as a variable name and aborts with
+# "unbound variable" under `set -u`: a corrupt file silently disabled the one
+# guard that notices a scheduler which stopped firing. A missing marker (a fresh
+# volume) and an unusable one stay distinct, so the check can alert instead of
+# reading a corrupt file as a young instance.
 LAST_SUCCESS="$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -n 1)"
-LAST_SUCCESS="${LAST_SUCCESS:-0}"
+LAST_SUCCESS_USABLE=true
+case "${LAST_SUCCESS:-}" in
+    '') LAST_SUCCESS=0 ;;
+    *[!0-9]*) LAST_SUCCESS=0; LAST_SUCCESS_USABLE=false ;;
+esac
 CURRENT_STEP=""
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
@@ -602,6 +612,17 @@ check_freshness() {
         esac
     fi
 
+    # A marker that cannot be read as a timestamp says nothing about freshness,
+    # and the check above already proved the backup is not running. Alert instead
+    # of letting the arithmetic below decide.
+    if [ "$LAST_SUCCESS_USABLE" != true ]; then
+        log echo -e "${R}${STATUS_FILE} has an unusable last_success value${X}"
+        write_guard_status failed "last_success in ${STATUS_FILE} is not a number"
+        send_telegram "Backup marker is unusable"
+        heartbeat fail
+        exit 2
+    fi
+
     if [ "$LAST_SUCCESS" = "0" ]; then
         # A fresh volume has no baseline yet, so only complain once the instance
         # has been up longer than the limit.
@@ -612,6 +633,17 @@ check_freshness() {
         fi
     fi
     age=$((now - LAST_SUCCESS))
+    # A marker stamped in the future is not a fresh backup: the clock moved
+    # backwards or the file was corrupted. Subtracting it produced a negative
+    # age that passed the test below and printed "was -86400s ago" as if the
+    # backup were healthy, which is the one reading that must never pass.
+    if [ "$age" -lt 0 ]; then
+        log echo -e "${R}Last successful backup is stamped in the future (${age}s); the clock or ${STATUS_FILE} cannot be trusted${X}"
+        write_guard_status failed "last_success is in the future (${age}s)"
+        send_telegram "Backup marker is in the future"
+        heartbeat fail
+        exit 2
+    fi
     if [ "$age" -le "$limit" ]; then
         log echo -e "${G}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
         return 0
