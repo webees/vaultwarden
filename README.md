@@ -207,7 +207,9 @@ dead-man's-switch service.
 `BACKUP_MAX_USAGE_PERCENT` full (default 85). Attachments, the icon cache and the database all live on
 that volume and it is grown by migrating the data rather than in place, so this is the warning that leaves
 time to do that deliberately. A reading that never arrives is reported as a failure rather than a healthy
-volume.
+volume. The guard and the monthly `verify` are not backup runs, so neither clears the `state=running`
+marker a live backup leaves in `/data/backup-status.txt`: that marker is what the `:45` freshness check
+reads to tell a backup that started but never finished, and the guard runs before it.
 
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
 > run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
