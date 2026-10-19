@@ -60,8 +60,8 @@ kill -TERM "$supervise_empty_pid" 2>/dev/null || true
 wait "$supervise_empty_pid"
 same "a supervisor without a child command is rejected" 2 "$?"
 
-# ── refresh-cloudflare-ips.sh ─────────────────────────────────────────────────
-echo "--- refresh-cloudflare-ips.sh"
+# ── refresh_cloudflare_ips.sh ─────────────────────────────────────────────────
+echo "--- refresh_cloudflare_ips.sh"
 # Build a stub `curl` that answers with exactly N ranges per call.
 # shellcheck disable=SC2016  # the $i belongs to the generated stub, not here
 fake_curl() { # dir, ranges-per-call
@@ -79,13 +79,13 @@ fake_curl() { # dir, ranges-per-call
 
 cf="$work/cf"
 mkdir -p "$cf/scripts" "$cf/config"
-cp scripts/refresh-cloudflare-ips.sh "$cf/scripts/"
-printf 'client_ip 203.0.113.0/24\n' > "$cf/config/cloudflare-ips.caddy"
-seeded="$(cksum < "$cf/config/cloudflare-ips.caddy")"
-target="$cf/config/cloudflare-ips.caddy"
+cp scripts/refresh_cloudflare_ips.sh "$cf/scripts/"
+printf 'client_ip 203.0.113.0/24\n' > "$cf/config/cloudflare_ips.caddy"
+seeded="$(cksum < "$cf/config/cloudflare_ips.caddy")"
+target="$cf/config/cloudflare_ips.caddy"
 
 fake_curl "$work/shim-low" 3
-( cd / && PATH="$work/shim-low:$PATH" "$cf/scripts/refresh-cloudflare-ips.sh" ) \
+( cd / && PATH="$work/shim-low:$PATH" "$cf/scripts/refresh_cloudflare_ips.sh" ) \
     >"$work/low.out" 2>&1
 low_status=$?
 same "refuses a truncated Cloudflare response" 1 "$low_status"
@@ -93,7 +93,7 @@ same "keeps the existing list when the fetch is truncated" "$seeded" \
     "$(cksum < "$target")"
 
 fake_curl "$work/shim-high" 12
-( cd / && PATH="$work/shim-high:$PATH" "$cf/scripts/refresh-cloudflare-ips.sh" ) \
+( cd / && PATH="$work/shim-high:$PATH" "$cf/scripts/refresh_cloudflare_ips.sh" ) \
     >"$work/high.out" 2>&1
 high_status=$?
 same "rewrites the list on a healthy response" 0 "$high_status"
@@ -254,7 +254,7 @@ fi
 # The image ships BusyBox find, which rejects -printf. A GNU-only log size or
 # mtime query fails silently there and turns the log directory cap into a no-op.
 # selftest.sh itself is excluded: it carries the pattern being searched for.
-if grep -q -- '-printf' scripts/*.sh tests/image-selftest.sh tests/runtime-smoke.py; then
+if grep -q -- '-printf' scripts/*.sh tests/image_selftest.sh tests/runtime_smoke.py; then
     bad "a script uses find -printf, which the image's BusyBox find does not support"
 else
     ok "no script relies on the GNU-only find -printf"
@@ -274,7 +274,7 @@ mkdir -p "$net_stub"
 } > "$net_stub/curl"
 chmod +x "$net_stub/curl"
 PATH="$net_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" base >/dev/null 2>&1 || true
-PATH="$net_stub:$PATH" "$REPO_ROOT/scripts/refresh-cloudflare-ips.sh" >/dev/null 2>&1 || true
+PATH="$net_stub:$PATH" "$REPO_ROOT/scripts/refresh_cloudflare_ips.sh" >/dev/null 2>&1 || true
 net_calls="$(wc -l < "$net_log" | tr -d ' ')"
 net_timed="$(grep -c -- '--max-time' "$net_log" || true)"
 if [ "$net_calls" -gt 0 ] && [ "$net_calls" = "$net_timed" ]; then
@@ -366,10 +366,10 @@ fi
 # ── .github naming ────────────────────────────────────────────────────────────
 echo "--- .github naming"
 # GitHub resolves these files by name, prints that name in the Actions UI and
-# puts it in every API path, so keep one convention: lowercase kebab-case, and
+# puts it in every API path, so keep one convention: lowercase snake_case, and
 # `.yml` everywhere so a `*.yml` glob cannot silently miss a file.
 if ruby -e '
-    kebab = /\A[a-z0-9]+(-[a-z0-9]+)*\z/
+    snake = /\A[a-z0-9]+(_[a-z0-9]+)*\z/
     problems = []
     Dir.glob(".github/**/*").sort.each do |path|
       next if File.directory?(path)
@@ -377,17 +377,17 @@ if ruby -e '
       dir = File.dirname(path)
       ext = File.extname(base)
       problems << "#{path}: expected the .yml extension" if ext != ".yml"
-      problems << "#{path}: file name is not kebab-case" unless base.delete_suffix(ext).match?(kebab)
-      if dir.start_with?(".github/actions/") && !File.basename(dir).match?(kebab)
-        problems << "#{path}: action folder is not kebab-case"
+      problems << "#{path}: file name is not snake_case" unless base.delete_suffix(ext).match?(snake)
+      if dir.start_with?(".github/actions/") && !File.basename(dir).match?(snake)
+        problems << "#{path}: action folder is not snake_case"
       end
     end
     problems.each { |problem| warn problem }
     exit 1 unless problems.empty?
   '; then
-    ok "every .github file and action folder is lowercase kebab-case and .yml"
+    ok "every .github file and action folder is lowercase snake_case and .yml"
 else
-    bad "a .github file name or action folder breaks the kebab-case convention"
+    bad "a .github file name or action folder breaks the snake_case convention"
 fi
 
 # The file name is what `gh workflow run`, the API paths and the Actions UI
@@ -397,7 +397,7 @@ fi
 if ruby -ryaml -e '
     Dir[".github/workflows/*.yml"].sort.each do |path|
       stem = File.basename(path, ".yml")
-      display = (YAML.load_file(path)["name"] || "").downcase.gsub(/[^a-z0-9]+/, "-")
+      display = (YAML.load_file(path)["name"] || "").downcase.gsub(/[^a-z0-9]+/, "_")
       unless display.include?(stem)
         warn "#{path}: display name #{display.inspect} does not contain #{stem.inspect}"
         exit 1
@@ -423,7 +423,7 @@ echo "--- workflow config"
 # applies the machine config, so a config-only commit still has to deploy.
 # Psych parses the bare `on:` key as boolean true, hence the fallback.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     push = (doc["on"] || doc[true])["push"] || {}
     ignored = Array(push["paths-ignore"])
     excluded = File.readlines(".dockerignore").map(&:strip)
@@ -446,7 +446,7 @@ fi
 # which also makes flyctl's own output masked in this public repo's logs.
 if ruby -ryaml -e '
     exit 1 if File.read("fly.toml") =~ /^\s*app\s*=/
-    release = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    release = YAML.load_file(".github/workflows/build_and_deploy.yml")
       .dig("jobs", "deploy", "steps")
       .find { |s| s["name"].to_s.include?("Release") }
     exit 1 unless release
@@ -462,7 +462,7 @@ fi
 # A push to main already builds the multi-arch image in the Docker workflow and
 # deploys that exact digest. Rebuilding the same Dockerfile in Validate doubles
 # every merge's build work, so the image steps must stay on the pre-merge
-# events and build-and-deploy.yml must not keep conditions for an event it
+# events and build_and_deploy.yml must not keep conditions for an event it
 # never receives.
 if ruby -ryaml -e '
     doc = YAML.load_file(".github/workflows/validate.yml")
@@ -478,34 +478,34 @@ fi
 
 # shellcheck disable=SC2016  # the literal workflow expression, not shell code
 if ! ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     exit 1 if (doc["on"] || doc[true]).key?("pull_request")
-  ' || grep -qF "github.event_name != 'pull_request'" .github/workflows/build-and-deploy.yml; then
-    bad "build-and-deploy.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
+  ' || grep -qF "github.event_name != 'pull_request'" .github/workflows/build_and_deploy.yml; then
+    bad "build_and_deploy.yml keeps pull_request-only conditions although the workflow has no pull_request trigger"
 else
-    ok "build-and-deploy.yml has no conditions for an event it never receives"
+    ok "build_and_deploy.yml has no conditions for an event it never receives"
 fi
 
 # The image that actually reaches Fly is the one the Docker workflow publishes.
 # Booting that exact digest before the artifact is uploaded is the only runtime
 # gate on the merge path, and both workflows share one implementation.
 if ruby -ryaml -e '
-    runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
+    runs = YAML.load_file(".github/workflows/build_and_deploy.yml")["jobs"]["build"]["steps"]
               .map { |s| s["run"] || "" }.join("\n")
-    exit 1 unless runs.include?("tests/runtime-smoke.py")
+    exit 1 unless runs.include?("tests/runtime_smoke.py")
     steps = YAML.load_file(".github/workflows/validate.yml")["jobs"]["validate"]["steps"]
-    exit 1 unless steps.any? { |s| (s["run"] || "").include?("tests/runtime-smoke.py") }
+    exit 1 unless steps.any? { |s| (s["run"] || "").include?("tests/runtime_smoke.py") }
     exit 1 if steps.any? { |s| (s["run"] || "").include?("docker cp tests/") }
   '; then
     ok "the published image is smoke tested, through one shared script"
 else
-    bad "build-and-deploy.yml does not smoke test the published image, or the smoke test is duplicated inline"
+    bad "build_and_deploy.yml does not smoke test the published image, or the smoke test is duplicated inline"
 fi
 
 # The two-hour dependency job reports pending package upgrades, but nothing failed
 # when the image that actually gets deployed still carried them.
 if ruby -ryaml -e '
-    runs = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
+    runs = YAML.load_file(".github/workflows/build_and_deploy.yml")["jobs"]["build"]["steps"]
               .map { |s| s["run"] || "" }.join("\n")
     exit 1 unless runs.include?("deps.sh apk")
   '; then
@@ -518,8 +518,8 @@ fi
 # last ran on 2026-01-03, so the 30-day expiry the README promises was not
 # enforced. The build has to expire old tags itself when the schedule is stale.
 if ruby -ryaml -e '
-    steps = YAML.load_file(".github/workflows/build-and-deploy.yml")["jobs"]["build"]["steps"]
-    expiry = steps.select { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
+    steps = YAML.load_file(".github/workflows/build_and_deploy.yml")["jobs"]["build"]["steps"]
+    expiry = steps.select { |s| s["uses"].to_s.include?(".github/actions/expire_tags") }
     exit 1 if expiry.empty?
     exit 1 if expiry.all? { |s| (s["if"] || "").empty? }
     exit 1 unless steps.any? { |s| (s["run"] || "").include?("event=schedule") }
@@ -529,9 +529,9 @@ if ruby -ryaml -e '
       (s["run"] || "").include?("::warning::") &&
         (s["if"] || "").include?("steps.#{best_effort["id"]}.outcome")
     }
-    nightly = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["jobs"]["cleanup"]["steps"]
-    exit 1 unless nightly.any? { |s| s["uses"].to_s.include?(".github/actions/expire-tags") }
-    shared = YAML.load_file(".github/actions/expire-tags/action.yml")
+    nightly = YAML.load_file(".github/workflows/ghcr_cleanup.yml")["jobs"]["cleanup"]["steps"]
+    exit 1 unless nightly.any? { |s| s["uses"].to_s.include?(".github/actions/expire_tags") }
+    shared = YAML.load_file(".github/actions/expire_tags/action.yml")
     exit 1 unless (shared["runs"]["steps"][0]["with"]["delete-tags"] || "").include?("[0-9]{12}")
   '; then
     ok "the build expires old timestamp tags when the nightly cleanup is behind"
@@ -540,7 +540,7 @@ else
 fi
 
 if ruby -ryaml -e '
-    runner = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["jobs"]["cleanup"]["runs-on"]
+    runner = YAML.load_file(".github/workflows/ghcr_cleanup.yml")["jobs"]["cleanup"]["runs-on"]
     exit 1 if runner.to_s.include?("latest")
   '; then
     ok "the cleanup job pins its runner instead of tracking ubuntu-latest"
@@ -553,8 +553,8 @@ fi
 # publish. Put both workflows in one repository-wide concurrency group so the
 # registry is mutated by one workflow at a time.
 if ruby -ryaml -e '
-    build = YAML.load_file(".github/workflows/build-and-deploy.yml")["concurrency"] || {}
-    cleanup = YAML.load_file(".github/workflows/ghcr-cleanup.yml")["concurrency"] || {}
+    build = YAML.load_file(".github/workflows/build_and_deploy.yml")["concurrency"] || {}
+    cleanup = YAML.load_file(".github/workflows/ghcr_cleanup.yml")["concurrency"] || {}
     exit 1 unless build["group"] == "ghcr-registry"
     exit 1 unless cleanup["group"] == "ghcr-registry"
     exit 1 if build["cancel-in-progress"] != false
@@ -631,7 +631,7 @@ fi
 # so the schedule has already aged out by the time anyone hears about it. Pin a
 # sub-daily cadence rather than the exact cron, so it can be retuned later.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     on = doc["on"] || doc[true] || {}
     entries = Array(on["schedule"])
     exit 1 if entries.empty?
@@ -646,7 +646,7 @@ fi
 # an inactive repository. A completed build is a real event, so use it as a
 # fallback trigger and keep the automatic merge decision in sync with it.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     on = doc["on"] || doc[true] || {}
     run = on["workflow_run"]
     exit 1 if run.nil?
@@ -665,7 +665,7 @@ fi
 # security update waited for the weekly rebuild. The apk probe has to run every
 # day, and a non-zero count has to dispatch the build workflow.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     steps = doc["jobs"]["check"]["steps"]
     apk = steps.find { |s| (s["run"] || "").include?("deps.sh apk") }
     exit 1 if apk.nil? || apk.key?("if")
@@ -684,7 +684,7 @@ fi
 # upgrades after our build has already applied them. A workflow_run fallback
 # that also dispatched package-only rebuilds would loop build -> check -> build.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     steps = doc["jobs"]["check"]["steps"]
     rebuild = steps.find { |s| (s["run"] || "").include?("rebuild-needed") }
     exit 1 if rebuild.nil?
@@ -700,7 +700,7 @@ fi
 # heartbeat is fresh. A failure there fails the workflow, which gives GitHub's
 # own notification as a second channel when Telegram is the thing that broke.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     job = doc["jobs"]["watchdog"]
     exit 1 if job.nil?
     gate = job["if"].to_s
@@ -723,7 +723,7 @@ fi
 # published an image that never reached Fly. The deploy has to live in the same
 # workflow, and the separate workflow must be gone to avoid double deploys.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     deploy = doc["jobs"]["deploy"]
     exit 1 if deploy.nil?
     exit 1 unless Array(deploy["needs"]).include?("build")
@@ -785,7 +785,7 @@ else
     cp fly.toml "$lint_tree/"
     ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint.log" 2>&1
     same "the CI syntax step accepts the tree as committed" 0 "$?"
-    printf 'inputs: [\n' >> "$lint_tree/.github/actions/expire-tags/action.yml"
+    printf 'inputs: [\n' >> "$lint_tree/.github/actions/expire_tags/action.yml"
     if ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint-broken.log" 2>&1; then
         bad "the CI syntax step never parses the composite action"
     else
@@ -793,24 +793,24 @@ else
     fi
 fi
 
-# The `gh api` calls in build-and-deploy.yml need the same bound as the ones in
+# The `gh api` calls in build_and_deploy.yml need the same bound as the ones in
 # deps.sh: gh has no timeout flag of its own.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     runs = doc["jobs"].values.flat_map { |j| (j["steps"] || []).map { |s| s["run"] || "" } }.join("\n")
     unbounded = runs.lines.select { |l| l.include?("gh api") && !l.include?("timeout") }
     exit 1 unless unbounded.empty?
   '; then
-    ok "build-and-deploy.yml bounds every gh api call"
+    ok "build_and_deploy.yml bounds every gh api call"
 else
-    bad "build-and-deploy.yml calls gh api without a timeout"
+    bad "build_and_deploy.yml calls gh api without a timeout"
 fi
 
 # The cleanup guard used to swallow an unreadable schedule with `|| true`, so an
 # API failure was reported as "no scheduled run found", and the early exit also
 # skipped the dependency-schedule warning. Run the real step body with a stub gh.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     step = doc["jobs"]["build"]["steps"].find { |s| s["id"] == "cleanup-check" }
     print step["run"]
   ' > "$work/cleanup-check.sh"
@@ -845,7 +845,7 @@ fi
 # A single windowed query (`per_page=50` then filter) misreports a healthy check
 # as never run once enough manual runs push the automatic one off the page.
 # Query each automatic event directly and keep the newest.
-if grep -q 'per_page=50' .github/workflows/build-and-deploy.yml; then
+if grep -q 'per_page=50' .github/workflows/build_and_deploy.yml; then
     bad "the dependency check still relies on a fixed page window"
 else
     ok "the dependency check queries each automatic event directly"
@@ -864,10 +864,10 @@ run_guard_events() {
     {
         printf '#!/bin/sh\n'
         printf 'case "$*" in\n'
-        printf '  *ghcr-cleanup.yml/runs*) printf "%%s\\n" %s ;;\n' "'$now_iso'"
-        printf '  *dependency-updates.yml/runs?event=schedule*) printf "%%s\\n" %s ;;\n' \
+        printf '  *ghcr_cleanup.yml/runs*) printf "%%s\\n" %s ;;\n' "'$now_iso'"
+        printf '  *dependency_updates.yml/runs?event=schedule*) printf "%%s\\n" %s ;;\n' \
             "'2000-01-01T00:00:00Z'"
-        printf '  *dependency-updates.yml/runs?event=workflow_run*) printf "%%s\\n" %s ;;\n' \
+        printf '  *dependency_updates.yml/runs?event=workflow_run*) printf "%%s\\n" %s ;;\n' \
             "'$now_iso'"
         printf '  *) exit 1 ;;\n'
         printf 'esac\n'
@@ -889,7 +889,7 @@ fi
 # leaving the code change unpublished until the next code push. Run the real
 # guard body with a stub gh that answers both queries.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build-and-deploy.yml")
+    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
     deploy = doc["jobs"]["deploy"]
     step = (deploy["steps"] || []).find { |s| s["id"] == "guard" }
     exit 1 if step.nil?
@@ -905,7 +905,7 @@ if [ -s "$work/deploy-guard.sh" ]; then
             printf '#!/bin/sh\n'
             printf 'case "$*" in\n'
             printf '  *git/ref/heads/main*) printf "%%s\\n" %s ;;\n' "'$1'"
-            printf '  *workflows/build-and-deploy.yml/runs*)\n'
+            printf '  *workflows/build_and_deploy.yml/runs*)\n'
             if [ "$3" = "0" ]; then
                 printf '    printf "%%s\\n" %s\n' "'$2'"
             fi
@@ -952,7 +952,7 @@ fi
 # that read an API error as "no checks registered". Both leave the operator
 # chasing the wrong cause, so assert the behaviour with stubs.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     exit 1 if step.nil?
     body = step["run"] || ""
@@ -970,7 +970,7 @@ fi
 # and body when it already has an open PR.
 # shellcheck disable=SC2016  # Ruby source, not shell expansion
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     body = step && (step["run"] || "")
     exit 1 if body.nil? || body.empty?
@@ -988,7 +988,7 @@ fi
 # branch is not just present in YAML: an existing open PR is updated in place,
 # and a missing PR is created.
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "pr" }
     print step["run"] if step
   ' > "$work/pr-step.sh" || true
@@ -1044,7 +1044,7 @@ else
 fi
 
 ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/dependency-updates.yml")
+    doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     step = (doc["jobs"]["check"]["steps"] || []).find { |s| s["id"] == "arm" }
     print step["run"] if step
   ' > "$work/arm-merge.sh" || true
@@ -1096,7 +1096,7 @@ fi
 # path - used to poll for ten minutes and fail a run that did exactly what was
 # asked. Both steps now read one decision, so they cannot drift apart.
 if ruby -ryaml -e '
-    job = YAML.load_file(".github/workflows/dependency-updates.yml")["jobs"]["check"]
+    job = YAML.load_file(".github/workflows/dependency_updates.yml")["jobs"]["check"]
     gate = (job["env"] || {})["AUTO_MERGE"].to_s
     exit 1 unless gate.include?("inputs.auto_merge")
     exit 1 unless gate.include?("github.event_name")
@@ -1160,10 +1160,10 @@ fi
 
 # The runtime smoke test is the only check that proves a message is delivered,
 # so the verification list has to point at it instead of leaving it undiscovered.
-if grep -q 'runtime-smoke.py' README.md; then
+if grep -q 'runtime_smoke.py' README.md; then
     ok "README lists the runtime smoke test in its verification commands"
 else
-    bad "README does not mention tests/runtime-smoke.py"
+    bad "README does not mention tests/runtime_smoke.py"
 fi
 
 # A destructive command that is documented without its guard is a trap: the
@@ -1287,7 +1287,7 @@ fi
 # wording so the runbook cannot quietly drift from the workflow again.
 if stale_cadence="$(grep -nE 'runs dai[l]y|checks them dai[l]y|dai[l]y job|dai[l]y check' \
     README.md Dockerfile scripts/deps.sh \
-    .github/workflows/build-and-deploy.yml tests/selftest.sh)"; then
+    .github/workflows/build_and_deploy.yml tests/selftest.sh)"; then
     bad "stale dependency cadence wording remains: ${stale_cadence//$'\n'/; }"
 else
     stale_status=$?
