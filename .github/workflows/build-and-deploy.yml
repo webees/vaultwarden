@@ -212,12 +212,19 @@ jobs:
       # Best effort on purpose: a registry housekeeping failure must not hold
       # back a security deployment, but it stays visible in this run.
       - name: 🧹 Expire timestamp tags (nightly cleanup is behind)
+        id: expiry
         if: steps.cleanup-check.outputs.needed == 'true'
         continue-on-error: true
         uses: ./.github/actions/expire-tags
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           package: ${{ github.event.repository.name }}
+
+      # `continue-on-error` keeps the deploy alive, so the failed step is the
+      # only trace and the run still reports success. Say it out loud instead.
+      - name: ⚠️ Report the failed tag expiry
+        if: steps.expiry.outcome == 'failure'
+        run: echo "::warning::the old timestamp tags were not expired; the nightly cleanup will retry"
 
   deploy:
     needs: build
