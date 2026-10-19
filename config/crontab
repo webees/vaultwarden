@@ -9,6 +9,11 @@
 # This is the only channel that fires when the backup itself stops working.
 45 * * * * /restic.sh check-freshness
 
+# Alert before the data volume fills. Attachments, the icon cache and the
+# database all live on it, and a Fly volume is grown by migrating the data
+# rather than in place, so the warning has to arrive while there is room.
+35 * * * * /restic.sh check-disk
+
 # Monthly integrity check that reads back a slice of the stored data. Kept off
 # the top of the hour so it never races the @hourly backup for the repository
 # lock (verify now also waits for the lock, this is the cheaper half).

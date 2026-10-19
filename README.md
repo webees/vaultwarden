@@ -120,6 +120,7 @@ fly secrets set RESTIC_QUICK_TIMEOUT="60"    # seconds for init/check/cat operat
 fly secrets set RESTIC_LONG_TIMEOUT="1800"   # seconds for backup/restore/prune
 fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
 fly secrets set RESTIC_LOG_MAX_BYTES="262144"       # cap each log file at 256 KiB
+fly secrets set BACKUP_MAX_USAGE_PERCENT="85"       # alert when /data is this full
 fly secrets set RESTIC_LOG_DIR_MAX_BYTES="10485760" # cap the log directory at 10 MiB
 ```
 
@@ -173,13 +174,14 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email and Telegram on failure, a Telegram-only success notification when `BACKUP_NOTIFY_ON_SUCCESS=true`, an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
+| Alerts | Email and Telegram on failure, a Telegram-only success notification when `BACKUP_NOTIFY_ON_SUCCESS=true`, hourly staleness and volume checks, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
 fly ssh console -C "/restic.sh snapshots"      # list snapshots
 fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
 fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp and validate it
+fly ssh console -C "/restic.sh check-disk"     # how full the data volume is
 fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
 ```
 
@@ -187,6 +189,12 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
 scheduler is still alive. A scheduler that has stopped firing entirely is only visible through
 `HEALTHCHECK_URL`, so point that at a dead-man's-switch service if you want a second, independent channel.
+
+`/restic.sh check-disk` runs at `:35` every hour and alerts when `/data` is at least
+`BACKUP_MAX_USAGE_PERCENT` full (default 85). Attachments, the icon cache and the database all live on
+that volume and it is grown by migrating the data rather than in place, so this is the warning that leaves
+time to do that deliberately. A reading that never arrives is reported as a failure rather than a healthy
+volume.
 
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
 > run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
@@ -233,7 +241,8 @@ Vaultwarden looks and boots against it, so the drill fails when the database or 
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed |
 | Backup log directory cannot be trimmed | The run logs `Warning: log directory holds … could not be trimmed`, records `log trim failed` in `/data/backup-status.txt`, and sends a failure heartbeat when `HEALTHCHECK_URL` is set; free space or fix ownership under `/data/restic-logs` |
-| Container exits with `… must be a positive integer` | One of `RESTIC_LOG_MAX_BYTES`, `RESTIC_LOG_DIR_MAX_BYTES`, `RESTIC_QUICK_TIMEOUT`, `RESTIC_LONG_TIMEOUT`, or `BACKUP_MAX_AGE` is zero or not a number; set a positive integer |
+| Container exits with `… must be a positive integer` | One of `RESTIC_LOG_MAX_BYTES`, `RESTIC_LOG_DIR_MAX_BYTES`, `RESTIC_QUICK_TIMEOUT`, `RESTIC_LONG_TIMEOUT`, `BACKUP_MAX_AGE` or `BACKUP_MAX_USAGE_PERCENT` is zero or not a number; set a positive integer (the usage limit also has to be 100 or less) |
+| Run log says `/data is …% full` | The volume is past `BACKUP_MAX_USAGE_PERCENT` (default 85). Move `icon_cache` aside, trim attachments, or migrate to a larger Fly volume with `fly volumes create` + `fly machine update`; the hourly backup keeps working until the volume is actually full |
 | Caddy exited and the proxy stopped responding | `/supervise.sh caddy ...` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
 
 ## 🛠️ Management & Operations
