@@ -96,7 +96,8 @@ fly secrets set SMTP_PASSWORD="app-specific-password"
 # Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
 fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
 
-# Optional: email after every successful backup
+# Optional: notify after every successful backup. Telegram only, so an hourly
+# backup does not fill the mailbox that incidents use.
 fly secrets set BACKUP_NOTIFY_ON_SUCCESS="true"
 
 # Optional Telegram notifications. The bot must be able to post to the target.
@@ -167,7 +168,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Email or Telegram on failure, optional success notification (`BACKUP_NOTIFY_ON_SUCCESS=true`), an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
+| Alerts | Email and Telegram on failure, a Telegram-only success notification when `BACKUP_NOTIFY_ON_SUCCESS=true`, an hourly staleness check, and an optional `HEALTHCHECK_URL` ping from the backup, verify and restore-drill runs, which uses the `/fail` URL when the run fails |
 
 ```bash
 fly ssh console -C "/restic.sh backup"         # manual backup
