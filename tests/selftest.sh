@@ -1238,13 +1238,48 @@ missing_env=""
 for name in BACKUP_MAX_AGE RESTIC_LOG_DIR RESTIC_LOG_MAX_BYTES RESTIC_LOG_DIR_MAX_BYTES \
     RESTIC_QUICK_TIMEOUT RESTIC_LONG_TIMEOUT SUPERVISE_RESTART_DELAY VERIFY_SUBSET \
     BACKUP_NOTIFY_ON_SUCCESS BACKUP_MAX_USAGE_PERCENT TELEGRAM_BOT_TOKEN \
-    TELEGRAM_CHAT_ID; do
+    TELEGRAM_CHAT_ID VERIFY_RETRY_LOCK; do
     grep -q "^${name}=" .env.example || missing_env="${missing_env} ${name}"
 done
 if [ -z "$missing_env" ]; then
     ok "every documented tuning variable appears in .env.example"
 else
     bad "missing from .env.example:${missing_env}"
+fi
+
+# The README is the operator's runbook, so every test path it names has to
+# exist. It pointed at tests/selftest.py, a file that was never there: pasting
+# the documented command failed with "No such file or directory".
+missing_doc=""
+while IFS= read -r path; do
+    [ -e "$path" ] || missing_doc="${missing_doc} ${path}"
+done < <(grep -oE 'tests/[A-Za-z0-9._-]+' README.md | sort -u)
+if [ -z "$missing_doc" ]; then
+    ok "every test path the README names exists"
+else
+    bad "the README names test paths that do not exist:${missing_doc}"
+fi
+
+# The README promises the entrypoint reports the /data/config.json keys that
+# override a Fly secret. A key the warning does not cover stays invisible while
+# `fly secrets set` silently does nothing, and signups_allowed is the one that
+# decides whether anyone can register.
+entry_keys="$(sed -n 's/.*for key in \(.*\); do.*/\1/p' scripts/entrypoint.sh | head -n 1)"
+missing_keys=""
+for key in admin_token signups_allowed; do
+    case " $entry_keys " in
+        *" $key "*) ;;
+        *) missing_keys="${missing_keys} ${key}" ;;
+    esac
+done
+case " $entry_keys " in
+    *" smtp_"*) ;;
+    *) missing_keys="${missing_keys} smtp_*" ;;
+esac
+if [ -z "$missing_keys" ]; then
+    ok "the config.json override warning covers every key the README names"
+else
+    bad "the config.json override warning misses documented keys:${missing_keys}"
 fi
 
 echo

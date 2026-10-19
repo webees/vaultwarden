@@ -124,6 +124,7 @@ fly secrets set TELEGRAM_CHAT_ID="-1001234567890"   # or "@your_channel"
 # Optional tuning (defaults shown)
 fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
 fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
+fly secrets set VERIFY_RETRY_LOCK="10m"  # how long the monthly verify waits for a running backup's lock
 fly secrets set SUPERVISE_RESTART_DELAY="5"  # seconds before a crashed caddy/scheduler restarts
 fly secrets set RESTIC_QUICK_TIMEOUT="60"    # seconds for init/check/cat operations
 fly secrets set RESTIC_LONG_TIMEOUT="1800"   # seconds for backup/restore/prune
@@ -286,9 +287,9 @@ fly logs                       # Includes msmtp output (logfile is /dev/stderr)
 
 ### Verification
 
-The host-side suites are Python (`tests/selftest.py` and `tests/runtime-smoke.py` share `tests/lib.py`). Shell
-stays only where the environment forces it: `tests/image-selftest.sh` and `tests/lib.sh` run inside the image,
-which ships no Python on purpose, and the snippets a Python test hands to `sh` in a container are single
+The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
+production access) and `tests/runtime-smoke.py` (boots the image). The image ships no Python on purpose, so
+`tests/image-selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
 
 ```bash
