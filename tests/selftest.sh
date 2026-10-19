@@ -1096,6 +1096,27 @@ else
     bad "README does not warn that /data/config.json overrides the Fly secrets"
 fi
 
+# The alert channels follow how often a job can repeat its warning. A job on
+# `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
+# on Telegram and only the monthly integrity check keeps the incident email. A
+# regression that routes an hourly job back through the mailer is invisible
+# until the mailbox fills, so pin the split to the source.
+for job in backup check_freshness check_disk; do
+    body="$(sed -n "/^${job}() {/,/^}/p" scripts/restic.sh)"
+    if ! printf '%s\n' "$body" | grep -q 'send_telegram'; then
+        bad "${job}() no longer notifies at all"
+    elif printf '%s\n' "$body" | grep -q 'send_mail\|notify'; then
+        bad "${job}() still reaches the mailer for its hourly warning"
+    else
+        ok "${job}() notifies through Telegram only"
+    fi
+done
+if sed -n '/^verify() {/,/^}/p' scripts/restic.sh | grep -q 'notify_rare'; then
+    ok "the monthly verify() keeps the incident email"
+else
+    bad "verify() lost the incident email channel"
+fi
+
 # The README documents these knobs and the template is what a local run copies,
 # so a missing entry means the operator silently gets a default instead.
 missing_env=""

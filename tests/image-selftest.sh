@@ -278,54 +278,54 @@ same "an uninspectable lock keeps the running state" "running" \
 same "an uninspectable lock is explained" 1 \
     "$(grep -c 'Cannot inspect the backup lock' /tmp/selftest-unknown.log)"
 
-# An alert has to record whether it was actually delivered: the mailer's stderr
-# is not part of the run log, so "no email arrived" is otherwise undiagnosable.
-seed_status 1
-SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 /restic.sh check-freshness \
-    >/tmp/selftest-mailfail.log 2>&1
-same "an undeliverable alert is recorded in the log" 1 \
-    "$(grep -c 'Alert email failed' /tmp/selftest-mailfail.log)"
-
-mail_stub=/tmp/selftest-mailok
-mkdir -p "$mail_stub"
-printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' > "$mail_stub/mail"
-chmod +x "$mail_stub/mail"
-seed_status 1
-PATH="$mail_stub:$PATH" SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 \
-    /restic.sh check-freshness >/tmp/selftest-mailok.log 2>&1
-same "a delivered alert is recorded in the log" 1 \
-    "$(grep -c 'Alert email sent' /tmp/selftest-mailok.log)"
-same "the alert recipient is not written to the run log" 0 \
-    "$(grep -c 'ops@example.com' /tmp/selftest-mailok.log)"
-rm -rf "$mail_stub"
-
-# A successful backup can send its own heartbeat email. It is opt-in so a
-# self-hoster does not start receiving hourly mail by accident.
-success_mail_dir=/tmp/selftest-success-mail
-success_mail_log=/tmp/selftest-success-mail.log
-rm -rf "$success_mail_dir"
-mkdir -p "$success_mail_dir"
-: > "$success_mail_log"
-chmod 666 "$success_mail_log"
+# The alert channels follow how often a job can repeat its warning. A job on
+# `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
+# on Telegram and only the monthly integrity check keeps the incident email.
+# Stub the mailer so any invocation is recorded, then pin both halves.
+mail_dir=/tmp/selftest-mailer
+mail_log=/tmp/selftest-mailer.log
+rm -rf "$mail_dir"
+mkdir -p "$mail_dir"
+: > "$mail_log"
+chmod 666 "$mail_log"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\ncat >/dev/null\nexit 0\n' \
-    "$success_mail_log" > "$success_mail_dir/mail"
-chmod 755 "$success_mail_dir/mail"
-PATH="$success_mail_dir:$PATH" SMTP_TO=ops@example.com /restic.sh backup \
-    >/tmp/selftest-mail-default.log 2>&1
-same "a successful backup does not email by default" 0 \
-    "$(wc -l < "$success_mail_log" | tr -d ' ')"
-PATH="$success_mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
-    /restic.sh backup >/tmp/selftest-mail-success.log 2>&1
-# The per-backup notification is Telegram only: it fires every hour, and the
-# mailbox is for incidents. Email that arrives on every success is the noise the
-# operator asked to remove, and the failure paths still cover both channels.
-same "an opt-in success notification does not email" 0 \
-    "$(wc -l < "$success_mail_log" | tr -d ' ')"
+    "$mail_log" > "$mail_dir/mail"
+chmod 755 "$mail_dir/mail"
+mail_calls() { wc -l < "$mail_log" | tr -d ' '; }
+
+seed_status 1
+PATH="$mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-hourly-mail.log 2>&1
+same "a stale-backup alert never reaches the mailer" 0 "$(mail_calls)"
+same "a stale-backup alert records no email attempt" 0 \
+    "$(grep -c 'Alert email' /tmp/selftest-hourly-mail.log)"
+
+# The backup runs on the same hourly schedule, so neither its success nor its
+# failure may email. The success notification stays opt-in and Telegram only.
+: > "$mail_log"
+PATH="$mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
+    /restic.sh backup >/tmp/selftest-backup-ok.log 2>&1
+same "a successful backup never reaches the mailer" 0 "$(mail_calls)"
 same "an opt-in success notification records no email attempt" 0 \
-    "$(grep -c 'Alert email' /tmp/selftest-mail-success.log)"
-same "the recipient is not written to the run log" 0 \
-    "$(grep -c 'ops@example.com' /tmp/selftest-mail-success.log)"
-rm -rf "$success_mail_dir"
+    "$(grep -c 'Alert email' /tmp/selftest-backup-ok.log)"
+
+# A wrong password fails the run without letting `backup` initialise anything,
+# which a missing repository would: `restic init` would quietly create it.
+: > "$mail_log"
+PATH="$mail_dir:$PATH" RESTIC_PASSWORD=the-wrong-password SMTP_TO=ops@example.com \
+    /restic.sh backup >/tmp/selftest-backup-fail.log 2>&1
+backup_fail_rc=$?
+if [ "$backup_fail_rc" -ne 0 ]; then
+    ok "a failing backup exits non-zero"
+else
+    bad "the failing-backup case did not fail; its assertions would be vacuous"
+fi
+same "a failing backup never reaches the mailer" 0 "$(mail_calls)"
+same "a failing backup records no email attempt" 0 \
+    "$(grep -c 'Alert email' /tmp/selftest-backup-fail.log)"
+same "the alert recipient is not written to the run log" 0 \
+    "$(grep -c 'ops@example.com' /tmp/selftest-backup-fail.log)"
+rm -rf "$mail_dir"
 BACKUP_NOTIFY_ON_SUCCESS=maybe /restic.sh snapshots \
     >/tmp/selftest-notify-invalid.log 2>&1
 same "an invalid success-notification flag is rejected" 2 "$?"
@@ -586,8 +586,8 @@ VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-verify.log 2>&1
 same "verify clears the stale lock and reads a data slice" 0 "$?"
 
 # The monthly check is the only job that looks for repository damage, so a
-# failure has to reach the operator. It used to exit 2 with nothing but a log
-# line, which is indistinguishable from a run nobody read.
+# failure has to reach the operator. It is also the one job rare enough to keep
+# the incident email, so this is where the mailer must still be reached.
 seed_status "$(date -u +%s)"
 RESTIC_REPOSITORY=/tmp/selftest-missing SMTP_TO=ops@example.com /restic.sh verify \
     >/tmp/selftest-verifyfail.log 2>&1
