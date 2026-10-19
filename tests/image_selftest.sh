@@ -750,6 +750,25 @@ PATH="$stats_stub_dir:$PATH" STATS_MODE=empty /restic.sh restore-test \
 same "restore drill refuses a response without total_size" 2 "$?"
 same "restore drill reports the missing snapshot size" 1 \
     "$(grep -c 'Unable to size snapshot' /tmp/selftest-stats-empty.log)"
+
+# The README promises the dead-man's-switch ping covers the restore drill and
+# uses the /fail URL when the run fails. The drill had no failure ping at all,
+# so a broken drill left the switch armed as if nothing had run.
+hb_drill_dir="$(mktemp -d)"
+chmod 777 "$hb_drill_dir"
+hb_drill_calls="$hb_drill_dir/calls"
+: > "$hb_drill_calls"
+chmod 666 "$hb_drill_calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' \
+    "$hb_drill_calls" > "$hb_drill_dir/curl"
+chmod 755 "$hb_drill_dir/curl"
+PATH="$hb_drill_dir:$stats_stub_dir:$PATH" HEALTHCHECK_URL=http://hb.invalid/ping \
+    STATS_MODE=fail /restic.sh restore-test >/tmp/selftest-drill-heartbeat.log 2>&1
+same "a failed restore drill pings the failure URL" 1 \
+    "$(grep -c ' http://hb.invalid/ping/fail$' "$hb_drill_calls")"
+same "a failed restore drill does not ping the success URL" 0 \
+    "$(grep -c ' http://hb.invalid/ping$' "$hb_drill_calls")"
+rm -rf "$hb_drill_dir"
 rm -rf "$stats_stub_dir"
 
 # A failed df is not a full disk. The drill must stop with the real cause
