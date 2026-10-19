@@ -50,6 +50,9 @@
 				request>headers>X-Forwarded-For delete
 				request>headers>X-Real-Ip delete
 				request>headers>Fly-Client-Ip delete
+				# Query strings can carry one-time credentials or addresses.
+				# Keep the path for diagnosis, but never persist query values.
+				request>uri regexp "\?.*$" "?redacted"
 			}
 		}
 	}

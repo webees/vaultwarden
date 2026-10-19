@@ -207,7 +207,8 @@ send_telegram() {
     # error body is not mistaken for the transport result.
     status="${out##*$'\n'}"
     body="${out%$'\n'*}"
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+    if [ "$rc" -eq 0 ] && [ "$status" = "200" ] \
+        && printf '%s\n' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
         log echo -e "${G}Telegram notification sent${X}"
         return 0
     fi
