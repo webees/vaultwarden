@@ -440,8 +440,20 @@ restore_test() {
     # The README promises the dead-man's-switch ping covers the drill and uses
     # the /fail URL when the run fails. Only the failure ping was missing, so a
     # broken drill left the switch armed as if nothing had run. Cleanup and the
-    # ping share one trap so the two cannot drift apart.
-    trap 'rc=$?; cleanup_restore_tmp; [ "$rc" -eq 0 ] || heartbeat fail' EXIT
+    # alerts share one trap so they cannot drift apart.
+    #
+    # The ping is optional, so it cannot be the only channel: with
+    # HEALTHCHECK_URL unset a failed drill reached nobody while the monthly
+    # verify beside it emailed and notified Telegram. A drill that fails is the
+    # one warning that the snapshots cannot be restored, so record the state and
+    # use the rare (email + Telegram) channel too.
+    trap 'rc=$?
+        cleanup_restore_tmp
+        if [ "${rc:-0}" -ne 0 ]; then
+            write_guard_status failed "Restore drill failed (exit ${rc})"
+            notify_rare "Restore drill failed"
+            heartbeat fail
+        fi' EXIT
 
     clear_stale_locks
     # Sizing has three distinct outcomes: a real number, a successful response
