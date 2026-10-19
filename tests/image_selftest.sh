@@ -258,6 +258,42 @@ same "freshness guard refuses a corrupt last_success" 2 "$corrupt_rc"
 same "a corrupt last_success is not an arithmetic crash" 0 \
     "$(grep -c 'unbound variable\|syntax error' /tmp/selftest-corrupt.log)"
 
+# An existing marker that cannot be read is not a fresh volume. The guard used
+# to lower its unreadable value through an ignored pipeline, then either accept
+# it as a young instance or replace it with last_success=0 while reporting a
+# stale backup. Reading failure and no recorded data must stay distinguishable.
+seed_status "$(date -u +%s)"
+chown root:root /data/backup-status.txt
+chmod 000 /data/backup-status.txt
+unreadable_before="$(cksum < /data/backup-status.txt)"
+BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-unreadable.log 2>&1
+unreadable_rc=$?
+same "freshness guard fails when the status file cannot be read" 2 "$unreadable_rc"
+same "freshness guard names the unreadable status file" 1 \
+    "$(grep -c 'Cannot read /data/backup-status.txt' /tmp/selftest-unreadable.log)"
+same "an unreadable status file is not reported as no data" 0 \
+    "$(grep -c 'No backup recorded yet' /tmp/selftest-unreadable.log)"
+same "an unreadable status file is left untouched for diagnosis" "$unreadable_before" \
+    "$(cksum < /data/backup-status.txt)"
+chown vaultwarden:vaultwarden /data/backup-status.txt
+chmod 600 /data/backup-status.txt
+
+# A readable file without a last_success field is malformed, not equivalent to
+# a missing file on a brand-new volume.
+printf 'state=ok\nupdated_at=0\nmessage=missing-last-success\n' \
+    > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+missing_marker_before="$(cksum < /data/backup-status.txt)"
+BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-missing-marker.log 2>&1
+missing_marker_rc=$?
+same "freshness guard fails when last_success is missing" 2 "$missing_marker_rc"
+same "freshness guard names the missing last_success field" 1 \
+    "$(grep -c 'does not contain last_success' /tmp/selftest-missing-marker.log)"
+same "a missing last_success is not reported as no data" 0 \
+    "$(grep -c 'No backup recorded yet' /tmp/selftest-missing-marker.log)"
+same "a malformed marker is left untouched for diagnosis" "$missing_marker_before" \
+    "$(cksum < /data/backup-status.txt)"
+
 # The log directory has its own cap, but the volume also holds attachments, the
 # icon cache and the database. Once it fills, Vaultwarden's writes and the
 # backup fail together, and a Fly volume can only be grown by migrating the
