@@ -170,6 +170,13 @@ send_telegram() {
         return 0
     fi
     log echo -e "${R}Telegram notification failed (exit ${rc})${X}"
+    # The API answers with its own error body, which names the problem without
+    # the token; curl's own message repeats the request URL, so it stays out of
+    # the log. Redact the token anyway: a proxy error page echoes the URL it
+    # refused, and the run log is the only place an operator can see this.
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+        log printf '%s\n' "$(printf '%s\n' "$out" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
+    fi
     return 0
 }
 

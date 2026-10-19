@@ -1087,6 +1087,15 @@ else
     fi
 fi
 
+# Settings saved through the admin panel land in /data/config.json, and that
+# file wins over the environment. A README that only lists `fly secrets set`
+# sends the operator to a command that silently changes nothing.
+if grep -q 'config.json' README.md && grep -qi 'admin panel' README.md; then
+    ok "README documents that /data/config.json outranks the environment"
+else
+    bad "README does not warn that /data/config.json overrides the Fly secrets"
+fi
+
 # The README documents these knobs and the template is what a local run copies,
 # so a missing entry means the operator silently gets a default instead.
 missing_env=""
