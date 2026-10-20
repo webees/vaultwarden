@@ -680,8 +680,9 @@ check_freshness() {
     now="$(date -u +%s)"
 
     # A run that was killed mid-flight leaves the status at "running" forever.
-    # Only report that when the lock is readable and free: an uninspectable lock
-    # is unknown, and guessing "finished" would raise a false alert.
+    # A readable, free lock proves the run stopped. An uninspectable lock is
+    # unknown: keep the running marker, but fail closed and alert instead of
+    # letting the hourly guard report success without evidence.
     if [ "$STATUS_STATE" = "running" ]; then
         backup_is_running
         lock_state=$?
@@ -693,12 +694,14 @@ check_freshness() {
                heartbeat fail
                exit 2 ;;
             2)
-                log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}"
-                # A stale timestamp is not enough to override an unknown lock:
-                # the lock may belong to the backup that wrote state=running.
-                # Stop here instead of replacing that evidence with a false
-                # stale-backup failure.
-                return 0
+                log echo -e "${R}Cannot inspect the backup lock; backup freshness is unknown${X}"
+                # Preserve state=running as evidence, but record the guard's
+                # failure in the message. A stale timestamp is not enough to
+                # claim the run finished, and silence is not a healthy result.
+                write_guard_status failed "Cannot inspect the backup lock"
+                send_telegram "Cannot inspect the backup lock"
+                heartbeat fail
+                exit 2
                 ;;
         esac
     fi
