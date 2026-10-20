@@ -54,6 +54,11 @@ for removed in /Procfile /supervise.sh; do
         ok "${removed} is absent from the runtime image"
     fi
 done
+if [ -x /services.sh ]; then
+    ok "/services.sh owns the runtime process table"
+else
+    bad "/services.sh is missing or not executable"
+fi
 
 same "/etc/msmtprc is 0600" 600 "$(stat -c %a /etc/msmtprc)"
 same "/etc/msmtprc belongs to vaultwarden" vaultwarden "$(stat -c %U /etc/msmtprc)"
