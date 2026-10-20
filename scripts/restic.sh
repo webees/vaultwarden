@@ -774,6 +774,35 @@ check_freshness() {
         exit 2
     fi
 
+    # A successful timestamp from the previous run does not make the latest run
+    # successful. Treat a recorded failure as failed immediately, and reject an
+    # unknown state instead of letting a malformed marker hide behind a recent
+    # last_success. The initial marker is the one exception: state=unknown with
+    # no success is how a new volume starts.
+    case "$STATUS_STATE" in
+        ok|running) ;;
+        failed)
+            log echo -e "${R}${STATUS_FILE} records state=failed; the latest operation failed and last_success is not sufficient evidence${X}"
+            send_telegram "Backup state is failed"
+            heartbeat fail
+            exit 2
+            ;;
+        unknown)
+            if [ "$LAST_SUCCESS" != "0" ]; then
+                log echo -e "${R}${STATUS_FILE} has an unknown state but a recorded success${X}"
+                send_telegram "Backup marker state is inconsistent"
+                heartbeat fail
+                exit 2
+            fi
+            ;;
+        *)
+            log echo -e "${R}${STATUS_FILE} has an unusable recorded state${X}"
+            send_telegram "Backup marker state is unusable"
+            heartbeat fail
+            exit 2
+            ;;
+    esac
+
     if [ "$LAST_SUCCESS" = "0" ]; then
         # A fresh volume has no baseline yet, so only complain once the instance
         # has been up longer than the limit. A failed uptime read is unknown,

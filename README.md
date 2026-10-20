@@ -198,8 +198,9 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
 scheduler is still alive. An unreadable marker, a missing `last_success` field, a non-numeric or overflowing
-timestamp, or a timestamp from the future is reported instead of being read as a fresh backup. The malformed
-file is left in place for diagnosis. A scheduler that has stopped firing entirely is caught by the external watchdog in
+timestamp, a timestamp from the future, or a recorded `state=failed`/unusable state is reported instead of being
+read as a fresh backup. The malformed file is left in place for diagnosis. A scheduler that has stopped firing
+entirely is caught by the external watchdog in
 `.github/workflows/dependency_updates.yml`: it runs the same check against the live app every two hours and
 after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
 is the channel that broke. `HEALTHCHECK_URL` remains an optional third channel for a dedicated
@@ -263,6 +264,7 @@ discovered for the first time during a real recovery.
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB), and files older than 10 hours are removed. A failed per-file rotation is reported even while the directory total remains below its cap |
 | Backup log directory cannot be trimmed | The run logs `Warning: log directory holds … could not be trimmed`, records `log trim failed` in `/data/backup-status.txt`, and sends a failure heartbeat when `HEALTHCHECK_URL` is set; free space or fix ownership under `/data/restic-logs` |
 | `check-freshness` reports `Cannot inspect the backup lock` | `/data/restic-logs/backup.lock` is missing or cannot be opened. The guard keeps `state=running` as evidence but exits 2, sends a Telegram alert and pings the failure URL; restore read access to the log directory and verify the interrupted backup before clearing its marker |
+| `check-freshness` reports `state is failed` while `last_success` looks recent | The latest backup, verification or restore drill failed; the previous success timestamp is not accepted as evidence for the latest run. Read the preserved `message=` value and the matching run log, then fix the failure and let the next backup record `state=ok` |
 | Backup exits with `Cannot record backup start state` or `Cannot record backup completion state` | `/data/backup-status.txt` is not a writable regular file. The backup job fails with exit 2 and sends its normal failure alert instead of reporting a false success; repair the path type and owner under `/data` before retrying |
 | Container exits with `… must be a positive integer` | One of `RESTIC_LOG_MAX_BYTES`, `RESTIC_LOG_DIR_MAX_BYTES`, `RESTIC_QUICK_TIMEOUT`, `RESTIC_LONG_TIMEOUT`, `BACKUP_MAX_AGE` or `BACKUP_MAX_USAGE_PERCENT` is zero or not a number; set a positive integer (the usage limit also has to be 100 or less) |
 | Repository command exits with `RESTIC_PASSWORD not set` | `backup`, `snapshots`, `restore`, `restore-test` and `verify` require the secret. `check-freshness` and `check-disk` deliberately continue without it so monitoring is not disabled by a missing repository credential |
