@@ -13,10 +13,10 @@ trap 'rm -rf "$work"' EXIT
 
 # ── static process model ─────────────────────────────────────────────────────
 echo "--- process model"
-# Three long-running processes do not justify a downloaded process manager, an
-# extra tmux dependency and a separate wrapper script. Keep the process table in
-# the entrypoint so the runtime inputs are reviewable in one file.
-if grep -Eqi 'overmind|tmux|Procfile|supervise\.sh' Dockerfile scripts/entrypoint.sh; then
+# Three long-running processes do not justify a downloaded process manager.
+# Keep the privilege-dropping bootstrap and the process table in separate,
+# reviewable files so neither has to carry the other's concerns.
+if grep -Eqi 'overmind|tmux|Procfile|supervise\.sh' Dockerfile scripts/entrypoint.sh scripts/services.sh; then
     bad "the image still depends on the removed dynamic process manager"
 else
     ok "the image has no Overmind, tmux, Procfile or supervise.sh dependency"
@@ -28,13 +28,30 @@ for removed in config/Procfile scripts/supervise.sh; do
         ok "${removed} is absent"
     fi
 done
+if grep -Fq 'run_services' scripts/entrypoint.sh; then
+    bad "the bootstrap still carries the process table"
+else
+    ok "the bootstrap delegates process supervision"
+fi
+for script in scripts/entrypoint.sh scripts/services.sh; do
+    if [ -f "$script" ]; then
+        ok "${script} exists"
+    else
+        bad "${script} is missing"
+    fi
+done
 for service in '/vaultwarden' 'caddy run --config /Caddyfile' 'supercronic /crontab'; do
-    if grep -Fq "$service" scripts/entrypoint.sh; then
+    if grep -Fq "$service" scripts/services.sh 2>/dev/null; then
         ok "the static process table starts ${service%% *}"
     else
         bad "the static process table does not start ${service}"
     fi
 done
+if grep -Fq 'scripts/services.sh' Dockerfile; then
+    ok "the image copies the dedicated process table"
+else
+    bad "the image does not copy scripts/services.sh"
+fi
 
 # The Cloudflare ranges are deliberately checked in. A build-time fetch made the
 # image depend on an unrelated live endpoint and could rewrite tracked source.

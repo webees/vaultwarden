@@ -32,6 +32,7 @@ COPY config/crontab \
     config/Caddyfile \
     config/cloudflare_ips.caddy \
     scripts/entrypoint.sh \
+    scripts/services.sh \
     scripts/restic.sh \
     /
 
@@ -69,7 +70,7 @@ RUN set -eu; \
     curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
         -o /usr/local/bin/supercronic; \
     echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c -; \
-    chmod +x /usr/local/bin/supercronic /entrypoint.sh /restic.sh; \
+    chmod +x /usr/local/bin/supercronic /entrypoint.sh /services.sh /restic.sh; \
     # Symlink msmtp for mail commands
     ln -sf /usr/bin/msmtp /usr/bin/sendmail; \
     ln -sf /usr/bin/msmtp /usr/sbin/sendmail; \
@@ -78,6 +79,7 @@ RUN set -eu; \
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 # The root entrypoint finishes volume and secret-file setup, then replaces
-# itself with an unprivileged tini. Tini stays PID 1 and reaps helper processes.
+# itself with an unprivileged tini. Tini stays PID 1, /services.sh owns the
+# process table, and tini reaps helper processes.
 ENTRYPOINT []
 CMD ["/entrypoint.sh"]

@@ -209,6 +209,22 @@ def check_invalid_restart_delay(image: str) -> None:
     suite.ok("an invalid process restart delay fails closed before services start")
 
 
+def check_services_requires_unprivileged_user(image: str) -> None:
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "/services.sh",
+        image,
+        check=False,
+    )
+    if result.returncode != 2 or "must run as the unprivileged service user" not in combined(result):
+        suite.bad("the process table starts when invoked directly as root")
+        print(f"rc={result.returncode}\n{combined(result)}", file=sys.stderr)
+        suite.report()
+    suite.ok("the process table refuses to start directly as root")
+
+
 def check_app_exit_stops_stack(image: str) -> None:
     """Vaultwarden is authoritative: Fly must restart the whole container."""
     container = start_stack(
@@ -859,6 +875,7 @@ def main() -> int:
 
     check_apk_stub(work, image)
     check_invalid_restart_delay(image)
+    check_services_requires_unprivileged_user(image)
     check_app_exit_stops_stack(image)
     check_required_tools(image)
     check_smtp_delivery(work, image)
