@@ -39,6 +39,7 @@ MAX_STATUS_BYTES=4096
 # substitution cannot hide trailing newlines, then reject the file as a whole.
 read_status_body() {
     local snapshot
+    [ ! -L "$STATUS_FILE" ] && [ -f "$STATUS_FILE" ] || return 4
     snapshot="$( { head -c "$((MAX_STATUS_BYTES + 1))" "$STATUS_FILE" 2>/dev/null \
         && printf '\001'; } )" || return 1
     snapshot="${snapshot%$'\001'}"
@@ -78,6 +79,7 @@ if [ -e "$STATUS_FILE" ]; then
         read_rc=$?
         case "$read_rc" in
             3) STATUS_MARKER_ERROR=oversized ;;
+            4) STATUS_MARKER_ERROR=not_regular ;;
             *) STATUS_MARKER_ERROR=unreadable ;;
         esac
     fi
@@ -395,7 +397,9 @@ check_audit_trail() {
     if ! ( : >> "$LOG" ) 2>/dev/null; then
         echo "Warning: cannot write ${LOG}; this run leaves no persistent log" >&2
     fi
-    if ! ( : >> "$STATUS_FILE" ) 2>/dev/null; then
+    if [ -L "$STATUS_FILE" ] || [ ! -f "$STATUS_FILE" ]; then
+        echo "Warning: ${STATUS_FILE} is not a regular file; backup state will not be recorded" >&2
+    elif ! ( : >> "$STATUS_FILE" ) 2>/dev/null; then
         echo "Warning: cannot write ${STATUS_FILE}; backup state will not be recorded" >&2
     fi
 }
@@ -888,6 +892,12 @@ check_freshness() {
     if [ "$STATUS_MARKER_ERROR" = "oversized" ]; then
         log echo -e "${R}${STATUS_FILE} exceeds ${MAX_STATUS_BYTES} bytes; backup freshness is unknown${X}"
         send_telegram "Backup marker is oversized"
+        heartbeat fail
+        exit 2
+    fi
+    if [ "$STATUS_MARKER_ERROR" = "not_regular" ]; then
+        log echo -e "${R}${STATUS_FILE} is not a regular file; backup freshness is unknown${X}"
+        send_telegram "Backup marker is not a regular file"
         heartbeat fail
         exit 2
     fi
