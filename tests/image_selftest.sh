@@ -72,14 +72,14 @@ same "SMTP_FROM stays unset when there is no SMTP_HOST" 0 \
 # shellcheck disable=SC2016  # the metacharacters must stay literal for the test
 smtp_secret='pa$word`id -u`back\slash'
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com SMTP_USERNAME=user \
-SMTP_PASSWORD=***REMOVED***
+    SMTP_PASSWORD="$smtp_secret" >/dev/null
 same "an SMTP password with shell metacharacters is written verbatim" \
     "${smtp_secret}" "$(sed -n 's/^password //p' /etc/msmtprc)"
 
 # A newline in any SMTP value would inject extra msmtprc directives, so it has
 # to be refused before the file is written.
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
-SMTP_PASSWORD=***REMOVED***
+    SMTP_PASSWORD='two
 lines' >/dev/null 2>&1
 same "an SMTP value containing a newline is rejected" 1 "$?"
 
@@ -106,10 +106,10 @@ same "the alert mailer can open the logfile it is configured with" 0 \
 
 # A half-configured credential pair is a typo, not a valid relay mode.
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
-SMTP_USERNAME=***REMOVED***
+    SMTP_USERNAME=user >/dev/null 2>&1
 same "an SMTP username without a password is rejected" 1 "$?"
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
-SMTP_PASSWORD=***REMOVED***
+    SMTP_PASSWORD=secret >/dev/null 2>&1
 same "an SMTP password without a username is rejected" 1 "$?"
 
 # ── config.json secret overrides ─────────────────────────────────────────────
@@ -668,7 +668,7 @@ chmod +x "$stub_dir/restic"
 seed_status "$(date -u +%s)"
 hang_start="$(date -u +%s)"
 PATH="$stub_dir:$PATH" RESTIC_QUICK_TIMEOUT=1 RESTIC_LONG_TIMEOUT=1 \
-RESTIC_REPOSITORY=***REMOVED***
+    RESTIC_REPOSITORY=/tmp/selftest-hang /restic.sh backup >/tmp/selftest-hang.log 2>&1
 hang_status=$?
 hang_elapsed=$(( $(date -u +%s) - hang_start ))
 same "a hung backend exits 2" 2 "$hang_status"
@@ -685,7 +685,7 @@ fi
 # straight away instead of only once it finally exits on its own, which would
 # let this pass for the wrong reason.
 PATH="$stub_dir:$PATH" RESTIC_QUICK_TIMEOUT=1 RESTIC_LONG_TIMEOUT=1 \
-RESTIC_REPOSITORY=***REMOVED***
+    RESTIC_REPOSITORY=/tmp/selftest-hang /restic.sh snapshots \
     >/tmp/selftest-helper.log 2>&1
 same "the timeout signals the helpers a command leaves behind" 0 \
     "$(pgrep -f 'sleep 300' | grep -c .)"
