@@ -247,10 +247,11 @@ send_telegram() {
         log echo -e "${R}Telegram notification failed (no HTTP response)${X}"
     fi
     # Record whatever came back — the API's error body or curl's own message —
-    # with the token redacted: a proxy error page echoes the URL it refused, and
-    # the run log is the only place an operator can see why the alert vanished.
-    [ -n "$body" ] && log printf '%s\n' \
-        "$(printf '%s\n' "$body" | sed "s|${TELEGRAM_BOT_TOKEN}|<redacted>|g")"
+    # with both credentials redacted. A proxy error page can echo the token URL,
+    # while the Bot API identifies the rejected chat by its id.
+    body="${body//$TELEGRAM_BOT_TOKEN/<redacted>}"
+    [ -n "$TELEGRAM_CHAT_ID" ] && body="${body//$TELEGRAM_CHAT_ID/<redacted>}"
+    [ -n "$body" ] && log printf '%s\n' "$body"
     return 0
 }
 
@@ -507,7 +508,7 @@ restore() {
         exit 2
     fi
     clear_stale_locks
-    run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore "$1" --target /
+    run "Restore snapshot $1" "$LONG_TIMEOUT" restic restore --target / -- "$1"
     # The snapshot carries the database as the consistent hot copy, not as the
     # live db.* files, so the command above leaves the old database in place.
     # Say so, or the operator walks away from a half-restored instance whose
@@ -546,7 +547,7 @@ restore_test() {
     # Sizing has three distinct outcomes: a real number, a successful response
     # without total_size, and a failed read. Treating either failure mode as
     # zero bytes made the drill proceed without knowing whether it had space.
-    if ! stats_json="$(timed "$QUICK_TIMEOUT" restic stats --json "$snapshot" 2>&1)"; then
+    if ! stats_json="$(timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1)"; then
         log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
         [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
         exit 2
@@ -580,7 +581,7 @@ restore_test() {
         exit 2
     fi
 
-    run "Restore drill" "$LONG_TIMEOUT" restic restore "$snapshot" --target "$target"
+    run "Restore drill" "$LONG_TIMEOUT" restic restore --target "$target" -- "$snapshot"
     if [ ! -f "$target/data/backup.bak" ] || [ ! -f "$target/data/rsa_key.pem" ]; then
         log echo -e "${R}Restore drill is missing expected files${X}"
         exit 2
