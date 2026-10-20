@@ -727,9 +727,22 @@ check_freshness() {
 
     if [ "$LAST_SUCCESS" = "0" ]; then
         # A fresh volume has no baseline yet, so only complain once the instance
-        # has been up longer than the limit.
-        uptime_s="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
-        if [ "${uptime_s:-0}" -lt "$limit" ]; then
+        # has been up longer than the limit. A failed uptime read is unknown,
+        # not a brand-new instance: treating it as zero silently disabled the
+        # only guard that catches a backup which has never run.
+        if ! uptime_s="$(cut -d. -f1 /proc/uptime)"; then
+            uptime_s=""
+        fi
+        case "$uptime_s" in
+            ''|*[!0-9]*)
+                log echo -e "${R}Cannot determine the instance age${X}"
+                write_guard_status failed "Cannot determine the instance age"
+                send_telegram "Cannot determine the instance age"
+                heartbeat fail
+                exit 2
+                ;;
+        esac
+        if [ "$uptime_s" -lt "$limit" ]; then
             log echo -e "${Y}No backup recorded yet and this instance is ${uptime_s}s old${X}"
             return 0
         fi
