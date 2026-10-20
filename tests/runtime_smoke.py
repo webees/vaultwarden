@@ -356,7 +356,7 @@ def check_status_write_failure(image: str) -> None:
     """A backup must fail closed when its monitoring marker cannot be updated."""
     script = r"""
 set -eu
-rm -rf /data/* /tmp/logs /tmp/stub /tmp/status-write-calls
+rm -rf /data/* /tmp/logs /tmp/stub
 mkdir -p /data /tmp/logs /tmp/stub
 printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=seed\n' > /data/backup-status.txt
 chown root:root /data /data/backup-status.txt
@@ -368,8 +368,8 @@ printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/sqlite3
 printf '%s\n' \
     '#!/bin/sh' \
     'case "$*" in' \
-    '    *api.telegram.org*) printf "telegram\n" >> /tmp/status-write-calls ;;' \
-    '    *health.invalid/*/fail*) printf "heartbeat\n" >> /tmp/status-write-calls ;;' \
+    '    *api.telegram.org*) printf "telegram\n" >> /tmp/logs/calls ;;' \
+    '    *health.invalid/*/fail*) printf "heartbeat\n" >> /tmp/logs/calls ;;' \
     'esac' > /tmp/stub/curl
 chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
 rc=0
@@ -382,15 +382,15 @@ chmod 700 /data
 printf '%s\n' "$output" >/tmp/status-write.log
 [ "$rc" -eq 2 ]
 grep -Fq 'Cannot record backup start state' /tmp/status-write.log
-[ "$(grep -c '^telegram$' /tmp/status-write-calls)" -eq 1 ]
-[ "$(grep -c '^heartbeat$' /tmp/status-write-calls)" -eq 1 ]
+[ "$(grep -c '^telegram$' /tmp/logs/calls)" -eq 1 ]
+[ "$(grep -c '^heartbeat$' /tmp/logs/calls)" -eq 1 ]
 grep -Fq 'state=unknown' /data/backup-status.txt
 
 rm -rf /data/*
 mkdir /data/backup-status.txt
 chown vaultwarden:vaultwarden /data /data/backup-status.txt
 chmod 700 /data /data/backup-status.txt
-: > /tmp/status-write-calls
+: > /tmp/logs/calls
 rc=0
 output="$(
     PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_DIR=/tmp/logs \
@@ -400,8 +400,8 @@ output="$(
 printf '%s\n' "$output" >/tmp/status-write.log
 [ "$rc" -eq 2 ]
 grep -Fq 'Cannot record backup start state' /tmp/status-write.log
-[ "$(grep -c '^telegram$' /tmp/status-write-calls)" -eq 1 ]
-[ "$(grep -c '^heartbeat$' /tmp/status-write-calls)" -eq 1 ]
+[ "$(grep -c '^telegram$' /tmp/logs/calls)" -eq 1 ]
+[ "$(grep -c '^heartbeat$' /tmp/logs/calls)" -eq 1 ]
 [ -d /data/backup-status.txt ]
 [ "$(find /data/backup-status.txt -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 0 ]
 """
