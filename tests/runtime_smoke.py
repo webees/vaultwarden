@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boot an image and run the checks that only exist at container runtime.
 
-The Caddyfile has to validate, the Overmind stack has to come up unprivileged,
+The Caddyfile has to validate, the process stack has to come up unprivileged,
 the backup paths have to work inside the image, and the proxy has to keep
 credentials out of its access log. Shared by the validate and build workflows so
 the merge path tests the exact digest it publishes.
@@ -23,9 +23,33 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import Suite  # noqa: E402 - the import path above has to be set first
+class Suite:
+    """Collect pass/fail lines and decide the exit status at the end."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.failures = 0
+
+    def ok(self, message: str) -> None:
+        print(f"ok   {message}", flush=True)
+
+    def bad(self, message: str) -> None:
+        self.failures += 1
+        print(f"FAIL {message}", file=sys.stderr, flush=True)
+
+    def same(self, message: str, expected: object, actual: object) -> None:
+        if expected == actual:
+            self.ok(message)
+        else:
+            self.bad(f"{message} (expected [{expected}], got [{actual}])")
+
+    def report(self) -> None:
+        if self.failures:
+            print(f"{self.failures} {self.name} failed", file=sys.stderr, flush=True)
+            raise SystemExit(1)
+        print(f"{self.name} passed", flush=True)
+
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -125,6 +149,98 @@ def start_stack(image: str, name: str, extra_env: dict[str, str] | None = None) 
     )
     containers.append(name)
     return name
+
+
+def process_ids(container: str, name: str) -> list[int]:
+    result = exec_in(container, "pidof", name, check=False)
+    return [int(value) for value in result.stdout.split() if value.isdigit()]
+
+
+def wait_for_replacement(container: str, name: str, old_pid: int) -> int | None:
+    for _ in range(60):
+        current = process_ids(container, name)
+        replacement = next((pid for pid in current if pid != old_pid), None)
+        if replacement is not None:
+            return replacement
+        time.sleep(0.1)
+    return None
+
+
+def check_process_supervision(container: str) -> None:
+    """A crashed proxy or scheduler must come back without Overmind or tmux."""
+    for service in ("caddy", "supercronic"):
+        before = process_ids(container, service)
+        if len(before) != 1:
+            suite.bad(f"expected one {service} process before the restart probe, got {before}")
+            suite.report()
+        exec_in(container, "kill", "-9", str(before[0]))
+        after = wait_for_replacement(container, service, before[0])
+        if after is None:
+            suite.bad(f"{service} was not restarted after a forced exit")
+            print("\n".join(access_log(container).splitlines()[-30:]), file=sys.stderr)
+            suite.report()
+        suite.ok(f"{service} restarted with a new process id after a forced exit")
+
+    if not wait_for_alive(container):
+        suite.bad("the proxy did not recover after its forced restart")
+        suite.report()
+    log = access_log(container)
+    for process, label in (("caddy", "caddy"), ("supercronic", "crontab")):
+        if f"[{label}] exited with status 137, restarting in 0.1s" not in log:
+            suite.bad(f"the process table did not log the {process} restart")
+            print("\n".join(log.splitlines()[-30:]), file=sys.stderr)
+            suite.report()
+    suite.ok("the static process table records both restarts")
+
+
+def check_invalid_restart_delay(image: str) -> None:
+    result = docker(
+        "run",
+        "--rm",
+        "--env",
+        "SUPERVISE_RESTART_DELAY=0.0",
+        image,
+        check=False,
+    )
+    if result.returncode != 2 or "must be a positive number" not in combined(result):
+        suite.bad("an invalid process restart delay did not fail before starting services")
+        print(f"rc={result.returncode}\n{combined(result)}", file=sys.stderr)
+        suite.report()
+    suite.ok("an invalid process restart delay fails closed before services start")
+
+
+def check_app_exit_stops_stack(image: str) -> None:
+    """Vaultwarden is authoritative: Fly must restart the whole container."""
+    container = start_stack(
+        image,
+        f"app-exit-{os.getpid()}",
+        {"SUPERVISE_RESTART_DELAY": "0.1"},
+    )
+    if not wait_for_alive(container):
+        suite.bad("the app-exit probe never became ready")
+        suite.report()
+    vaultwarden = process_ids(container, "vaultwarden")
+    if len(vaultwarden) != 1:
+        suite.bad(f"expected one Vaultwarden process, got {vaultwarden}")
+        suite.report()
+    exec_in(container, "kill", "-9", str(vaultwarden[0]))
+
+    state = ""
+    for _ in range(60):
+        state = docker(
+            "inspect",
+            "--format",
+            "{{.State.Running}} {{.State.ExitCode}}",
+            container,
+        ).stdout.strip()
+        if state.startswith("false "):
+            break
+        time.sleep(0.1)
+    if state != "false 137":
+        suite.bad(f"Vaultwarden exiting did not stop the full stack with status 137: {state!r}")
+        print("\n".join(access_log(container).splitlines()[-30:]), file=sys.stderr)
+        suite.report()
+    suite.ok("a Vaultwarden crash stops the full process table for Fly to restart")
 
 
 def access_log(container: str) -> str:
@@ -292,7 +408,7 @@ def check_required_tools(image: str) -> None:
     # setsid gives every captured command its own session, so the timeout can
     # signal the whole tree instead of the direct child BusyBox `timeout`
     # reaches.
-    required = "bash caddy curl mail msmtp restic setsid sqlite3 su-exec tini tmux supercronic overmind".split()
+    required = "bash caddy curl mail msmtp restic setsid sqlite3 su-exec tini supercronic".split()
     missing = docker(
         "run",
         "--rm",
@@ -308,6 +424,24 @@ def check_required_tools(image: str) -> None:
         suite.bad(f"missing from the image: {' '.join(missing)}")
         suite.report()
     suite.ok(f"the image carries every tool the stack runs ({' '.join(required)})")
+
+    removed = "tmux overmind".split()
+    present = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        'for tool in "$@"; do command -v "$tool" >/dev/null && echo "$tool"; done',
+        "sh",
+        *removed,
+        check=False,
+    ).stdout.split()
+    if present:
+        suite.bad(f"obsolete process-manager tools remain in the image: {' '.join(present)}")
+        suite.report()
+    suite.ok("the image omits the obsolete Overmind and tmux process manager")
 
 
 def check_apk_stub(work: Path, image: str) -> None:
@@ -698,7 +832,11 @@ def main() -> int:
 
     # No command override: the image's own CMD is what production runs, so the
     # smoke test exercises that path (tini as PID 1) rather than a copy of it.
-    container = start_stack(image, f"smoke-{os.getpid()}")
+    container = start_stack(
+        image,
+        f"smoke-{os.getpid()}",
+        {"SUPERVISE_RESTART_DELAY": "0.1"},
+    )
     if not wait_for_alive(container):
         print("/alive never came up", file=sys.stderr)
         print(access_log(container), file=sys.stderr)
@@ -713,12 +851,15 @@ def main() -> int:
     log = check_access_log(container)
     check_redaction(container, log)
     check_query_redaction(container)
+    check_process_supervision(container)
 
     docker("cp", str(TESTS_DIR / "lib.sh"), f"{container}:/tmp/lib.sh")
     docker("cp", str(TESTS_DIR / "image_selftest.sh"), f"{container}:/tmp/image_selftest.sh")
     docker("exec", container, "sh", "/tmp/image_selftest.sh", stream=True)
 
     check_apk_stub(work, image)
+    check_invalid_restart_delay(image)
+    check_app_exit_stops_stack(image)
     check_required_tools(image)
     check_smtp_delivery(work, image)
     check_restore_swap(image)

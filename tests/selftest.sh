@@ -11,47 +11,30 @@ cd "$REPO_ROOT" || exit 1
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# ── supervise.sh ──────────────────────────────────────────────────────────────
-echo "--- supervise.sh"
-counter="$work/supervise.count"
-: > "$counter"
-SUPERVISE_RESTART_DELAY=0.05 ./scripts/supervise.sh probe \
-    sh -c "printf 'run\n' >> \"$counter\"; exit 7" 2>"$work/supervise.err" &
-supervisor=$!
-sleep 1
-kill -TERM "$supervisor" 2>/dev/null
-wait "$supervisor"
-supervisor_status=$?
-runs="$(wc -l < "$counter" | tr -d ' ')"
-if [ "$runs" -ge 2 ]; then
-    ok "restarts a child that exits non-zero (${runs} runs observed)"
+# ── static process model ─────────────────────────────────────────────────────
+echo "--- process model"
+# Three long-running processes do not justify a downloaded process manager, an
+# extra tmux dependency and a separate wrapper script. Keep the process table in
+# the entrypoint so the runtime inputs are reviewable in one file.
+if grep -Eqi 'overmind|tmux|Procfile|supervise\.sh' Dockerfile scripts/entrypoint.sh; then
+    bad "the image still depends on the removed dynamic process manager"
 else
-    bad "did not restart the child (${runs} runs observed)"
+    ok "the image has no Overmind, tmux, Procfile or supervise.sh dependency"
 fi
-same "exits with status 0 on SIGTERM" 0 "$supervisor_status"
-
-# A bad delay used to spin: `sleep` failed every iteration and the supervisor
-# restarted the child as fast as the shell could loop. Start it in the
-# background so the pre-fix code cannot hang the suite, then terminate it.
-run_supervise_invalid() { # delay
-    SUPERVISE_RESTART_DELAY="$1" ./scripts/supervise.sh probe true \
-        >/dev/null 2>&1 &
-    local pid=$!
-    sleep 0.3
-    kill -TERM "$pid" 2>/dev/null || true
-    wait "$pid"
-}
-run_supervise_invalid bogus
-same "a non-numeric restart delay is rejected" 2 "$?"
-run_supervise_invalid 0.0
-same "a zero restart delay is rejected" 2 "$?"
-
-./scripts/supervise.sh probe >/dev/null 2>&1 &
-supervise_empty_pid=$!
-sleep 0.3
-kill -TERM "$supervise_empty_pid" 2>/dev/null || true
-wait "$supervise_empty_pid"
-same "a supervisor without a child command is rejected" 2 "$?"
+for removed in config/Procfile scripts/supervise.sh; do
+    if [ -e "$removed" ]; then
+        bad "${removed} still exists even though the entrypoint owns the process table"
+    else
+        ok "${removed} is absent"
+    fi
+done
+for service in '/vaultwarden' 'caddy run --config /Caddyfile' 'supercronic /crontab'; do
+    if grep -Fq "$service" scripts/entrypoint.sh; then
+        ok "the static process table starts ${service%% *}"
+    else
+        bad "the static process table does not start ${service}"
+    fi
+done
 
 # The Cloudflare ranges are deliberately checked in. A build-time fetch made the
 # image depend on an unrelated live endpoint and could rewrite tracked source.
@@ -271,9 +254,7 @@ fi
 
 # gh has no timeout flag, so deps.sh has to wrap it. Record the wrapper call and
 # make sure no call site bypasses it.
-# gh has no timeout flag, so deps.sh has to wrap every call. The stub release
-# carries both arch assets so `tools` reaches its second gh call before the
-# empty overmind download ends the run.
+# gh has no timeout flag, so deps.sh has to wrap every call.
 gh_log="$work/gh-args"
 timeout_log="$work/timeout-args"
 : > "$gh_log"
@@ -296,7 +277,7 @@ printf '#!/bin/sh\nexit 0\n' > "$gh_stub/curl"
 chmod +x "$gh_stub/gh" "$gh_stub/timeout" "$gh_stub/curl"
 PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools >/dev/null 2>&1 || true
 gh_timeouts="$(grep -c -E '^[0-9]+ gh api' "$timeout_log" 2>/dev/null || true)"
-same "every gh api call runs under a timeout" 2 "$gh_timeouts"
+same "every gh api call runs under a timeout" 1 "$gh_timeouts"
 
 # Docker Hub can answer with an empty page (rate limit or malformed response).
 # Paginating 20 times through the retry wrapper would burn the whole job.
@@ -1019,7 +1000,7 @@ if [ -s "$work/pr-step.sh" ]; then
         : > "$pr_log"
         : > "$pr_out"
         GITHUB_OUTPUT="$pr_out" GITHUB_REPOSITORY=example/repo RUNNER_TEMP="$work" \
-            VERSION=1.2.3 DIGEST=sha256:stub SUPERCRONIC=v0 OVERMIND=v0 \
+            VERSION=1.2.3 DIGEST=sha256:stub SUPERCRONIC=v0 \
             APK_COUNT=0 APK_ROWS='' OPEN_PR_COUNT="$1" \
             PATH="$pr_stub:$PATH" bash "$work/pr-step.sh" \
             > "$work/pr-run.log" 2>&1
