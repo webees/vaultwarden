@@ -5,6 +5,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+# shellcheck source=tests/lib.sh
 . "$REPO_ROOT/tests/lib.sh"
 
 work="$(mktemp -d)"
@@ -959,14 +960,14 @@ if [ -s "$work/deploy-guard.sh" ]; then
     run_deploy_guard
     same "a newer run of this workflow supersedes this build" "true" "$(deploy_skip)"
 
-    # the run list cannot be read: deploy, and say why.
+    # the run list cannot be read: refuse to deploy an unverified build.
     deploy_stub_case doc999 "" 1
     run_deploy_guard
-    same "an unreadable run list still deploys" "false" "$(deploy_skip)"
-    if grep -q 'could not read the workflow runs' "$work/deploy-run.log"; then
-        ok "an unreadable run list is reported"
+    same "an unreadable run list fails the deployment gate" 1 "$?"
+    if grep -q 'refusing to deploy' "$work/deploy-run.log"; then
+        ok "an unreadable run list explains why deployment stopped"
     else
-        bad "an unreadable run list is swallowed"
+        bad "an unreadable run list does not explain the deployment stop"
     fi
 else
     bad "the deploy guard step or its actions:read permission is missing"
