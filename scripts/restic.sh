@@ -47,6 +47,18 @@ if [ -e "$STATUS_FILE" ]; then
         case "${LAST_SUCCESS:-}" in
             '') STATUS_MARKER_ERROR=missing; LAST_SUCCESS=0 ;;
             *[!0-9]*) STATUS_MARKER_ERROR=invalid; LAST_SUCCESS=0 ;;
+            *)
+                # Bash arithmetic wraps anything above signed 64-bit. A
+                # syntactically numeric marker must not become a fresh backup
+                # after overflow, and a leading zero must not silently switch
+                # the timestamp to octal.
+                if [ "${#LAST_SUCCESS}" -gt 18 ]; then
+                    STATUS_MARKER_ERROR=invalid
+                    LAST_SUCCESS=0
+                else
+                    LAST_SUCCESS=$((10#$LAST_SUCCESS))
+                fi
+                ;;
         esac
     else
         STATUS_MARKER_ERROR=unreadable
