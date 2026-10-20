@@ -635,6 +635,50 @@ same "a rejected notification records the HTTP status" 1 \
 same "a rejected notification does not report a successful curl exit" 0 \
     "$(grep -c 'Telegram notification failed (exit 0)' /tmp/selftest-tg-reject.log)"
 
+# An error page or proxy response can be much larger than the entire run log.
+# Capture only a bounded tail, keeping the appended HTTP status and the API
+# explanation while preventing one response from multiplying the log size or
+# exhausting memory. The credentials at the tail prove redaction still runs
+# after truncation.
+tg_log_dir="$tg_dir/logs"
+mkdir -p "$tg_log_dir"
+chmod 777 "$tg_log_dir"
+# shellcheck disable=SC2016  # the pattern must reach sed with its $ intact
+tg_huge_log_limit="$(sed -n 's/^MAX_LOG_BYTES="\${RESTIC_LOG_MAX_BYTES:-\([0-9][0-9]*\)}".*$/\1/p' /restic.sh)"
+case "$tg_huge_log_limit" in
+    ''|*[!0-9]*)
+        bad "could not read the log limit for the oversized Telegram response test"
+        tg_huge_log_limit=262144
+        ;;
+esac
+printf '#!/bin/sh\ndd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr "\\000" x\nprintf "\\nrejected 123456:selftest @selftest_channel\\n401\\n"\n' \
+    > "$tg_dir/curl"
+chmod 755 "$tg_dir/curl"
+seed_status 1
+PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_MAX_AGE=60 \
+    RESTIC_LOG_DIR="$tg_log_dir" /restic.sh check-freshness \
+    >/tmp/selftest-tg-huge.log 2>&1
+tg_huge_rc=$?
+tg_huge_run_log="$(find "$tg_log_dir" -maxdepth 1 -name '*.log' -type f -print -quit)"
+same "an oversized Telegram response does not change the run status" 2 "$tg_huge_rc"
+if [ -n "$tg_huge_run_log" ]; then
+    tg_huge_log_bytes="$(wc -c < "$tg_huge_run_log")"
+    if [ "$tg_huge_log_bytes" -le $(( tg_huge_log_limit + 4096 )) ]; then
+        ok "an oversized Telegram response keeps the run log bounded (${tg_huge_log_bytes} bytes)"
+    else
+        bad "an oversized Telegram response grew the run log to ${tg_huge_log_bytes} bytes"
+    fi
+    same "an oversized Telegram response still records the HTTP status" 1 \
+        "$(grep -c 'Telegram notification failed (HTTP 401)' "$tg_huge_run_log")"
+    same "an oversized Telegram response still redacts the token" 0 \
+        "$(grep -c '123456:selftest' "$tg_huge_run_log")"
+    same "an oversized Telegram response still redacts the chat id" 0 \
+        "$(grep -c '@selftest_channel' "$tg_huge_run_log")"
+else
+    bad "the oversized Telegram response test did not create a run log"
+fi
+
 TELEGRAM_BOT_TOKEN='123456:selftest' /restic.sh snapshots \
     >/tmp/selftest-tg-half.log 2>&1
 same "a Telegram token without a chat id is rejected" 2 "$?"
