@@ -617,7 +617,14 @@ check_freshness() {
                send_telegram "Backup did not finish"
                heartbeat fail
                exit 2 ;;
-            2) log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}" ;;
+            2)
+                log echo -e "${Y}Cannot inspect the backup lock; leaving the running state untouched${X}"
+                # A stale timestamp is not enough to override an unknown lock:
+                # the lock may belong to the backup that wrote state=running.
+                # Stop here instead of replacing that evidence with a false
+                # stale-backup failure.
+                return 0
+                ;;
         esac
     fi
 
