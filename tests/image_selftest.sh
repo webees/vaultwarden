@@ -1037,6 +1037,36 @@ else
     bad "the drill below carries only ${hot_bytes} bytes and would not exercise the cap"
 fi
 
+# A process already answering on the drill's port must not make a failed
+# Vaultwarden boot look healthy. The sentinel is written before the boot starts,
+# so accepting any unrelated HTTP 200 falsely reported a successful drill.
+port_dir="$(mktemp -d /tmp/restic-port.XXXXXX)"
+printf 'OK\n' > "$port_dir/alive"
+printf '{\n\tauto_https off\n\tadmin off\n}\n:18081 {\n\troot * %s\n\tfile_server\n}\n' \
+    "$port_dir" > "$port_dir/Caddyfile"
+caddy run --config "$port_dir/Caddyfile" >"$port_dir/caddy.log" 2>&1 &
+port_pid=$!
+port_ready=0
+for _ in $(seq 1 30); do
+    if wget -qO- http://127.0.0.1:18081/alive >/dev/null 2>&1; then
+        port_ready=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$port_ready" = "1" ]; then
+    /restic.sh restore-test >/tmp/selftest-port-collision.log 2>&1
+    port_collision_rc=$?
+    same "restore drill rejects an unrelated listener on its boot port" 2 "$port_collision_rc"
+    same "restore drill reports the failed boot instead of a false pass" 0 \
+        "$(grep -c 'kept the restored database' /tmp/selftest-port-collision.log)"
+else
+    bad "could not start the restore-drill port collision fixture"
+fi
+kill "$port_pid" 2>/dev/null || true
+wait "$port_pid" 2>/dev/null || true
+rm -rf "$port_dir"
+
 /restic.sh restore-test >/tmp/selftest-drill.log 2>&1
 same "restore drill succeeds" 0 "$?"
 # The snapshot carries the consistent hot copy instead of the live db.* files,

@@ -244,10 +244,11 @@ database: the machine keeps running on the database it already has, and the reas
 Fix the file and restart to retry, instead of booting on a database Vaultwarden cannot open.
 
 `/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
-Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong. It runs
-monthly, an hour after the integrity check, and a failure emails the operator, notifies Telegram and
-records `state=failed` in `/data/backup-status.txt`, so a snapshot that stops being restorable is not
-discovered for the first time during a real recovery.
+Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong. The boot
+process must remain alive after answering `/alive`; an unrelated listener on the fixed drill port cannot turn
+a failed boot into a false pass. It runs monthly, an hour after the integrity check, and a failure emails the
+operator, notifies Telegram and records `state=failed` in `/data/backup-status.txt`, so a snapshot that stops
+being restorable is not discovered for the first time during a real recovery.
 
 ## 🧯 Troubleshooting
 
