@@ -460,6 +460,26 @@ same "an oversized marker is not accepted as fresh" 0 \
 same "an oversized marker is left untouched for diagnosis" "$oversized_marker_before" \
     "$(cksum < /data/backup-status.txt)"
 
+# Opening a FIFO blocks until a writer appears. A runtime replacement of the
+# marker must fail closed immediately instead of wedging the only hourly
+# freshness check with no supercronic timeout above it.
+rm -f /data/backup-status.txt
+mkfifo /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+timeout 5 /restic.sh check-freshness >/tmp/selftest-special-marker.log 2>&1
+special_marker_rc=$?
+same "freshness guard rejects a non-regular status marker" 2 "$special_marker_rc"
+same "freshness guard names the non-regular status marker" 1 \
+    "$(grep -c 'is not a regular file; backup freshness is unknown' \
+        /tmp/selftest-special-marker.log)"
+if [ -p /data/backup-status.txt ]; then
+    ok "a non-regular marker is left untouched for diagnosis"
+else
+    bad "a non-regular marker was modified instead of rejected"
+fi
+rm -f /data/backup-status.txt
+seed_status "$(date -u +%s)"
+
 # The log directory has its own cap, but the volume also holds attachments, the
 # icon cache and the database. Once it fills, Vaultwarden's writes and the
 # backup fail together, and a Fly volume can only be grown by migrating the

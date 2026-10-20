@@ -197,9 +197,9 @@ fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite th
 
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
-scheduler is still alive. An unreadable or larger-than-4-KiB marker, a missing `last_success` field, a
-non-numeric or overflowing timestamp, a timestamp from the future, or a recorded `state=failed`/unusable state is
-reported instead of being read as a fresh backup. The malformed file is left in place for diagnosis. A scheduler that has stopped firing
+scheduler is still alive. An unreadable, non-regular, symlinked or larger-than-4-KiB marker, a missing
+`last_success` field, a non-numeric or overflowing timestamp, a timestamp from the future, or a recorded
+`state=failed`/unusable state is reported instead of being read as a fresh backup. The malformed file is left in place for diagnosis. A scheduler that has stopped firing
 entirely is caught by the external watchdog in
 `.github/workflows/dependency_updates.yml`: it runs the same check against the live app every two hours and
 after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
