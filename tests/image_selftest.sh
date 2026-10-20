@@ -142,6 +142,9 @@ rm -f "$config_backup"
 cat > /data/config.json <<'JSON'
 {
   "admin_token": "selftest-admin-token",
+  "smtp_host": "smtp.selftest.invalid",
+  "smtp_port": 2525,
+  "smtp_from": "sender.selftest.invalid",
   "smtp_username": "selftest-smtp-user",
   "smtp_password": "selftest-smtp-password",
   "signups_allowed": true
@@ -154,10 +157,18 @@ same "the config.json warning names the overriding admin_token" 1 \
     "$(printf '%s\n' "$entry_out" | grep -c 'admin_token')"
 same "the config.json warning names the overriding smtp_password" 1 \
     "$(printf '%s\n' "$entry_out" | grep -c 'smtp_password')"
+same "the config.json warning names the overriding smtp_host" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'smtp_host')"
+same "the config.json warning names the overriding smtp_port" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'smtp_port')"
+same "the config.json warning names the overriding smtp_from" 1 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'smtp_from')"
 same "the config.json warning names the overriding signups_allowed" 1 \
     "$(printf '%s\n' "$entry_out" | grep -c 'signups_allowed')"
 same "the config.json warning does not print the secret value" 0 \
     "$(printf '%s\n' "$entry_out" | grep -c 'selftest-smtp-password')"
+same "the config.json warning does not print the SMTP host value" 0 \
+    "$(printf '%s\n' "$entry_out" | grep -c 'smtp.selftest.invalid')"
 if [ -f "$config_backup" ]; then
     mv "$config_backup" /data/config.json
 else
