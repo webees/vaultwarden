@@ -72,9 +72,17 @@ write_status() {
     printf -v body 'state=%s\nupdated_at=%s\nlast_success=%s\nmessage=%s\n' \
         "$state" "$now" "$LAST_SUCCESS" "$message"
     # Atomic rename when the log volume is writable, in-place fallback otherwise
-    printf '%s' "$body" > "$tmp" 2>/dev/null && mv "$tmp" "$STATUS_FILE" 2>/dev/null && return 0
-    rm -f "$tmp"
-    printf '%s' "$body" > "$STATUS_FILE" 2>/dev/null || true
+    if ! [ -d "$STATUS_FILE" ] \
+        && printf '%s' "$body" > "$tmp" \
+        && mv "$tmp" "$STATUS_FILE"; then
+        return 0
+    fi
+    rm -f "$tmp" || echo "Warning: cannot remove ${tmp}" >&2
+    if printf '%s' "$body" > "$STATUS_FILE"; then
+        return 0
+    fi
+    echo "Error: cannot write ${STATUS_FILE}; backup state was not recorded" >&2
+    return 1
 }
 
 # The volume guard and the monthly verify are not backup runs, and `state` is the
@@ -426,7 +434,11 @@ backup() {
 
     # Only the run that owns the lock may publish "running": a skipped run that
     # wrote it first would erase the state the live run is maintaining.
-    write_status running "Backup started"
+    if ! write_status running "Backup started"; then
+        echo "Cannot record backup start state" >&2
+        CURRENT_STEP="Cannot record backup start state"
+        exit 2
+    fi
     clear_stale_locks
 
     # Initialise only when the repository really is missing (restic exit code 10).
@@ -460,7 +472,11 @@ backup() {
     trim_logs || trim_message=" (log trim failed)"
 
     LAST_SUCCESS="$(date -u +%s)"
-    write_status ok "Backup complete${trim_message}"
+    if ! write_status ok "Backup complete${trim_message}"; then
+        echo "Cannot record backup completion state" >&2
+        CURRENT_STEP="Cannot record backup completion state"
+        exit 2
+    fi
     log echo -e "${G}Backup process complete ✨${X}"
     # Every hourly alert — success or failure — stays on Telegram. Repeating an
     # email 24 times a day trains the operator to filter it, so email is kept
