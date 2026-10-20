@@ -147,6 +147,25 @@ fi
 
 # ── restic.sh ────────────────────────────────────────────────────────────────
 echo "--- restic.sh"
+
+# Freshness and disk guards do not read the repository, so a missing repository
+# password must not disable the two jobs that detect a silent backup failure or
+# a filling volume. Repository commands still require the password.
+now="$(date -u +%s)"
+printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=guard-without-password\n' \
+    "$now" "$now" > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+env -u RESTIC_PASSWORD /restic.sh check-freshness >/tmp/selftest-fresh-no-password.log 2>&1
+same "freshness guard runs without the repository password" 0 "$?"
+same "freshness guard still checks the marker without the password" 1 \
+    "$(grep -c 'Last successful backup was' /tmp/selftest-fresh-no-password.log)"
+env -u RESTIC_PASSWORD /restic.sh check-disk >/tmp/selftest-disk-no-password.log 2>&1
+same "disk guard runs without the repository password" 0 "$?"
+same "disk guard still checks usage without the password" 1 \
+    "$(grep -c '/data is .*% full' /tmp/selftest-disk-no-password.log)"
+env -u RESTIC_PASSWORD /restic.sh snapshots >/tmp/selftest-snapshots-no-password.log 2>&1
+same "repository commands still require the password" 1 "$?"
+
 export RESTIC_PASSWORD=selftest
 export RESTIC_REPOSITORY=/tmp/selftest-repo
 mkdir -p "$RESTIC_REPOSITORY"
