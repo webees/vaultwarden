@@ -310,6 +310,48 @@ sed -n 's/^message=//p' /data/backup-status.txt | grep -Fq 'Cannot create backup
         print(combined(result), file=sys.stderr)
 
 
+def check_log_rotation_failure(image: str) -> None:
+    """A log that cannot be capped must not leave a healthy backup marker."""
+    script = r"""
+set -eu
+rm -rf /data/restic-logs
+mkdir -p /data/restic-logs /tmp/stub
+chown vaultwarden:vaultwarden /data /data/restic-logs
+dd if=/dev/zero of=/data/restic-logs/unreadable.log bs=1024 count=64 2>/dev/null
+chown root:root /data/restic-logs/unreadable.log
+chmod 000 /data/restic-logs/unreadable.log
+printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/restic
+printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/sqlite3
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in *fail*) printf "fail\n" >> /tmp/heartbeat-calls ;; esac' \
+    > /tmp/stub/curl
+chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
+    RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1048576 \
+    HEALTHCHECK_URL=http://health.invalid/ping \
+    /restic.sh backup >/tmp/unreadable-backup.log 2>&1
+grep -Fq 'cannot enforce the per-file log cap' /tmp/unreadable-backup.log
+grep -Fq 'message=Backup complete (log trim failed)' /data/backup-status.txt
+[ "$(grep -c '^fail$' /tmp/heartbeat-calls)" -eq 1 ]
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("an uncappable log is recorded as a backup warning")
+    else:
+        suite.bad("an uncappable log leaves a healthy backup marker")
+        print(combined(result), file=sys.stderr)
+
+
 def check_app_exit_stops_stack(image: str) -> None:
     """Vaultwarden is authoritative: Fly must restart the whole container."""
     container = start_stack(
@@ -963,6 +1005,7 @@ def main() -> int:
     check_services_requires_unprivileged_user(image)
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
+    check_log_rotation_failure(image)
     check_app_exit_stops_stack(image)
     check_required_tools(image)
     check_smtp_delivery(work, image)

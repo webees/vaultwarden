@@ -337,20 +337,33 @@ log_dir_size() {
 }
 
 # Drop logs older than 10 hours, cap oversized files, then trim the directory.
-# Returns non-zero when the directory is still above the cap: a silent no-op
-# here lets the volume fill while every run keeps recording success.
+# Any failed deletion or truncation is a warning, even when the directory as a
+# whole is still below its cap: otherwise a per-file limit can fail silently.
 trim_logs() {
-    find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete 2>/dev/null || true
-    local file size tmp total
+    local file size tmp total failed=0
+    if ! find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete; then
+        echo "Warning: could not remove expired logs from ${LOG_DIR}" >&2
+        failed=1
+    fi
     for file in "$LOG_DIR"/*.log; do
         [ -f "$file" ] || continue
-        size=$(wc -c < "$file" 2>/dev/null || echo 0)
+        if ! size="$(wc -c < "$file")"; then
+            echo "Warning: cannot enforce the per-file log cap for ${file}" >&2
+            failed=1
+            continue
+        fi
         if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
             tmp="${file}.tmp.$$"
             if tail -c "$MAX_LOG_BYTES" "$file" > "$tmp"; then
-                mv "$tmp" "$file" || rm -f "$tmp"
+                if ! mv "$tmp" "$file"; then
+                    echo "Warning: cannot replace oversized log ${file}" >&2
+                    rm -f "$tmp"
+                    failed=1
+                fi
             else
+                echo "Warning: cannot enforce the per-file log cap for ${file}" >&2
                 rm -f "$tmp"
+                failed=1
             fi
         fi
     done
@@ -358,19 +371,34 @@ trim_logs() {
         echo "Warning: cannot read ${LOG_DIR}; the log directory cap was not checked" >&2
         return 1
     fi
-    [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && return 0
-    while IFS= read -r file; do
-        [ -e "$file" ] || continue
-        [ "$file" = "$LOG" ] && continue
-        size="$(stat -c '%s' "$file" 2>/dev/null || echo 0)"
-        if rm -f "$file"; then
-            total=$(( total - size ))
-            [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && return 0
-        fi
-    done < <(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%Y %n' {} + 2>/dev/null \
-        | sort -n | cut -d' ' -f2-)
-    echo "Warning: log directory holds ${total} bytes, above the ${MAX_LOG_DIR_BYTES} byte cap and could not be trimmed" >&2
-    return 1
+    if [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; then
+        while IFS= read -r file; do
+            [ -e "$file" ] || continue
+            [ "$file" = "$LOG" ] && continue
+            if ! size="$(stat -c '%s' "$file")"; then
+                echo "Warning: cannot size log ${file} while trimming ${LOG_DIR}" >&2
+                failed=1
+                continue
+            fi
+            if rm -f "$file"; then
+                total=$(( total - size ))
+                [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && break
+            else
+                echo "Warning: cannot remove log ${file} while trimming ${LOG_DIR}" >&2
+                failed=1
+            fi
+        done < <(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%Y %n' {} + 2>/dev/null \
+            | sort -n | cut -d' ' -f2-)
+    fi
+    if [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; then
+        echo "Warning: log directory holds ${total} bytes, above the ${MAX_LOG_DIR_BYTES} byte cap and could not be trimmed" >&2
+        return 1
+    fi
+    if [ "$failed" -ne 0 ]; then
+        echo "Warning: log maintenance could not enforce every retention or file-size limit in ${LOG_DIR}" >&2
+        return 1
+    fi
+    return 0
 }
 
 # Backup, check and prune
