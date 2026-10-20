@@ -337,9 +337,10 @@ Fly health checks). The admin panel at `/admin` is served on allowed hosts and r
 replaced with `?redacted`, because one-time credentials and addresses do not belong in request logs;
 the path remains visible for diagnosis.
 
-The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` orchestrates three small modules
-for filesystem setup, pending restores and SMTP configuration, then drops privileges with `su-exec` before
-starting `/services.sh`, which owns the static three-process table. Because Vaultwarden can write under
+The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` orchestrates four small modules
+for filesystem setup, `config.json` hardening, pending restores and SMTP configuration, then drops
+privileges with `su-exec` before starting `/services.sh`, which owns the static three-process table.
+Because Vaultwarden can write under
 `/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
 links with private files/directories, keeps `msmtp.log` at mode 0600, and refuses to chmod or chown a
 symlinked `config.json`.
