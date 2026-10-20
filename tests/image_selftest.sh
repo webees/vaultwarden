@@ -418,6 +418,7 @@ rm -rf "$unknown_curl_dir"
 mkdir -p "$unknown_curl_dir"
 : > "$unknown_tg_calls"
 : > "$unknown_hb_calls"
+chmod 666 "$unknown_tg_calls" "$unknown_hb_calls"
 printf '#!/bin/sh\ncase "$*" in\n  *api.telegram.org*) printf "telegram\\n" >> "%s"; printf "{\\"ok\\":true}\\n200\\n" ;;\n  *health.invalid*) printf "fail\\n" >> "%s" ;;\n  *) exit 1 ;;\nesac\n' \
     "$unknown_tg_calls" "$unknown_hb_calls" > "$unknown_curl_dir/curl"
 chmod 755 "$unknown_curl_dir/curl"
