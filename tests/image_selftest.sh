@@ -435,6 +435,31 @@ same "a missing last_success is not reported as no data" 0 \
 same "a malformed marker is left untouched for diagnosis" "$missing_marker_before" \
     "$(cksum < /data/backup-status.txt)"
 
+# The status marker is a small, generated file. Reading it without a cap makes
+# a corrupt or hostile volume able to turn every hourly freshness check into an
+# unbounded memory allocation. Reject the marker instead of parsing a prefix as
+# if the complete file were valid.
+seed_status "$(date -u +%s)"
+padding=$((4096 - $(wc -c < /data/backup-status.txt)))
+awk -v count="$padding" 'BEGIN {for (i = 0; i < count; i++) printf "x"}' \
+    >> /data/backup-status.txt
+BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-marker-at-limit.log 2>&1
+same "freshness guard accepts a marker exactly at 4096 bytes" 0 "$?"
+same "a marker at the size limit is still checked normally" 1 \
+    "$(grep -c 'Last successful backup was' /tmp/selftest-marker-at-limit.log)"
+
+printf 'x' >> /data/backup-status.txt
+oversized_marker_before="$(cksum < /data/backup-status.txt)"
+BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-oversized-marker.log 2>&1
+oversized_marker_rc=$?
+same "freshness guard rejects an oversized status marker" 2 "$oversized_marker_rc"
+same "freshness guard names the status marker size limit" 1 \
+    "$(grep -c 'exceeds 4096 bytes' /tmp/selftest-oversized-marker.log)"
+same "an oversized marker is not accepted as fresh" 0 \
+    "$(grep -c 'Last successful backup was' /tmp/selftest-oversized-marker.log)"
+same "an oversized marker is left untouched for diagnosis" "$oversized_marker_before" \
+    "$(cksum < /data/backup-status.txt)"
+
 # The log directory has its own cap, but the volume also holds attachments, the
 # icon cache and the database. Once it fills, Vaultwarden's writes and the
 # backup fail together, and a Fly volume can only be grown by migrating the
