@@ -49,7 +49,7 @@ jobs:
         id: base
         run: scripts/deps.sh base
 
-      - name: 🧰 Resolve supercronic and overmind
+      - name: 🧰 Resolve supercronic
         id: tools
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,10 +63,7 @@ jobs:
             VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
             SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
             SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
-            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}" \
-            OVERMIND_VERSION="${{ steps.tools.outputs.overmind_version }}" \
-            OVERMIND_SHA256_amd64="${{ steps.tools.outputs.overmind_sha_amd64 }}" \
-            OVERMIND_SHA256_arm64="${{ steps.tools.outputs.overmind_sha_arm64 }}"
+            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
 
       - name: 📦 Compare the Alpine packages
         id: apk
@@ -80,10 +77,7 @@ jobs:
             VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
             SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
             SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
-            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}" \
-            OVERMIND_VERSION="${{ steps.tools.outputs.overmind_version }}" \
-            OVERMIND_SHA256_amd64="${{ steps.tools.outputs.overmind_sha_amd64 }}" \
-            OVERMIND_SHA256_arm64="${{ steps.tools.outputs.overmind_sha_arm64 }}"
+            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
           docker build --tag dependency-check:local .
           docker run --rm --entrypoint caddy dependency-check:local \
             validate --config /Caddyfile --adapter caddyfile
@@ -96,7 +90,6 @@ jobs:
           VERSION: ${{ steps.base.outputs.version }}
           DIGEST: ${{ steps.base.outputs.digest }}
           SUPERCRONIC: ${{ steps.tools.outputs.supercronic_version }}
-          OVERMIND: ${{ steps.tools.outputs.overmind_version }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
@@ -116,7 +109,6 @@ jobs:
             echo "| :--- | :--- |"
             echo "| vaultwarden/server | ${VERSION}-alpine @ ${DIGEST} |"
             echo "| supercronic | ${SUPERCRONIC} |"
-            echo "| overmind | ${OVERMIND} |"
             echo
             echo "Alpine package updates available inside the base image (\`${APK_COUNT:-0}\`):"
             echo
