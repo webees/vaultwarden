@@ -903,6 +903,51 @@ same "an unreadable log directory is reported as unreadable" 1 \
 same "an unreadable log directory is not measured as an empty one" 0 \
     "$(printf '%s\n' "$blocked_out" | grep -c 'integer expected')"
 
+# Repository commands can echo the configured endpoint or credentials in a
+# transport error. The snapshots path used to bypass the bounded capture in
+# run(), so a backend could both fill the container log and expose every
+# secret it chose to repeat.
+leak_stub_dir=/tmp/selftest-leak-stub
+mkdir -p "$leak_stub_dir"
+cat > "$leak_stub_dir/restic" <<'EOF'
+#!/bin/sh
+case "$*" in
+    unlock) exit 0 ;;
+    snapshots*)
+        dd if=/dev/zero bs=1024 count=64 2>/dev/null | tr '\000' x
+        printf '\nrepository=%s\npassword=%s\naws-access=%s\naws-secret=%s\nsmtp-password=%s\nsmtp-recipient=%s\ndomain=%s\n' \
+            "$RESTIC_REPOSITORY" "$RESTIC_PASSWORD" "$AWS_ACCESS_KEY_ID" \
+            "$AWS_SECRET_ACCESS_KEY" "$SMTP_PASSWORD" "$SMTP_TO" "$DOMAIN"
+        ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$leak_stub_dir/restic"
+leak_output=/tmp/selftest-secret-output.log
+PATH="$leak_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
+    RESTIC_REPOSITORY=selftest-repository-secret \
+    RESTIC_PASSWORD=selftest-restic-password \
+    AWS_ACCESS_KEY_ID=selftest-aws-access \
+    AWS_SECRET_ACCESS_KEY=selftest-aws-secret \
+    SMTP_PASSWORD=selftest-smtp-password \
+    SMTP_TO=selftest-recipient@invalid \
+    DOMAIN=selftest-domain.invalid \
+    /restic.sh snapshots > "$leak_output" 2>&1
+leak_rc=$?
+same "a successful repository query stays successful after output filtering" 0 "$leak_rc"
+same "repository query output is bounded" 1 \
+    "$([ "$(wc -c < "$leak_output")" -le 8192 ] && echo 1 || echo 0)"
+same "repository query output is visibly redacted" 1 \
+    "$(grep -q '<redacted>' "$leak_output" && echo 1 || echo 0)"
+for leaked in selftest-repository-secret selftest-restic-password \
+    selftest-aws-access selftest-aws-secret selftest-smtp-password \
+    selftest-domain.invalid; do
+    same "repository query output does not expose ${leaked}" 0 \
+        "$(grep -Fc "$leaked" "$leak_output")"
+done
+rm -rf "$leak_stub_dir"
+rm -f "$leak_output"
+
 # A backend that never answers must be killed by the command timeout and
 # recorded as a failure, instead of holding the lock until the next run.
 stub_dir=/tmp/selftest-stub
