@@ -21,19 +21,24 @@ replace_unsafe_path() {
 }
 
 prepare_filesystem() {
-    local status_file=/data/backup-status.txt
+    local status_file=/data/backup-status.txt mail_log=/data/restic-logs/msmtp.log
     mkdir -p /data /app
     replace_unsafe_path /data/restic-logs dir
     replace_unsafe_path "$status_file" file
+    replace_unsafe_path "$mail_log" file
     mkdir -p /data/restic-logs
     if [ ! -f "$status_file" ]; then
         printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=No backup run recorded\n' \
             > "$status_file"
     fi
+    if [ ! -f "$mail_log" ]; then
+        : > "$mail_log"
+    fi
 
     chown -R vaultwarden:vaultwarden /data /app
     chmod 0700 /data/restic-logs
     chmod 0600 "$status_file"
+    chmod 0600 "$mail_log"
 }
 
 # The admin panel persists every non-default setting, secrets included, in

@@ -292,7 +292,7 @@ fly apps restart               # Restart all instances
 
 ```bash
 cat /data/restic-logs/*.log     # Check persisted backup logs
-cat /data/restic-logs/msmtp.log # Delivery log written by the alert mailer
+cat /data/restic-logs/msmtp.log # Owner-only delivery log written by the alert mailer
 fly logs                        # Container output, including mailer errors
 ```
 
@@ -340,7 +340,8 @@ The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` orch
 for filesystem setup, pending restores and SMTP configuration, then drops privileges with `su-exec` before
 starting `/services.sh`, which owns the static three-process table. Because Vaultwarden can write under
 `/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
-links with private files/directories, and it refuses to chmod or chown a symlinked `config.json`.
+links with private files/directories, keeps `msmtp.log` at mode 0600, and refuses to chmod or chown a
+symlinked `config.json`.
 
 ## 📝 License
 
