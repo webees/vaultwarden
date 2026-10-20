@@ -916,6 +916,84 @@ def check_restore_chown_failure(image: str) -> None:
     suite.report()
 
 
+def check_restore_drill_bind_policy(image: str) -> None:
+    """The temporary restored server must be loopback-only with signups disabled."""
+    container = start_stack(
+        image,
+        f"restore-policy-{os.getpid()}",
+        {"SUPERVISE_RESTART_DELAY": "0.1"},
+    )
+    if not wait_for_alive(container):
+        suite.bad("the restore-policy probe never became ready")
+        print(access_log(container), file=sys.stderr)
+        suite.report()
+
+    fixture_dir = Path(tempfile.mkdtemp(prefix="restore-policy-key-"))
+    temp_dirs.append(fixture_dir)
+    private_key = fixture_dir / "rsa_key.pem"
+    run(
+        "openssl",
+        "genpkey",
+        "-algorithm",
+        "RSA",
+        "-pkeyopt",
+        "rsa_keygen_bits:2048",
+        "-out",
+        str(private_key),
+    )
+    docker("cp", str(private_key), f"{container}:/data/rsa_key.pem")
+
+    script = r"""
+set -eu
+rm -rf /tmp/restore-policy-repo /tmp/drill-runtime-env /tmp/drill.log /tmp/backup.log
+mkdir /tmp/restore-policy-repo
+chown vaultwarden:vaultwarden /tmp/restore-policy-repo
+chown vaultwarden:vaultwarden /data/rsa_key.pem
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/restore-policy-repo \
+    /restic.sh backup >/tmp/backup.log 2>&1
+mv /vaultwarden /vaultwarden.real
+cat > /vaultwarden <<'EOF'
+#!/bin/sh
+printf 'ROCKET_ADDRESS=%s\nCONFIG_FILE=%s\n' \
+    "${ROCKET_ADDRESS:-}" "${CONFIG_FILE:-}" > /tmp/drill-runtime-env
+if [ -n "${CONFIG_FILE:-}" ] \
+    && grep -Fqx '{"signups_allowed": false}' "$CONFIG_FILE"; then
+    printf 'SIGNUPS_DISABLED=true\n' >> /tmp/drill-runtime-env
+else
+    printf 'SIGNUPS_DISABLED=false\n' >> /tmp/drill-runtime-env
+fi
+exec /vaultwarden.real "$@"
+EOF
+chmod +x /vaultwarden
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/restore-policy-repo \
+    /restic.sh restore-test >/tmp/drill.log 2>&1
+grep -qx 'ROCKET_ADDRESS=127.0.0.1' /tmp/drill-runtime-env
+grep -qx 'SIGNUPS_DISABLED=true' /tmp/drill-runtime-env
+"""
+    result = docker(
+        "exec",
+        container,
+        "sh",
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("the restore drill is loopback-only and refuses new signups")
+    else:
+        suite.bad("the restore drill is reachable beyond loopback or permits new signups")
+        print(combined(result), file=sys.stderr)
+        logs = docker(
+            "exec",
+            container,
+            "sh",
+            "-c",
+            "cat /tmp/drill.log /tmp/backup.log",
+            check=False,
+        )
+        print(logs.stdout, file=sys.stderr)
+
+
 def check_entrypoint_symlink_safety(image: str) -> None:
     """Root must not chown or chmod files reached through links under /data."""
     container = scratch(image, f"entrypoint-links-{os.getpid()}")
@@ -1085,6 +1163,7 @@ def main() -> int:
     check_restore_with_corrupt_hot_copy(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
+    check_restore_drill_bind_policy(image)
     check_entrypoint_symlink_safety(image)
     check_restore_swap_failure(image)
     check_log_mode(image)
