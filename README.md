@@ -216,7 +216,8 @@ reads to tell a backup that started but never finished, and the guard runs befor
 > `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
 > run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
 > `backup.bak` and `rsa_key.pem`, runs SQLite `PRAGMA integrity_check`, and cold-boots Vaultwarden against
-> the restored database without touching the live volume. The in-place restore refuses to run unless
+> the restored database on loopback with a temporary config that forces registration off, without touching
+> the live volume. The in-place restore refuses to run unless
 > `RESTORE_CONFIRM=yes` is set, because Vaultwarden keeps `db.sqlite3` open while it runs.
 >
 > Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
