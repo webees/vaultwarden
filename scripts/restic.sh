@@ -67,13 +67,68 @@ fi
 CURRENT_STEP=""
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+# Diagnostics can repeat whatever the backend sent on stderr. Never persist a
+# configured credential or private endpoint verbatim in a run log. Keep longer
+# values too: the exact repository URL, mail recipient and host names are
+# personal infrastructure data even when they are not authentication secrets.
+SENSITIVE_VALUES=()
+add_sensitive_value() {
+    local value="${1:-}" existing
+    [ -n "$value" ] || return 0
+    for existing in "${SENSITIVE_VALUES[@]}"; do
+        [ "$existing" = "$value" ] && return 0
+    done
+    SENSITIVE_VALUES+=("$value")
+}
+while IFS='=' read -r name value; do
+    case "$name" in
+        *_PASSWORD|*_TOKEN|*_SECRET|*_PRIVATE_KEY|*_API_KEY|\
+        AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|\
+        RESTIC_REPOSITORY|SMTP_HOST|SMTP_FROM|SMTP_TO|TELEGRAM_CHAT_ID|\
+        HEALTHCHECK_URL|CADDY_DOMAINS|DOMAIN|FLY_APP_NAME)
+            add_sensitive_value "$value"
+            ;;
+    esac
+done < <(env)
+
 # ANSI colors
 R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
-# Log output to file and stdout
-log() { "$@" 2>&1 | tee -a "$LOG"; }
+redact_raw() {
+    local body="$1" value
+    for value in "${SENSITIVE_VALUES[@]}"; do
+        body="${body//"$value"/<redacted>}"
+    done
+    printf '%s' "$body"
+}
+
+redact_file() {
+    local body
+    body="$(cat "$1")" || return 2
+    redact_raw "$body"
+}
+
+# Log output to file and stdout. Both paths carry the same bounded, redacted
+# text so a diagnostic can never expose a credential that was present in the
+# process environment.
+log() {
+    local body redacted
+    body="$("$@" 2>&1)"
+    redacted="$(redact_raw "$body")"
+    [ -n "$redacted" ] && printf '%s\n' "$redacted" | tee -a "$LOG"
+    return 0
+}
+
+# A successful visible command adds log framing without losing its real exit
+# status. Pipes inherit the redaction above instead of streaming raw output.
+log_result() {
+    local status="${1:-0}"
+    shift
+    log "$@"
+    return "$status"
+}
 
 # Persist a small freshness marker for local monitoring
 write_status() {
@@ -224,7 +279,7 @@ send_mail() {
         return 0
     fi
     log echo -e "${R}Alert email failed (exit ${rc})${X}"
-    [ -n "$out" ] && log printf '%s\n' "$out"
+    [ -n "$out" ] && log redact_raw "$out"
     return 0
 }
 
@@ -334,16 +389,18 @@ cleanup_restore_tmp() {
     return 0
 }
 
-# Run command and log status
-run() {
-    local label="$1" timeout_seconds="$2" out_file raw_file rc
-    shift 2
+# Run a command, cap its bounded tail and show that tail only when requested or
+# when the command fails. Keeping one capture path also means a future call site
+# cannot accidentally opt out of redaction.
+run_command() {
+    local show_success="$1" label="$2" timeout_seconds="$3" out_file raw_file rc
+    shift 3
     CURRENT_STEP="$label"
     out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" \
         || die "Unable to create temporary output file"
     raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" \
         || { rm -f "$out_file"; die "Unable to create temporary output file"; }
-    log echo -en "${B}${label}${X} "
+    printf '%s' "$(redact_raw "${B}${label}${X} ")" | tee -a "$LOG"
     # Cap the captured stream at 8x the retained log size, so a runaway command
     # cannot fill the disk before the tail truncation runs. The cap belongs on
     # the stream: `ulimit -f` bounded every file the command wrote as well, so
@@ -362,17 +419,26 @@ run() {
     rm -f "$raw_file"
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}✓${X}"
+        if [ "$show_success" = true ] && [ -s "$out_file" ]; then
+            log_result 0 cat "$out_file"
+        fi
         rm -f "$out_file"
         return 0
     fi
     log echo -e "${R}✗${X}"
     if [ -s "$out_file" ]; then
         log echo "[output capped at ${MAX_LOG_BYTES} bytes]"
-        log cat "$out_file"
+        log redact_file "$out_file"
     fi
     rm -f "$out_file"
     exit 2
 }
+
+run() { run_command false "$@"; }
+
+# The snapshots command used to bypass run(), so an unbounded backend response
+# reached the container log with the repository URL or credentials intact.
+run_visible() { run_command true "$@"; }
 
 # ── Business Logic ────────────────────────────────────────────────────────────
 
@@ -594,7 +660,7 @@ restore_test() {
     # zero bytes made the drill proceed without knowing whether it had space.
     if ! stats_json="$(timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1)"; then
         log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
-        [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
+        [ -n "$stats_json" ] && log redact_raw "$stats_json"
         exit 2
     fi
     needed_bytes="$(printf '%s\n' "$stats_json" \
@@ -696,7 +762,7 @@ restore_test() {
         fi
     else
         log echo -e "${R}✗${X}"
-        log cat "$boot_log"
+        log redact_file "$boot_log"
         exit 2
     fi
     log echo -e "${G}Restore drill complete${X}"
@@ -956,7 +1022,7 @@ case "$command" in
     check-disk)      check_disk ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
-    snapshots)       clear_stale_locks; timed "$QUICK_TIMEOUT" restic snapshots ;;
+    snapshots)       clear_stale_locks; run_visible "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
     *)               echo "Usage: $0 {backup|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
