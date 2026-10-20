@@ -80,7 +80,14 @@ add_sensitive_value() {
     done
     SENSITIVE_VALUES+=("$value")
 }
-while IFS='=' read -r name value; do
+# NUL-delimited records keep a newline-containing secret in one value.
+while IFS= read -r -d '' record; do
+    case "$record" in
+        *=*) ;;
+        *) continue ;;
+    esac
+    name="${record%%=*}"
+    value="${record#*=}"
     case "$name" in
         *_PASSWORD|*_TOKEN|*_SECRET|*_PRIVATE_KEY|*_API_KEY|\
         AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|\
@@ -89,7 +96,7 @@ while IFS='=' read -r name value; do
             add_sensitive_value "$value"
             ;;
     esac
-done < <(env)
+done < <(env -0)
 
 # ANSI colors
 R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
@@ -658,7 +665,10 @@ restore_test() {
     # Sizing has three distinct outcomes: a real number, a successful response
     # without total_size, and a failed read. Treating either failure mode as
     # zero bytes made the drill proceed without knowing whether it had space.
-    if ! stats_json="$(timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1)"; then
+    if ! stats_json="$(
+        timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1 \
+            | tail -c "$MAX_LOG_BYTES"
+    )"; then
         log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
         [ -n "$stats_json" ] && log redact_raw "$stats_json"
         exit 2
@@ -668,10 +678,21 @@ restore_test() {
     case "$needed_bytes" in
         ''|*[!0-9]*)
             log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
-            [ -n "$stats_json" ] && log printf '%s\n' "$stats_json"
+            [ -n "$stats_json" ] && log redact_raw "$stats_json"
             exit 2
             ;;
     esac
+    case "$needed_bytes" in
+        0|[1-9]|[1-9][0-9]*) ;;
+        *)
+            log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
+            exit 2
+            ;;
+    esac
+    if [ "${#needed_bytes}" -gt 16 ]; then
+        log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
+        exit 2
+    fi
     # A failed df is not a zero-byte volume: keep the two failure modes apart so
     # the drill names the real cause instead of claiming the disk is full.
     if ! free_kb="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4}')"; then
@@ -684,6 +705,10 @@ restore_test() {
             exit 2
             ;;
     esac
+    if [ "${#free_kb}" -gt 15 ]; then
+        log echo -e "${R}Unable to read free space for the restore drill${X}"
+        exit 2
+    fi
     free_bytes=$((free_kb * 1024))
     needed_bytes=$((needed_bytes + needed_bytes / 5 + 67108864))
     if [ "$free_bytes" -lt "$needed_bytes" ]; then
