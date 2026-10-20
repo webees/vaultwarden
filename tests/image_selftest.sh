@@ -945,6 +945,17 @@ for leaked in selftest-repository-secret selftest-restic-password \
     same "repository query output does not expose ${leaked}" 0 \
         "$(grep -Fc "$leaked" "$leak_output")"
 done
+multiline_password='selftest-password-first
+selftest-password-second'
+PATH="$leak_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
+    RESTIC_REPOSITORY=selftest-repository-secret \
+    RESTIC_PASSWORD="$multiline_password" \
+    /restic.sh snapshots > "$leak_output" 2>&1
+same "a repository query with a multi-line password stays successful" 0 "$?"
+same "repository output does not expose the first password line" 0 \
+    "$(grep -Fc 'selftest-password-first' "$leak_output")"
+same "repository output does not expose the second password line" 0 \
+    "$(grep -Fc 'selftest-password-second' "$leak_output")"
 rm -rf "$leak_stub_dir"
 rm -f "$leak_output"
 
@@ -1184,13 +1195,20 @@ chmod 755 "$stats_stub_dir"
     printf 'case "$1" in\n'
     printf '  stats)\n'
     printf '    case "${STATS_MODE:-fail}" in\n'
-    printf '      empty) printf "%%s\\n" "{\\\"foo\\\":1}"; exit 0 ;;\n'
+    printf '      empty) printf \047%%s\\n\047 \047{"foo":1}\047; exit 0 ;;\n'
+    printf '      leaky) printf \047repository=%%s\\n\047 "$RESTIC_REPOSITORY"; printf \047%%s\\n\047 \047{"foo":1}\047; exit 0 ;;\n'
+    printf '      oversized) dd if=/dev/zero bs=1024 count=64 2>/dev/null | tr "\\000" x; printf "\\nrepository=%%s\\n" "$RESTIC_REPOSITORY"; printf \047%%s\\n\047 \047{"foo":1}\047; exit 0 ;;\n'
+    printf '      huge) printf \047%%s\\n\047 \047{"total_size":18446744073709551616}\047; exit 0 ;;\n'
     printf '      *) echo "stats backend unavailable" >&2; exit 1 ;;\n'
     printf '    esac ;;\n'
+    printf '  restore) printf started > /tmp/selftest-huge-restore-started; exit 0 ;;\n'
     printf '  *) exec "%s" "$@" ;;\n' "$real_restic"
     printf 'esac\n'
 } > "$stats_stub_dir/restic"
 chmod 755 "$stats_stub_dir/restic"
+oversized_fixture_bytes="$(STATS_MODE=oversized "$stats_stub_dir/restic" stats 2>/dev/null | wc -c)"
+same "the oversized stats fixture exceeds the configured cap" 1 \
+    "$([ "$oversized_fixture_bytes" -gt 4096 ] && echo 1 || echo 0)"
 
 PATH="$stats_stub_dir:$PATH" STATS_MODE=fail /restic.sh restore-test \
     >/tmp/selftest-stats-fail.log 2>&1
@@ -1203,6 +1221,31 @@ PATH="$stats_stub_dir:$PATH" STATS_MODE=empty /restic.sh restore-test \
 same "restore drill refuses a response without total_size" 2 "$?"
 same "restore drill reports the missing snapshot size" 1 \
     "$(grep -c 'Unable to size snapshot' /tmp/selftest-stats-empty.log)"
+
+PATH="$stats_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
+    RESTIC_REPOSITORY=selftest-repository-secret STATS_MODE=leaky \
+    /restic.sh restore-test >/tmp/selftest-stats-leaky.log 2>&1
+same "restore drill refuses a malformed stats response" 2 "$?"
+same "malformed stats output is redacted" 0 \
+    "$(grep -Fc 'selftest-repository-secret' /tmp/selftest-stats-leaky.log)"
+
+PATH="$stats_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
+    RESTIC_REPOSITORY=selftest-repository-secret STATS_MODE=oversized \
+    /restic.sh restore-test >/tmp/selftest-stats-oversized.log 2>&1
+same "restore drill refuses an oversized stats response" 2 "$?"
+same "oversized stats output is bounded" 1 \
+    "$([ "$(wc -c < /tmp/selftest-stats-oversized.log)" -le 8192 ] && echo 1 || echo 0)"
+same "oversized stats output is redacted" 0 \
+    "$(grep -Fc 'selftest-repository-secret' /tmp/selftest-stats-oversized.log)"
+
+rm -f /tmp/selftest-huge-restore-started
+PATH="$stats_stub_dir:$PATH" STATS_MODE=huge /restic.sh restore-test \
+    >/tmp/selftest-stats-huge.log 2>&1
+same "restore drill refuses an overflowing snapshot size" 2 "$?"
+same "an overflowing snapshot size is named" 1 \
+    "$(grep -c 'unusable snapshot size' /tmp/selftest-stats-huge.log)"
+same "an overflowing snapshot size never starts a restore" 0 \
+    "$([ -e /tmp/selftest-huge-restore-started ] && echo 1 || echo 0)"
 
 # The README promises the dead-man's-switch ping covers the restore drill and
 # uses the /fail URL when the run fails. The drill had no failure ping at all,
@@ -1252,6 +1295,14 @@ same "restore drill reports the free-space read failure" 1 \
     "$(grep -c 'Unable to read free space' /tmp/selftest-drill-df.log)"
 same "restore drill does not misreport an unreadable free-space check as a full disk" 0 \
     "$(grep -c 'Not enough free space' /tmp/selftest-drill-df.log)"
+printf '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\nx 1 1 9999999999999999 100%% /\\n"\n' \
+    > "$df_stub_dir/df"
+chmod 755 "$df_stub_dir/df"
+PATH="$df_stub_dir:$PATH" /restic.sh restore-test \
+    >/tmp/selftest-drill-df-overflow.log 2>&1
+same "restore drill refuses an overflowing free-space reading" 2 "$?"
+same "an overflowing free-space reading is reported as unreadable" 1 \
+    "$(grep -c 'Unable to read free space' /tmp/selftest-drill-df-overflow.log)"
 rm -rf "$df_stub_dir"
 
 # restore overwrites /data on purpose, so it runs last and the container is
