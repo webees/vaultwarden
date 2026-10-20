@@ -491,9 +491,9 @@ same "an uninspectable lock does not become a stale-backup success" 2 "$unknown_
 same "an uninspectable lock preserves running despite an old success" "running" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
-# The alert channels follow how often a job can repeat its warning. A job on
-# `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
-# on Telegram and only the monthly integrity check keeps the incident email.
+# The alert channels follow how often a job can repeat its warning. An hourly
+# job would repeat an email up to 24 times a day, so the hourly jobs stay on
+# Telegram and only the monthly integrity check keeps the incident email.
 # Stub the mailer so any invocation is recorded, then pin both halves.
 mail_dir=/tmp/selftest-mailer
 mail_log=/tmp/selftest-mailer.log
