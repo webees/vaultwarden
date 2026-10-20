@@ -609,6 +609,28 @@ else
     bad "a scheduled workflow runs at minute 0, when the GitHub queue is longest"
 fi
 
+# A release can restart the machine while the backup starts at the top of the
+# hour. Production hit that race during restic check: the backup was killed,
+# left a repository lock, and the post-deploy freshness probe correctly raised
+# an incident. Keep the hourly cadence but give deployment a clear margin.
+backup_jobs="$(awk '$6 == "/restic.sh" && $7 == "backup" {count++} END {print count + 0}' config/crontab)"
+backup_schedule="$(awk '$6 == "/restic.sh" && $7 == "backup" {print $1, $2, $3, $4, $5; exit}' config/crontab)"
+backup_minute="${backup_schedule%% *}"
+backup_hourly_fields="${backup_schedule#* }"
+same "exactly one hourly backup is scheduled" 1 "$backup_jobs"
+case "$backup_minute" in
+    ''|0|*[!0-9]*)
+        bad "the backup runs at minute 0 and can race a deployment restart"
+        ;;
+    *)
+        if [ "$backup_minute" -le 59 ] && [ "$backup_hourly_fields" = "* * * *" ]; then
+            ok "the hourly backup avoids the deployment window (minute ${backup_minute})"
+        else
+            bad "the backup is not an hourly schedule with a minute in 1-59"
+        fi
+        ;;
+esac
+
 # The monthly verify must not share a minute with the hourly backup: restic
 # refuses the exclusive lock by default, so the check failed instantly with
 # "repo already locked" instead of verifying anything.
@@ -1218,9 +1240,9 @@ else
     bad "README does not warn that /data/config.json overrides the Fly secrets"
 fi
 
-# The alert channels follow how often a job can repeat its warning. A job on
-# `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
-# on Telegram and only the monthly jobs keep the incident email. A regression
+# The alert channels follow how often a job can repeat its warning. An hourly
+# job would repeat an email up to 24 times a day, so the hourly jobs stay on
+# Telegram and only the monthly jobs keep the incident email. A regression
 # that routes an hourly job back through the mailer is invisible until the
 # mailbox fills, so pin the split to the source.
 for job in backup check_freshness check_disk; do
