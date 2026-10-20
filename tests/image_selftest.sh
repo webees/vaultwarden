@@ -271,6 +271,12 @@ seed_status() { # last_success epoch
 seed_status "$(date -u +%s)"
 /restic.sh check-freshness >/tmp/selftest-fresh.log 2>&1
 same "freshness guard accepts a recent backup" 0 "$?"
+now="$(date -u +%s)"
+seed_status "0${now}"
+/restic.sh check-freshness >/tmp/selftest-leading-zero.log 2>&1
+same "freshness guard reads a leading-zero timestamp as decimal" 0 "$?"
+same "a leading-zero timestamp does not hit octal arithmetic" 0 \
+    "$(grep -c 'value too great for base' /tmp/selftest-leading-zero.log)"
 seed_status 1
 BACKUP_MAX_AGE=60 /restic.sh check-freshness >/tmp/selftest-stale.log 2>&1
 stale_rc=$?
@@ -306,6 +312,20 @@ corrupt_rc=$?
 same "freshness guard refuses a corrupt last_success" 2 "$corrupt_rc"
 same "a corrupt last_success is not an arithmetic crash" 0 \
     "$(grep -c 'unbound variable\|syntax error' /tmp/selftest-corrupt.log)"
+
+# All digits are not enough to make a timestamp trustworthy. Bash arithmetic
+# wraps values above signed 64-bit, and 2^64 becomes zero. With a large
+# BACKUP_MAX_AGE the resulting "age" looked fresh even though the marker could
+# never be a real Unix timestamp.
+seed_status 18446744073709551616
+BACKUP_MAX_AGE=2000000000 /restic.sh check-freshness \
+    >/tmp/selftest-overflow.log 2>&1
+overflow_rc=$?
+same "freshness guard refuses a last_success that overflows" 2 "$overflow_rc"
+same "freshness guard names the overflowing timestamp" 1 \
+    "$(grep -c 'unusable last_success' /tmp/selftest-overflow.log)"
+same "an overflowing timestamp is recorded as failed" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
 # An existing marker that cannot be read is not a fresh volume. The guard used
 # to lower its unreadable value through an ignored pipeline, then either accept
