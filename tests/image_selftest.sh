@@ -927,6 +927,40 @@ else
 fi
 rm -f /data/restic-logs/selftest-cap-*.log
 
+# A crash during an oversized-log rewrite can leave a .log.tmp.* file behind.
+# Those files still consume the data volume, so they must count toward the
+# directory cap instead of becoming an unbounded cap bypass.
+orphan_log_dir=/data/selftest-orphan-logs
+rm -rf "$orphan_log_dir"
+mkdir -p "$orphan_log_dir"
+for i in $(seq 1 12); do
+    dd if=/dev/zero of="$orphan_log_dir/selftest-$i.log.tmp.999999" bs=1024 count=256 2>/dev/null
+done
+chown -R vaultwarden:vaultwarden "$orphan_log_dir"
+RESTIC_LOG_DIR="$orphan_log_dir" RESTIC_LOG_DIR_MAX_BYTES=1048576 \
+    /restic.sh check-disk >/tmp/selftest-orphan-cap.log 2>&1
+orphan_cap_rc=$?
+orphan_cap_after="$(du -sk "$orphan_log_dir" | awk '{print $1 * 1024}')"
+same "a log directory with temporary rewrite files still succeeds" 0 "$orphan_cap_rc"
+same "orphan log rewrite files count toward the directory cap" 1 \
+    "$([ "$orphan_cap_after" -le 1572864 ] && echo 1 || echo 0)"
+rm -rf "$orphan_log_dir"
+
+# Unknown files still consume the volume and must make an over-cap directory
+# fail loudly, but log maintenance must never delete content it does not own.
+unknown_log_dir=/data/selftest-unknown-logs
+rm -rf "$unknown_log_dir"
+mkdir -p "$unknown_log_dir"
+dd if=/dev/zero of="$unknown_log_dir/operator-data.bin" bs=1024 count=2048 2>/dev/null
+chown -R vaultwarden:vaultwarden "$unknown_log_dir"
+RESTIC_LOG_DIR="$unknown_log_dir" RESTIC_LOG_DIR_MAX_BYTES=1048576 \
+    /restic.sh check-disk >/tmp/selftest-unknown-cap.log 2>&1
+same "unknown content makes the directory cap report a breach" 1 \
+    "$(grep -c 'above the 1048576 byte cap and could not be trimmed' /tmp/selftest-unknown-cap.log)"
+same "log maintenance leaves unknown content untouched" 1 \
+    "$([ -f "$unknown_log_dir/operator-data.bin" ] && echo 1 || echo 0)"
+rm -rf "$unknown_log_dir"
+
 # The cap is only a guard if a breach is reported. A frozen log directory makes
 # every delete fail, and the script used to keep going without saying anything,
 # so the volume could fill while each run still recorded a success.

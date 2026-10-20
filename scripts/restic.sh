@@ -495,7 +495,8 @@ log_dir_size() {
     local sizes
     # A read that failed is not an empty directory: falling back to "0 bytes"
     # turned an unreadable log directory into a silent breach of the cap.
-    sizes="$(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%s' {} + 2>/dev/null)" || return 2
+    sizes="$(find "$LOG_DIR" -maxdepth 1 -type f ! -name backup.lock \
+        -exec stat -c '%s' {} + 2>/dev/null)" || return 2
     printf '%s\n' "$sizes" | awk '{total += $1} END {print total + 0}'
 }
 
@@ -504,7 +505,9 @@ log_dir_size() {
 # whole is still below its cap: otherwise a per-file limit can fail silently.
 trim_logs() {
     local file size tmp total failed=0
-    if ! find "$LOG_DIR" -name '*.log' -type f -mmin +600 ! -path "$LOG" -delete; then
+    if ! find "$LOG_DIR" -maxdepth 1 -type f \
+        \( -name '*.log' -o -name '*.log.tmp.*' \) \
+        -mmin +600 ! -path "$LOG" -delete; then
         echo "Warning: could not remove expired logs from ${LOG_DIR}" >&2
         failed=1
     fi
@@ -550,7 +553,12 @@ trim_logs() {
                 echo "Warning: cannot remove log ${file} while trimming ${LOG_DIR}" >&2
                 failed=1
             fi
-        done < <(find "$LOG_DIR" -name '*.log' -type f -exec stat -c '%Y %n' {} + 2>/dev/null \
+        # Include interrupted *.log.tmp.* rewrites in the cap. Only delete files
+        # this script owns; an unrelated file can trigger the warning above but
+        # must never be removed by log maintenance.
+        done < <(find "$LOG_DIR" -maxdepth 1 -type f \
+            \( -name '*.log' -o -name '*.log.tmp.*' \) ! -path "$LOG" \
+            -exec stat -c '%Y %n' {} + 2>/dev/null \
             | sort -n | cut -d' ' -f2-)
     fi
     if [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; then
