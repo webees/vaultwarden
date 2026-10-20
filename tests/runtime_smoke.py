@@ -310,6 +310,51 @@ sed -n 's/^message=//p' /data/backup-status.txt | grep -Fq 'Cannot create backup
         print(combined(result), file=sys.stderr)
 
 
+def check_freshness_uptime_read_failure(image: str) -> None:
+    """A missing instance age must fail closed, not look like a new volume."""
+    script = r"""
+set -eu
+chown -R vaultwarden:vaultwarden /data
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=No backup recorded\n' \
+    >/data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+mkdir -p /tmp/stub
+printf '#!/bin/sh\nexit 9\n' >/tmp/stub/cut
+chmod +x /tmp/stub/cut
+rc=0
+PATH="/tmp/stub:$PATH" BACKUP_MAX_AGE=7200 \
+    /restic.sh check-freshness >/tmp/freshness-uptime.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'Cannot determine the instance age' /tmp/freshness-uptime.log
+grep -qx 'state=failed' /data/backup-status.txt
+
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=No backup recorded\n' \
+    >/data/backup-status.txt
+printf '#!/bin/sh\nprintf "not-a-number\\n"\n' >/tmp/stub/cut
+rc=0
+PATH="/tmp/stub:$PATH" BACKUP_MAX_AGE=7200 \
+    /restic.sh check-freshness >/tmp/freshness-uptime.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'Cannot determine the instance age' /tmp/freshness-uptime.log
+grep -qx 'state=failed' /data/backup-status.txt
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("an unreadable or malformed instance age fails the freshness guard")
+    else:
+        suite.bad("an unreadable or malformed instance age was treated as a new volume")
+        print(combined(result), file=sys.stderr)
+
+
 def check_log_rotation_failure(image: str) -> None:
     """A log that cannot be capped must not leave a healthy backup marker."""
     script = r"""
@@ -1153,6 +1198,7 @@ def main() -> int:
     check_services_requires_unprivileged_user(image)
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
+    check_freshness_uptime_read_failure(image)
     check_log_rotation_failure(image)
     check_status_write_failure(image)
     check_app_exit_stops_stack(image)
