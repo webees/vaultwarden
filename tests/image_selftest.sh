@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs inside the built image with the Overmind stack already started. Covers the
+# Runs inside the built image with the process stack already started. Covers the
 # behaviour that only exists at container runtime: privilege dropping, the SMTP
 # config permissions, and the restic failure paths.
 set -u
@@ -32,13 +32,27 @@ pid_of() {
 # ── the entrypoint dropped privileges ────────────────────────────────────────
 vault_uid="$(id -u vaultwarden)"
 same "tini is PID 1 so orphans get reaped" tini "$(cat /proc/1/comm)"
-for proc in tini overmind caddy supercronic vaultwarden; do
+for proc in tini caddy supercronic vaultwarden; do
     if ! pid="$(pid_of "$proc")"; then
         bad "$proc is not running"
         continue
     fi
     uid="$(awk '/^Uid:/ {print $2}' "/proc/$pid/status")"
     same "$proc runs as vaultwarden" "$vault_uid" "$uid"
+done
+for removed in tmux overmind; do
+    if command -v "$removed" >/dev/null 2>&1; then
+        bad "${removed} remains installed after the process-manager removal"
+    else
+        ok "${removed} is absent from the runtime image"
+    fi
+done
+for removed in /Procfile /supervise.sh; do
+    if [ -e "$removed" ]; then
+        bad "${removed} remains in the runtime image"
+    else
+        ok "${removed} is absent from the runtime image"
+    fi
 done
 
 same "/etc/msmtprc is 0600" 600 "$(stat -c %a /etc/msmtprc)"

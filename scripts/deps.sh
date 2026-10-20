@@ -44,7 +44,7 @@ pin() {
 validate_pin_value() {
     local name="$1" value="$2"
     case "$name" in
-        VAULTWARDEN_VERSION|SUPERCRONIC_VERSION|OVERMIND_VERSION)
+        VAULTWARDEN_VERSION|SUPERCRONIC_VERSION)
             [[ "$value" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
             ;;
         VAULTWARDEN_DIGEST)
@@ -106,15 +106,6 @@ tools() {
     done
     emit supercronic_version "$sc_tag"
 
-    local om_tag
-    om_tag="$(gh_api "${GH_API}/DarthSim/overmind/releases?per_page=20" \
-        --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first | .tag_name')"
-    for arch in amd64 arm64; do
-        emit "overmind_sha_${arch}" "$(fetch \
-            "https://github.com/DarthSim/overmind/releases/download/${om_tag}/overmind-${om_tag}-linux-${arch}.gz" \
-            | gunzip -c | sha256)"
-    done
-    emit overmind_version "$om_tag"
 }
 
 # Compare current pins against VAR=VALUE pairs; emit changed=true when any differ.

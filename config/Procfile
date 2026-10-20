@@ -1,8 +1,0 @@
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║ Overmind Process Configuration                                            ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-
-# Application services
-vaultwarden: /vaultwarden
-caddy: /supervise.sh caddy caddy run --config /Caddyfile
-crontab: /supervise.sh crontab supercronic /crontab
