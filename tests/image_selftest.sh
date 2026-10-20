@@ -263,14 +263,47 @@ fi
 exec 9>&-
 
 # freshness guard: a recent success is quiet, a stale one alerts
-seed_status() { # last_success epoch
-    printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=selftest\n' "$1" "$1" \
+seed_status_state() { # state last_success epoch message
+    printf 'state=%s\nupdated_at=%s\nlast_success=%s\nmessage=%s\n' \
+        "$1" "$2" "$2" "$3" \
         > /data/backup-status.txt
     chown vaultwarden:vaultwarden /data/backup-status.txt
+}
+seed_status() { # last_success epoch
+    seed_status_state ok "$1" selftest
 }
 seed_status "$(date -u +%s)"
 /restic.sh check-freshness >/tmp/selftest-fresh.log 2>&1
 same "freshness guard accepts a recent backup" 0 "$?"
+
+# A recent timestamp from the previous successful run must not hide the fact
+# that the latest backup failed. Otherwise the external freshness probe reports
+# success for up to BACKUP_MAX_AGE and the failure exists only in Telegram.
+seed_status_state failed "$(date -u +%s)" injected-backup-failure
+/restic.sh check-freshness >/tmp/selftest-failed-state.log 2>&1
+failed_state_rc=$?
+same "freshness guard rejects a recorded backup failure" 2 "$failed_state_rc"
+same "freshness guard names the recorded failure state" 1 \
+    "$(grep -c 'records state=failed' /tmp/selftest-failed-state.log)"
+same "freshness guard preserves the original failure reason" 1 \
+    "$(grep -c '^message=injected-backup-failure$' /data/backup-status.txt)"
+
+seed_status_state paused "$(date -u +%s)" injected-invalid-state
+/restic.sh check-freshness >/tmp/selftest-invalid-state.log 2>&1
+invalid_state_rc=$?
+same "freshness guard rejects an unknown state value" 2 "$invalid_state_rc"
+same "freshness guard names the unusable recorded state" 1 \
+    "$(grep -c 'unusable recorded state' /tmp/selftest-invalid-state.log)"
+same "freshness guard preserves an unusable state marker" 1 \
+    "$(grep -c '^message=injected-invalid-state$' /data/backup-status.txt)"
+
+seed_status_state unknown "$(date -u +%s)" injected-inconsistent-state
+/restic.sh check-freshness >/tmp/selftest-inconsistent-state.log 2>&1
+inconsistent_state_rc=$?
+same "freshness guard rejects unknown state beside a recorded success" 2 "$inconsistent_state_rc"
+same "freshness guard explains the inconsistent state" 1 \
+    "$(grep -c 'unknown state but a recorded success' /tmp/selftest-inconsistent-state.log)"
+
 now="$(date -u +%s)"
 seed_status "0${now}"
 /restic.sh check-freshness >/tmp/selftest-leading-zero.log 2>&1
