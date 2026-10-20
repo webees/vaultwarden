@@ -299,22 +299,31 @@ send_mail() {
     # Strip ANSI colors and set UTF-8. The outcome is written to the log so
     # "the alert never arrived" can be diagnosed from the run itself instead of
     # from whatever the mailer happened to print on stderr.
-    local out rc
-    out="$(
-        (
-            exec 9>&-
-            sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
-                -a "Content-Type: text/plain; charset=UTF-8" \
-                -s "[$APP_NAME] $1" "$SMTP_TO"
-        ) 2>&1
-    )"
+    local out_file rc
+    out_file="$(mktemp "${TMPDIR:-/tmp}/restic-mail.XXXXXX")"
+    if [ -z "$out_file" ]; then
+        log echo -e "${R}Alert email failed (cannot record transport output)${X}"
+        return 0
+    fi
+    # Keep relay output off the shell heap and persist only a bounded tail.
+    (
+        exec 9>&-
+        sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
+            -a "Content-Type: text/plain; charset=UTF-8" \
+            -s "[$APP_NAME] $1" "$SMTP_TO" 2>&1 \
+            | tail -c "$MAX_LOG_BYTES" > "$out_file"
+    )
     rc=$?
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}Alert email sent${X}"
-        return 0
+    else
+        log echo -e "${R}Alert email failed (exit ${rc})${X}"
+        if [ -s "$out_file" ]; then
+            log redact_file "$out_file"
+        fi
     fi
-    log echo -e "${R}Alert email failed (exit ${rc})${X}"
-    [ -n "$out" ] && log redact_raw "$out"
+    rm -f "$out_file" \
+        || log echo -e "${Y}Warning: cannot remove mailer output file${X}"
     return 0
 }
 

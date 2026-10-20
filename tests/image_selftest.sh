@@ -1145,6 +1145,32 @@ same "a failed verification names the failing step" 1 \
     "$(grep -c 'Repository verification failed' /data/backup-status.txt)"
 seed_status "$(date -u +%s)"
 
+# The SMTP relay is external input. A mailer that emits a large error body must
+# not be captured without a limit and copied verbatim into the persistent run
+# log. Keep the cap small here so the assertion distinguishes bytes from MiB.
+mail_huge_dir=/tmp/selftest-mail-huge
+mail_huge_logs=/tmp/selftest-mail-huge-logs
+rm -rf "$mail_huge_dir" "$mail_huge_logs"
+mkdir -p "$mail_huge_dir"
+printf '#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr "\\000" x\nexit 1\n' \
+    > "$mail_huge_dir/mail"
+chmod 755 "$mail_huge_dir/mail"
+PATH="$mail_huge_dir:$PATH" RESTIC_LOG_DIR="$mail_huge_logs" \
+    RESTIC_LOG_MAX_BYTES=4096 RESTIC_REPOSITORY=/tmp/selftest-missing \
+    SMTP_TO=ops@example.com /restic.sh verify \
+    >/tmp/selftest-mail-huge-run.log 2>&1
+mail_huge_rc=$?
+mail_huge_log_count="$(find "$mail_huge_logs" -type f -name '*.log' | wc -l)"
+same "the oversized mailer probe writes one run log" 1 "$mail_huge_log_count"
+mail_huge_run_log="$(find "$mail_huge_logs" -type f -name '*.log' -print -quit)"
+mail_huge_bytes="$(stat -c %s "$mail_huge_run_log")"
+same "an oversized mailer response keeps the original failure status" 2 "$mail_huge_rc"
+same "an oversized mailer response is bounded before persistence" 1 \
+    "$([ "$mail_huge_bytes" -lt 65536 ] && echo 1 || echo 0)"
+same "an oversized mailer response still records the delivery failure" 1 \
+    "$(grep -c 'Alert email failed (exit 1)' "$mail_huge_run_log")"
+rm -rf "$mail_huge_dir" "$mail_huge_logs"
+
 # a guard is only useful if the scheduler actually calls it
 for guard in check-freshness check-disk; do
     if grep -q "/restic.sh ${guard}\$" /crontab; then
