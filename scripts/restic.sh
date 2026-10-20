@@ -750,7 +750,10 @@ trim_logs
 check_audit_trail
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
-    [ "${1:-}" = "backup" ] && write_status failed "RESTIC_PASSWORD not set"
+    if [ "${1:-}" = "backup" ]; then
+        write_status failed "RESTIC_PASSWORD not set"
+        send_telegram "RESTIC_PASSWORD not set"
+    fi
     echo "Error: RESTIC_PASSWORD not set"
     heartbeat fail
     exit 1

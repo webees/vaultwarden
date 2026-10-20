@@ -266,7 +266,9 @@ jobs:
       # The guard stands down only when a newer run of this workflow exists for
       # main. Comparing the tip of main instead cancelled the deploy whenever a
       # doc-only commit landed mid-build: paths-ignore means that commit never
-      # starts a run, so nothing was left to publish the code being built.
+      # starts a run, so nothing was left to publish the code being built. If
+      # GitHub cannot answer, fail closed: deploying an unverified older build
+      # could overwrite a newer release.
       - name: 🚦 Check whether a newer build has taken over
         id: guard
         env:
@@ -277,11 +279,14 @@ jobs:
           if ! newest="$(timeout 30 gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/build_and_deploy.yml/runs?branch=main&per_page=1" \
             --jq '.workflow_runs[0].head_sha // empty')"; then
-            newest=""
+            echo "::error::could not read workflow runs; refusing to deploy an unverified build" >&2
+            exit 1
           fi
           if [ -z "$newest" ]; then
-            echo "::warning::could not read the workflow runs; deploying this build"
-          elif [ "$newest" != "${GITHUB_SHA}" ]; then
+            echo "::error::workflow runs returned no main commit; refusing to deploy an unverified build" >&2
+            exit 1
+          fi
+          if [ "$newest" != "${GITHUB_SHA}" ]; then
             skip=true
             echo "A newer build for ${newest} has taken over; skipping deploy of ${GITHUB_SHA}." >&2
           fi

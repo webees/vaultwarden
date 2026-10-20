@@ -475,6 +475,20 @@ same "the Telegram token is not written to the run log" 0 \
 same "the Telegram chat id is not written to the run log" 0 \
     "$(grep -c '@selftest_channel' /tmp/selftest-tg-success.log)"
 
+# A missing repository password stops before backup() installs its failure trap.
+# The status file alone is not an alert: record the failed state and tell the
+# operator immediately over the configured high-frequency channel.
+: > "$tg_calls"
+env -u RESTIC_PASSWORD PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' /restic.sh backup \
+    >/tmp/selftest-tg-missing-restic-password.log 2>&1
+missing_password_rc=$?
+same "a missing Restic password exits non-zero" 1 "$missing_password_rc"
+same "a missing Restic password sends one Telegram message" 1 \
+    "$(grep -c 'RESTIC_PASSWORD not set' "$tg_calls")"
+same "a missing Restic password records the failed backup state" "failed" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
 : > "$tg_calls"
 seed_status 1
 PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
