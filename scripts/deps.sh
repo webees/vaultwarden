@@ -62,26 +62,58 @@ validate_pin_value() {
 sha256() { sha256sum | cut -d' ' -f1; }
 
 base() {
-    local page json tag found
-    for page in $(seq 1 20); do
-        json="$(fetch "https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=${page}")"
-        # A rate-limited or malformed page has no results: stop instead of
-        # spending the remaining pages on retries.
-        if [ "$(jq -r '(.results // []) | length' <<< "$json")" -eq 0 ]; then
+    local page next json tag found current_version candidates
+    current_version="$(pin VAULTWARDEN_VERSION)"
+    case "$current_version" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *)
+            echo "invalid VAULTWARDEN_VERSION pin: ${current_version:-missing}" >&2
+            exit 1
+            ;;
+    esac
+    candidates="${current_version}"$'\n'
+    page=1
+    next="https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page_size=100&page=1"
+    while [ -n "$next" ]; do
+        [ "$page" -le 20 ] || {
+            echo "Docker Hub tag pagination exceeded 20 pages" >&2
+            exit 1
+        }
+        json="$(fetch "$next")"
+        # A schema change or proxy response is not an empty page. Failing here
+        # prevents a broken dependency feed from looking like "already current".
+        if ! jq -e '(.results | type) == "array"' >/dev/null 2>&1 <<< "$json"; then
+            echo "malformed Docker Hub tag response on page ${page}" >&2
+            exit 1
+        fi
+        if [ "$(jq -r '.results | length' <<< "$json")" -eq 0 ]; then
             break
         fi
-        # The default tag order is neither version order nor last_updated, so a
-        # republished older tag can sit above the newest release. Take the
-        # highest version on the page instead of the first match, or the
-        # two-hour job opens a PR that downgrades a security-critical image.
-        found="$(jq -r '.results[].name | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$")) | sub("-alpine$"; "")' <<< "$json" \
-            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
-        if [ -n "$found" ]; then
-            tag="${found}-alpine"
-            break
-        fi
+        candidates+="$(jq -r '
+            .results[].name
+            | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+-alpine$"))
+            | sub("-alpine$"; "")
+        ' <<< "$json")"$'\n'
+        next="$(jq -r '.next // empty' <<< "$json")"
+        case "$next" in
+            ''|https://hub.docker.com/v2/repositories/vaultwarden/server/tags\?*) ;;
+            *)
+                echo "unexpected Docker Hub next-page URL on page ${page}" >&2
+                exit 1
+                ;;
+        esac
+        page=$((page + 1))
     done
-    [ -n "${tag:-}" ] || { echo "no vaultwarden tag found" >&2; exit 1; }
+    # Docker Hub does not guarantee version order across pages, and a partial
+    # feed may temporarily omit the version already pinned. Resolve against the
+    # complete stable set plus the current pin so automation can only move
+    # forward.
+    found="$(printf '%s' "$candidates" \
+        | sed '/^$/d' \
+        | sort -u \
+        | sort -t. -k1,1n -k2,2n -k3,3n \
+        | tail -n 1)"
+    tag="${found}-alpine"
 
     local token digest
     token="$(fetch 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' | jq -r .token)"

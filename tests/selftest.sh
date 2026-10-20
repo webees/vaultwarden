@@ -98,6 +98,28 @@ fi
 # ── deps.sh ───────────────────────────────────────────────────────────────────
 echo "--- deps.sh"
 pinned_version="$(sed -n 's/^ARG VAULTWARDEN_VERSION=//p' Dockerfile | head -n 1)"
+
+# Docker Hub stubs share the same auth and digest responses. The first two
+# repository pages are supplied by the caller; later pages are empty.
+make_dockerhub_stub() {
+    local dir="$1" calls="$2" first="$3" second="${4:-}"
+    [ -n "$second" ] || second='{"results":[]}'
+    mkdir -p "$dir"
+    : > "$calls"
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$*" >> %q\n' "$calls"
+        printf 'case "$*" in\n'
+        printf '  *page=1*) printf %%s %q ;;\n' "$first"
+        printf '  *page=2*) printf %%s %q ;;\n' "$second"
+        printf '  *hub.docker.com*) printf %%s %q ;;\n' '{"results":[]}'
+        printf '  *auth.docker.io*) printf %%s %q ;;\n' '{"token":"stub"}'
+        printf '  *) printf %%s %q ;;\n' 'docker-content-digest: sha256:stub'
+        printf 'esac\n'
+    } > "$dir/curl"
+    chmod +x "$dir/curl"
+}
+
 GITHUB_OUTPUT="$work/deps-same" ./scripts/deps.sh compare \
     "VAULTWARDEN_VERSION=$pinned_version" >"$work/compare-same.out" 2>&1
 same "reports no change for the value already pinned" "false" \
@@ -309,18 +331,11 @@ same "every gh api call runs under a timeout" 1 "$gh_timeouts"
 # Paginating 20 times through the retry wrapper would burn the whole job.
 if command -v jq >/dev/null 2>&1; then
     page_log="$work/tag-pages"
-    : > "$page_log"
     page_stub="$work/page-stub"
-    mkdir -p "$page_stub"
-    {
-        printf '#!/bin/sh\n'
-        printf 'printf "page\\n" >> "%s"\n' "$page_log"
-        printf 'printf "{\\"results\\":[]}\\n"\n'
-    } > "$page_stub/curl"
-    chmod +x "$page_stub/curl"
+    make_dockerhub_stub "$page_stub" "$page_log" '{"results":[]}'
     PATH="$page_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" base >/dev/null 2>&1 || true
     same "an empty tag page stops the pagination loop" 1 \
-        "$(wc -l < "$page_log" | tr -d ' ')"
+        "$(grep -c 'hub.docker.com' "$page_log")"
 else
     bad "jq is required to test the empty-page guard"
 fi
@@ -332,20 +347,9 @@ fi
 # a security-critical image.
 if command -v jq >/dev/null 2>&1; then
     order_calls="$work/tag-order-calls"
-    : > "$order_calls"
     order_stub="$work/order-stub"
-    mkdir -p "$order_stub"
-    {
-        printf '#!/bin/sh\n'
-        printf 'printf "%%s\\n" "$*" >> "%s"\n' "$order_calls"
-        printf 'case "$*" in\n'
-        printf '  *hub.docker.com*) printf %%s %s ;;\n' \
-            "'{\"results\":[{\"name\":\"1.36.0-alpine\"},{\"name\":\"1.38.0-alpine\"},{\"name\":\"1.37.4-alpine\"}]}'"
-        printf '  *auth.docker.io*) printf %%s %s ;;\n' "'{\"token\":\"stub\"}'"
-        printf '  *) printf %s ;;\n' "'docker-content-digest: sha256:stub\\n'"
-        printf 'esac\n'
-    } > "$order_stub/curl"
-    chmod +x "$order_stub/curl"
+    make_dockerhub_stub "$order_stub" "$order_calls" \
+        '{"results":[{"name":"1.36.0-alpine"},{"name":"1.38.0-alpine"},{"name":"1.37.4-alpine"}]}'
     GITHUB_OUTPUT="$work/order-out" PATH="$order_stub:$PATH" \
         "$REPO_ROOT/scripts/deps.sh" base >"$work/order.log" 2>&1
     same "the resolver picks the highest version, not the first listed" "1.38.0" \
@@ -354,6 +358,90 @@ if command -v jq >/dev/null 2>&1; then
         "$(grep -c 'manifests/1\.38\.0-alpine' "$order_calls")"
 else
     bad "jq is required to test the version ordering guard"
+fi
+
+# Docker Hub does not guarantee version order across pages. Stopping at the
+# first page that contains any stable tag can therefore select an older release
+# while a newer one sits on the next page.
+if command -v jq >/dev/null 2>&1; then
+    cross_calls="$work/tag-cross-page-calls"
+    cross_stub="$work/tag-cross-page-stub"
+    make_dockerhub_stub "$cross_stub" "$cross_calls" \
+        '{"results":[{"name":"1.30.0-alpine"}],"next":"https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page=2&page_size=100"}' \
+        '{"results":[{"name":"1.99.0-alpine"}],"next":null}'
+    GITHUB_OUTPUT="$work/cross-page-out" PATH="$cross_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/cross-page.log" 2>&1
+    same "the resolver scans every page for the highest release" "1.99.0" \
+        "$(sed -n 's/^version=//p' "$work/cross-page-out")"
+    same "the resolver uses the manifest for the newest release across pages" 1 \
+        "$(grep -c 'manifests/1\.99\.0-alpine' "$cross_calls")"
+else
+    bad "jq is required to test cross-page version ordering"
+fi
+
+# A temporarily incomplete first page must never move the pin backwards. Treat
+# the version already pinned in the Dockerfile as the floor for resolution.
+if command -v jq >/dev/null 2>&1; then
+    floor_calls="$work/tag-floor-calls"
+    floor_stub="$work/tag-floor-stub"
+    make_dockerhub_stub "$floor_stub" "$floor_calls" \
+        '{"results":[{"name":"1.30.0-alpine"}],"next":"https://hub.docker.com/v2/repositories/vaultwarden/server/tags?page=2&page_size=100"}' \
+        '{"results":[]}'
+    GITHUB_OUTPUT="$work/floor-out" PATH="$floor_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/floor.log" 2>&1
+    same "an incomplete tag list never downgrades the pinned version" "$pinned_version" \
+        "$(sed -n 's/^version=//p' "$work/floor-out")"
+    same "the resolver uses the manifest for the pinned version floor" 1 \
+        "$(grep -c "manifests/${pinned_version}-alpine" "$floor_calls")"
+else
+    bad "jq is required to test the pinned-version floor"
+fi
+
+# A malformed HTTP-200 response is not an empty repository. Fail the dependency
+# check instead of turning an API schema change or proxy response into success.
+if command -v jq >/dev/null 2>&1; then
+    malformed_stub="$work/tag-malformed-stub"
+    make_dockerhub_stub "$malformed_stub" "$work/tag-malformed-calls" \
+        '{"message":"rate limited"}'
+    malformed_status=0
+    GITHUB_OUTPUT="$work/malformed-out" PATH="$malformed_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/malformed.log" 2>&1 \
+        || malformed_status=$?
+    same "a malformed Docker Hub response fails the resolver" 1 "$malformed_status"
+    case "$(cat "$work/malformed.log")" in
+        *"malformed Docker Hub tag response"*)
+            ok "the resolver names the malformed Docker Hub response"
+            ;;
+        *)
+            bad "the resolver does not distinguish a malformed page from an empty page"
+            ;;
+    esac
+else
+    bad "jq is required to test malformed Docker Hub responses"
+fi
+
+# The next-page URL is untrusted API data. Follow only the exact Docker Hub
+# endpoint so a compromised or malformed response cannot redirect the resolver
+# to a different host.
+if command -v jq >/dev/null 2>&1; then
+    redirect_stub="$work/tag-redirect-stub"
+    make_dockerhub_stub "$redirect_stub" "$work/tag-redirect-calls" \
+        '{"results":[{"name":"1.37.4-alpine"}],"next":"https://attacker.invalid/steal"}'
+    redirect_status=0
+    GITHUB_OUTPUT="$work/redirect-out" PATH="$redirect_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/redirect.log" 2>&1 \
+        || redirect_status=$?
+    same "an off-host pagination URL fails the resolver" 1 "$redirect_status"
+    case "$(cat "$work/redirect.log")" in
+        *"unexpected Docker Hub next-page URL"*)
+            ok "the resolver rejects an off-host pagination URL"
+            ;;
+        *)
+            bad "the resolver followed a pagination URL outside Docker Hub"
+            ;;
+    esac
+else
+    bad "jq is required to test Docker Hub pagination URLs"
 fi
 
 # ── .github naming ────────────────────────────────────────────────────────────
