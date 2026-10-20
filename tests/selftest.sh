@@ -16,7 +16,8 @@ echo "--- process model"
 # Three long-running processes do not justify a downloaded process manager.
 # Keep the privilege-dropping bootstrap and the process table in separate,
 # reviewable files so neither has to carry the other's concerns.
-if grep -Eqi 'overmind|tmux|Procfile|supervise\.sh' Dockerfile scripts/entrypoint.sh scripts/services.sh; then
+if grep -Eqi 'overmind|tmux|Procfile|supervise\.sh' \
+    Dockerfile scripts/entrypoint.sh scripts/entrypoint/*.sh scripts/services.sh; then
     bad "the image still depends on the removed dynamic process manager"
 else
     ok "the image has no Overmind, tmux, Procfile or supervise.sh dependency"
@@ -33,11 +34,18 @@ if grep -Fq 'run_services' scripts/entrypoint.sh; then
 else
     ok "the bootstrap delegates process supervision"
 fi
-for script in scripts/entrypoint.sh scripts/services.sh; do
+for script in scripts/entrypoint.sh scripts/entrypoint/*.sh scripts/services.sh; do
     if [ -f "$script" ]; then
         ok "${script} exists"
     else
         bad "${script} is missing"
+    fi
+done
+for module in filesystem restore smtp; do
+    if grep -Fq "entrypoint/${module}.sh" scripts/entrypoint.sh; then
+        ok "the bootstrap sources the ${module} entrypoint module"
+    else
+        bad "the bootstrap does not source the ${module} entrypoint module"
     fi
 done
 for service in '/vaultwarden' 'caddy run --config /Caddyfile' 'supercronic /crontab'; do
@@ -241,7 +249,8 @@ fi
 # The image ships BusyBox find, which rejects -printf. A GNU-only log size or
 # mtime query fails silently there and turns the log directory cap into a no-op.
 # selftest.sh itself is excluded: it carries the pattern being searched for.
-if grep -q -- '-printf' scripts/*.sh tests/image_selftest.sh tests/runtime_smoke.py; then
+if grep -q -- '-printf' scripts/*.sh scripts/entrypoint/*.sh \
+    tests/image_selftest.sh tests/runtime_smoke.py; then
     bad "a script uses find -printf, which the image's BusyBox find does not support"
 else
     ok "no script relies on the GNU-only find -printf"
@@ -1267,7 +1276,7 @@ fi
 # override a Fly secret. A key the warning does not cover stays invisible while
 # `fly secrets set` silently does nothing, and signups_allowed is the one that
 # decides whether anyone can register.
-entry_keys="$(sed -n 's/.*for key in \(.*\); do.*/\1/p' scripts/entrypoint.sh | head -n 1)"
+entry_keys="$(sed -n 's/.*for key in \(.*\); do.*/\1/p' scripts/entrypoint/filesystem.sh | head -n 1)"
 missing_keys=""
 for key in admin_token signups_allowed; do
     case " $entry_keys " in

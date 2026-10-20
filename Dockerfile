@@ -35,6 +35,7 @@ COPY config/crontab \
     scripts/services.sh \
     scripts/restic.sh \
     /
+COPY scripts/entrypoint/ /entrypoint/
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 ARG CACHE_BUST=local

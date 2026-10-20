@@ -302,7 +302,7 @@ production access) and `tests/runtime_smoke.py` (boots the image). The image shi
 commands.
 
 ```bash
-shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
+shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
@@ -334,8 +334,9 @@ Fly health checks). The admin panel at `/admin` is served on allowed hosts and r
 replaced with `?redacted`, because one-time credentials and addresses do not belong in request logs;
 the path remains visible for diagnosis.
 
-The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` fixes ownership on `/data` and
-`/app`, then drops privileges with `su-exec` before starting `/services.sh`, which owns the static three-process table. Because Vaultwarden can write under
+The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` orchestrates three small modules
+for filesystem setup, pending restores and SMTP configuration, then drops privileges with `su-exec` before
+starting `/services.sh`, which owns the static three-process table. Because Vaultwarden can write under
 `/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
 links with private files/directories, and it refuses to chmod or chown a symlinked `config.json`.
 
