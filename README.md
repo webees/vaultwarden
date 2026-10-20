@@ -253,7 +253,7 @@ discovered for the first time during a real recovery.
 | :--- | :--- |
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
-| Log line `[crontab] exited with status` | The scheduler crashed and was restarted by the static process table in `/entrypoint.sh`; check the lines above it |
+| Log line `[crontab] exited with status` | The scheduler crashed and was restarted by the static process table in `/services.sh`; check the lines above it |
 | Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in the static range list in `config/cloudflare_ips.caddy`; update that file from Cloudflare's official IPv4/IPv6 lists when the ranges change |
 | A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (HTTP N)` or `(curl exit N)` followed by the API's own explanation with the token replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
@@ -264,7 +264,7 @@ discovered for the first time during a real recovery.
 | Container exits with `… must be a positive integer` | One of `RESTIC_LOG_MAX_BYTES`, `RESTIC_LOG_DIR_MAX_BYTES`, `RESTIC_QUICK_TIMEOUT`, `RESTIC_LONG_TIMEOUT`, `BACKUP_MAX_AGE` or `BACKUP_MAX_USAGE_PERCENT` is zero or not a number; set a positive integer (the usage limit also has to be 100 or less) |
 | Repository command exits with `RESTIC_PASSWORD not set` | `backup`, `snapshots`, `restore`, `restore-test` and `verify` require the secret. `check-freshness` and `check-disk` deliberately continue without it so monitoring is not disabled by a missing repository credential |
 | Run log says `/data is …% full` | The volume is past `BACKUP_MAX_USAGE_PERCENT` (default 85). Move `icon_cache` aside, trim attachments, or migrate to a larger Fly volume with `fly volumes create` + `fly machine update`; the hourly backup keeps working until the volume is actually full |
-| Caddy exited and the proxy stopped responding | The static process table in `/entrypoint.sh` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
+| Caddy exited and the proxy stopped responding | The static process table in `/services.sh` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
 
 ## 🛠️ Management & Operations
 
@@ -335,7 +335,7 @@ replaced with `?redacted`, because one-time credentials and addresses do not bel
 the path remains visible for diagnosis.
 
 The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` fixes ownership on `/data` and
-`/app`, then drops privileges with `su-exec` before starting its static three-process table. Because Vaultwarden can write under
+`/app`, then drops privileges with `su-exec` before starting `/services.sh`, which owns the static three-process table. Because Vaultwarden can write under
 `/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
 links with private files/directories, and it refuses to chmod or chown a symlinked `config.json`.
 
