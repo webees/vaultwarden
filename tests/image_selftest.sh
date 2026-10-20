@@ -430,6 +430,23 @@ same "an uninspectable lock keeps the running state" "running" \
 same "an uninspectable lock is explained" 1 \
     "$(grep -c 'Cannot inspect the backup lock' /tmp/selftest-unknown.log)"
 
+# An unknown lock must not be resolved by the older success timestamp. The
+# active backup may simply have started after the last completed one, so a
+# stale timestamp must not overwrite state=running with a false failure.
+printf 'state=running\nupdated_at=%s\nlast_success=1\nmessage=Backup started\n' \
+    "$(date -u +%s)" > /data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+rm -f /data/restic-logs/backup.lock
+chmod 500 /data/restic-logs
+BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-unknown-stale.log 2>&1
+unknown_stale_rc=$?
+chmod 700 /data/restic-logs
+: > /data/restic-logs/backup.lock
+chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
+same "an uninspectable lock does not become a stale-backup failure" 0 "$unknown_stale_rc"
+same "an uninspectable lock preserves running despite an old success" "running" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+
 # The alert channels follow how often a job can repeat its warning. A job on
 # `@hourly` would repeat an email up to 24 times a day, so the hourly jobs stay
 # on Telegram and only the monthly integrity check keeps the incident email.
