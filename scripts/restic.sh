@@ -171,7 +171,10 @@ timed() {
 # but without it one interrupted run makes verify/restore fail with "repository
 # is already locked" until the next hourly backup happens to clear it.
 clear_stale_locks() {
-    timed "$QUICK_TIMEOUT" restic unlock >/dev/null 2>&1 || true
+    # A failed cleanup leaves the lock state unknown. Route it through `run` so
+    # the backend's error is retained and the caller stops before its real
+    # repository operation; silently continuing can act on a still-locked repo.
+    run "Clear stale repository locks" "$QUICK_TIMEOUT" restic unlock
 }
 
 # Whether another run holds the backup lock, as three states:
@@ -440,7 +443,6 @@ backup() {
         CURRENT_STEP="Cannot record backup start state"
         exit 2
     fi
-    clear_stale_locks
 
     # Initialise only when the repository really is missing (restic exit code 10).
     # A wrong password (12) or an unreachable backend (1) must be reported as such,
@@ -452,6 +454,10 @@ backup() {
             run "Repo init" "$QUICK_TIMEOUT" restic init ;;
         *)  run "Repository access" "$QUICK_TIMEOUT" restic cat config ;;
     esac
+    # Read-only repository access above distinguishes a fresh repository from a
+    # bad credential or backend before cleanup. Only now can unlock failure be
+    # treated as an unknown lock state that must stop the backup.
+    clear_stale_locks
 
     # SQLite hot backup (ensures consistency)
     run "SQLite backup" "$QUICK_TIMEOUT" sqlite3 "$DATA/db.sqlite3" ".backup $DATA/backup.bak"
