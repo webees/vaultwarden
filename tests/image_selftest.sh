@@ -408,32 +408,57 @@ else
 fi
 exec 9>&-
 
-# The lock itself can be uninspectable (volume full, directory read-only), and
-# the check must not create it: a missing lock has to stay missing so "never
-# backed up" remains distinguishable from "not running right now".
+# The lock itself can be uninspectable (missing, volume full, directory
+# read-only). The check must not create it, but it also cannot treat that as a
+# healthy run: a stale running marker with no inspectable lock needs an alert.
+unknown_curl_dir=/tmp/selftest-unknown-curl
+unknown_tg_calls=/tmp/selftest-unknown-tg.calls
+unknown_hb_calls=/tmp/selftest-unknown-hb.calls
+rm -rf "$unknown_curl_dir"
+mkdir -p "$unknown_curl_dir"
+: > "$unknown_tg_calls"
+: > "$unknown_hb_calls"
+printf '#!/bin/sh\ncase "$*" in\n  *api.telegram.org*) printf "telegram\\n" >> "%s"; printf "{\\"ok\\":true}\\n200\\n" ;;\n  *health.invalid*) printf "fail\\n" >> "%s" ;;\n  *) exit 1 ;;\nesac\n' \
+    "$unknown_tg_calls" "$unknown_hb_calls" > "$unknown_curl_dir/curl"
+chmod 755 "$unknown_curl_dir/curl"
+
 seed_running
 rm -f /data/restic-logs/backup.lock
-/restic.sh check-freshness >/tmp/selftest-nolock.log 2>&1
+PATH="$unknown_curl_dir:$PATH" HEALTHCHECK_URL=http://health.invalid/ping \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    /restic.sh check-freshness >/tmp/selftest-nolock.log 2>&1
 nolock_rc=$?
 same "a missing lock is left missing by the freshness check" 0 \
     "$(find /data/restic-logs -maxdepth 1 -name 'backup.lock' | wc -l | tr -d ' ')"
-same "a missing lock is not reported as a finished backup" 0 "$nolock_rc"
+same "a missing lock fails closed" 2 "$nolock_rc"
+same "a missing lock preserves the running state" "running" \
+    "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+same "a missing lock sends one Telegram alert" 1 "$(wc -l < "$unknown_tg_calls" | tr -d ' ')"
+same "a missing lock sends one failure heartbeat" 1 "$(wc -l < "$unknown_hb_calls" | tr -d ' ')"
 
-# "running" is then unknown, not "finished": reporting the latter would raise a
-# false alert and overwrite a live backup's state.
+# An unreadable lock is unknown, not healthy. Keep the in-flight state as
+# evidence, but fail the hourly guard and alert through both configured paths.
+: > "$unknown_tg_calls"
+: > "$unknown_hb_calls"
 seed_running
 rm -f /data/restic-logs/backup.lock
 chmod 500 /data/restic-logs
-/restic.sh check-freshness >/tmp/selftest-unknown.log 2>&1
+PATH="$unknown_curl_dir:$PATH" HEALTHCHECK_URL=http://health.invalid/ping \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    /restic.sh check-freshness >/tmp/selftest-unknown.log 2>&1
 unknown_rc=$?
 chmod 700 /data/restic-logs
 : > /data/restic-logs/backup.lock
 chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
-same "an uninspectable lock is not reported as a finished backup" 0 "$unknown_rc"
+same "an uninspectable lock fails closed" 2 "$unknown_rc"
 same "an uninspectable lock keeps the running state" "running" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 same "an uninspectable lock is explained" 1 \
     "$(grep -c 'Cannot inspect the backup lock' /tmp/selftest-unknown.log)"
+same "an uninspectable lock sends one Telegram alert" 1 \
+    "$(wc -l < "$unknown_tg_calls" | tr -d ' ')"
+same "an uninspectable lock sends one failure heartbeat" 1 \
+    "$(wc -l < "$unknown_hb_calls" | tr -d ' ')"
 
 # An unknown lock must not be resolved by the older success timestamp. The
 # active backup may simply have started after the last completed one, so a
@@ -443,12 +468,14 @@ printf 'state=running\nupdated_at=%s\nlast_success=1\nmessage=Backup started\n' 
 chown vaultwarden:vaultwarden /data/backup-status.txt
 rm -f /data/restic-logs/backup.lock
 chmod 500 /data/restic-logs
-BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-unknown-stale.log 2>&1
+PATH="$unknown_curl_dir:$PATH" HEALTHCHECK_URL=http://health.invalid/ping \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-unknown-stale.log 2>&1
 unknown_stale_rc=$?
 chmod 700 /data/restic-logs
 : > /data/restic-logs/backup.lock
 chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
-same "an uninspectable lock does not become a stale-backup failure" 0 "$unknown_stale_rc"
+same "an uninspectable lock does not become a stale-backup success" 2 "$unknown_stale_rc"
 same "an uninspectable lock preserves running despite an old success" "running" \
     "$(sed -n 's/^state=//p' /data/backup-status.txt)"
 
