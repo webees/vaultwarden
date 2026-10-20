@@ -518,8 +518,9 @@ same "a usage limit outside 1-100 is explained" 1 \
 # has to be reported once nothing holds the lock, and left alone while a real
 # backup is still working.
 seed_running() {
+    success_age="${1:-0}"
     printf 'state=running\nupdated_at=%s\nlast_success=%s\nmessage=Backup started\n' \
-        "$(date -u +%s)" "$(date -u +%s)" > /data/backup-status.txt
+        "$(date -u +%s)" "$(( $(date -u +%s) - success_age ))" > /data/backup-status.txt
     chown vaultwarden:vaultwarden /data/backup-status.txt
 }
 seed_running
@@ -544,13 +545,17 @@ same "the freshness check still sees the unfinished backup" 2 "$?"
 same "the unfinished backup is named after a volume alert" 1 \
     "$(grep -c 'never finished' /tmp/selftest-disk-running-fresh.log)"
 
-seed_running
+seed_running 61
 exec 9>/data/restic-logs/backup.lock
 if flock -n 9; then
-    /restic.sh check-freshness >/tmp/selftest-inflight.log 2>&1
+    BACKUP_MAX_AGE=60 /restic.sh check-freshness >/tmp/selftest-inflight.log 2>&1
     same "check-freshness leaves a backup that holds the lock alone" 0 "$?"
     same "the in-flight run keeps its running state" "running" \
         "$(sed -n 's/^state=//p' /data/backup-status.txt)"
+    same "the freshness guard explains that the active run is still in flight" 1 \
+        "$(grep -c 'Backup is still running' /tmp/selftest-inflight.log)"
+    same "an active backup is not called stale because its last success is old" 0 \
+        "$(grep -c 'Last successful backup was' /tmp/selftest-inflight.log)"
 else
     bad "could not take the backup lock for the in-flight test"
 fi
