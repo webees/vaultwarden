@@ -239,9 +239,10 @@ fly ssh console -C "touch /data/restore-pending"                  # arm the data
 fly apps restart                                                  # entrypoint swaps, then starts
 ```
 
-The swap is refused, and the marker kept, when `/data/backup.bak` is missing or is not a readable
-database: the machine keeps running on the database it already has, and the reason is in `fly logs`.
-Fix the file and restart to retry, instead of booting on a database Vaultwarden cannot open.
+The swap is refused, and the marker kept, when `/data/backup.bak` is a symlink, is missing or is not
+a readable database: the machine keeps running on the database it already has, and the reason is in
+`fly logs`. Fix the file and restart to retry, instead of following a link outside the volume or
+booting on a database Vaultwarden cannot open.
 
 `/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
 Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong. The boot
@@ -348,7 +349,8 @@ Because Vaultwarden can write under
 links with private files/directories and refuses to chmod or chown a symlinked `config.json`. On every boot
 it uses non-following `find` operations to set directories under `/data` to 0700 and regular files to 0600,
 covering the live database, attachments, backup hot copy, logs and RSA private key without changing a
-symlink target outside the volume.
+symlink target outside the volume. The same root-owned restore path refuses a symlinked hot copy
+before copying it over the live database.
 
 ## 📝 License
 

@@ -999,6 +999,38 @@ def check_restore_with_corrupt_hot_copy(image: str) -> None:
     suite.report()
 
 
+def check_restore_rejects_symlinked_hot_copy(image: str) -> None:
+    """A restore input link must not make the root entrypoint read outside /data."""
+    container = scratch(image, f"restore-symlink-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data /target\n"
+        'sqlite3 /target/outside.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(9);"\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "ln -s /target/outside.sqlite3 /data/backup.bak\n"
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh echo started", check=False)
+    value = exec_in(container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    link_left = exec_in(container, "test", "-L", "/data/backup.bak", check=False).returncode == 0
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and value == "2"
+        and marker_left
+        and link_left
+    ):
+        suite.ok("a symlinked restore hot copy is refused without touching the database")
+        return
+    suite.bad("a symlinked restore hot copy replaced the live database")
+    print(
+        f"rc={started.returncode} value={value} marker_left={marker_left} link_left={link_left}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
 def check_restore_copy_failure(image: str) -> None:
     """A full volume must not leave the machine without a database at all."""
     container = scratch(image, f"restore-copyfail-{os.getpid()}")
@@ -1349,6 +1381,7 @@ def main() -> int:
     check_restore_swap(image)
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
+    check_restore_rejects_symlinked_hot_copy(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
     check_restore_drill_bind_policy(image)

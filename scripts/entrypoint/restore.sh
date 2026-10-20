@@ -9,14 +9,20 @@
 # operator can fix the file and restart, and lets the app start: exiting would
 # crash-loop the machine on a restore that cannot be applied.
 apply_pending_restore() {
-    local new=/data/db.sqlite3.new
-    if [ ! -f /data/backup.bak ]; then
+    local new=/data/db.sqlite3.new backup=/data/backup.bak
+    # This function runs as root before the application starts. A link in the
+    # writable data volume must never make the restore input resolve outside it.
+    if [ -L "$backup" ]; then
+        echo "refusing symlinked /data/backup.bak; leaving the database alone" >&2
+        return 0
+    fi
+    if [ ! -f "$backup" ]; then
         echo "restore-pending is set but /data/backup.bak is missing; leaving the database alone" >&2
         return 0
     fi
     # A hot copy that is not a database would replace a working one with
     # something Vaultwarden cannot open at all.
-    if ! sqlite3 /data/backup.bak 'PRAGMA integrity_check' 2>/dev/null | grep -qx ok; then
+    if ! sqlite3 "$backup" 'PRAGMA integrity_check' 2>/dev/null | grep -qx ok; then
         echo "restore-pending is set but /data/backup.bak is not a readable database; leaving the database alone" >&2
         return 0
     fi
@@ -24,7 +30,7 @@ apply_pending_restore() {
     # old rm-then-cp left a window with no database at all, so a failure in
     # between (or a crash) let Vaultwarden start on a fresh empty one.
     rm -f "$new"
-    if ! cp /data/backup.bak "$new"; then
+    if ! cp "$backup" "$new"; then
         echo "could not copy /data/backup.bak into place; leaving the database alone" >&2
         rm -f "$new"
         return 0
