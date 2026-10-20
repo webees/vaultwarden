@@ -608,11 +608,17 @@ restore_test() {
     # this database instead of quietly creating another one.
     sqlite3 "$target/data/db.sqlite3" \
         "CREATE TABLE IF NOT EXISTS drill_sentinel(v TEXT); DELETE FROM drill_sentinel; INSERT INTO drill_sentinel VALUES('restore-drill');"
+    if ! printf '{"signups_allowed": false}\n' > "$target/restore-drill-config.json"; then
+        log echo -e "${R}Unable to write the restore drill config${X}"
+        exit 2
+    fi
 
     log echo -e "${B}Restore cold boot${X} "
     if (
         cd "$target"
-        DATA_FOLDER="$target/data" WEB_VAULT_ENABLED=false ROCKET_PORT=18081 \
+        DATA_FOLDER="$target/data" WEB_VAULT_ENABLED=false \
+            ROCKET_ADDRESS=127.0.0.1 ROCKET_PORT=18081 \
+            CONFIG_FILE="$target/restore-drill-config.json" \
             /vaultwarden > "$boot_log" 2>&1 &
         boot_pid=$!
         trap 'kill "${boot_pid:-0}" 2>/dev/null || true' EXIT
