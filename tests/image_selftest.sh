@@ -834,6 +834,40 @@ else
     bad "could not reproduce a stale lock"
 fi
 
+# Cleanup of a stale lock is a gate, not best effort. If `restic unlock` cannot
+# establish a known lock state, the requested repository command must stop and
+# say why instead of treating the unknown state as if cleanup had succeeded.
+unlock_stub_dir="$(mktemp -d)"
+unlock_calls=/tmp/selftest-unlock.calls
+: > "$unlock_calls"
+chmod 755 "$unlock_stub_dir"
+chmod 666 "$unlock_calls"
+unlock_real_restic="$(command -v restic)"
+# shellcheck disable=SC2016  # generated stub, not shell expansion
+{
+    printf '#!/bin/sh\n'
+    printf 'case "$1" in\n'
+    printf '  unlock) printf "unlock\\n" >> "%s"; echo "injected unlock failure" >&2; exit 1 ;;\n' \
+        "$unlock_calls"
+    printf '  snapshots) printf "snapshots\\n" >> "%s"; exit 0 ;;\n' "$unlock_calls"
+    printf '  *) exec "%s" "$@" ;;\n' "$unlock_real_restic"
+    printf 'esac\n'
+} > "$unlock_stub_dir/restic"
+chmod 755 "$unlock_stub_dir/restic"
+
+PATH="$unlock_stub_dir:$PATH" /restic.sh snapshots \
+    >/tmp/selftest-unlock-fail.log 2>&1
+unlock_status=$?
+same "snapshots fails when stale-lock cleanup fails" 2 "$unlock_status"
+same "the failed stale-lock cleanup is named" 1 \
+    "$(grep -c 'Clear stale repository locks' /tmp/selftest-unlock-fail.log)"
+same "the backend's unlock error is retained" 1 \
+    "$(grep -c 'injected unlock failure' /tmp/selftest-unlock-fail.log)"
+same "no repository command runs after a failed stale-lock cleanup" "unlock" \
+    "$(cat "$unlock_calls")"
+rm -rf "$unlock_stub_dir"
+rm -f "$unlock_calls"
+
 # the monthly integrity check reads a slice back out of the repository
 VERIFY_SUBSET=1% /restic.sh verify >/tmp/selftest-verify.log 2>&1
 same "verify clears the stale lock and reads a data slice" 0 "$?"
