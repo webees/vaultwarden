@@ -387,9 +387,8 @@ backup() {
     # the one exit code the backup trap deliberately does not alert.
     if ! exec 9>"$LOG_DIR/backup.lock"; then
         echo "Cannot create ${LOG_DIR}/backup.lock" >&2
-        write_status failed "Cannot create backup lock"
-        send_telegram "Cannot create backup lock"
-        heartbeat fail
+        # The EXIT trap owns status writes and alerts for every exit other than 3.
+        CURRENT_STEP="Cannot create backup lock"
         exit 2
     fi
     if ! flock -n 9; then
