@@ -36,7 +36,13 @@ prepare_filesystem() {
     fi
 
     chown -R vaultwarden:vaultwarden /data /app
-    chmod 0700 /data/restic-logs
+    # Everything on the data volume is private application data: the live
+    # database, attachments, backups and the RSA signing key. Apply modes with
+    # find instead of chmod -R so a symlink created by the app can never make a
+    # privileged entrypoint change a file outside /data.
+    chmod 0700 /data /app
+    find /data -xdev -type d -exec chmod 0700 {} +
+    find /data -xdev -type f -exec chmod 0600 {} +
     chmod 0600 "$status_file"
     chmod 0600 "$mail_log"
 }

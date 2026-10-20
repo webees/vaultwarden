@@ -345,8 +345,10 @@ for filesystem setup, `config.json` hardening, pending restores and SMTP configu
 privileges with `su-exec` before starting `/services.sh`, which owns the static three-process table.
 Because Vaultwarden can write under
 `/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
-links with private files/directories, keeps `msmtp.log` at mode 0600, and refuses to chmod or chown a
-symlinked `config.json`.
+links with private files/directories and refuses to chmod or chown a symlinked `config.json`. On every boot
+it uses non-following `find` operations to set directories under `/data` to 0700 and regular files to 0600,
+covering the live database, attachments, backup hot copy, logs and RSA private key without changing a
+symlink target outside the volume.
 
 ## 📝 License
 

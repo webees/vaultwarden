@@ -60,6 +60,45 @@ else
     bad "/services.sh is missing or not executable"
 fi
 
+# Every regular file under the data volume is private application data. A mode
+# of 0755 on the RSA key or 0644 on the database lets any other Linux identity
+# in the container read the signing key or vault contents.
+db_ready=0
+for _ in $(seq 1 50); do
+    if sqlite3 /data/db.sqlite3 'PRAGMA schema_version' >/dev/null 2>&1; then
+        db_ready=1
+        break
+    fi
+    sleep 0.2
+done
+if [ "$db_ready" = "1" ]; then
+    ok "the live database is initialized before the mode test"
+else
+    bad "the live database did not become readable before the mode test"
+fi
+mkdir -p /data/attachments/selftest
+printf 'private attachment\n' > /data/attachments/selftest/probe
+printf 'hot copy\n' > /data/backup.bak
+chmod 0755 /data /data/attachments /data/attachments/selftest
+chmod 0644 /data/attachments/selftest/probe /data/db.sqlite3 /data/backup.bak
+chmod 0755 /data/rsa_key.pem
+outside=/tmp/selftest-mode-target
+printf 'outside\n' > "$outside"
+chmod 0644 "$outside"
+ln -sfn "$outside" /data/selftest-mode-link
+/entrypoint.sh true >/dev/null 2>&1
+same "/data is private to its owner after the entrypoint" 700 "$(stat -c %a /data)"
+same "the RSA private key is owner-only after the entrypoint" 600 "$(stat -c %a /data/rsa_key.pem)"
+same "the live database is owner-only after the entrypoint" 600 "$(stat -c %a /data/db.sqlite3)"
+same "the backup hot copy is owner-only after the entrypoint" 600 "$(stat -c %a /data/backup.bak)"
+same "attachment files are owner-only after the entrypoint" 600 \
+    "$(stat -c %a /data/attachments/selftest/probe)"
+same "attachment directories are owner-only after the entrypoint" 700 \
+    "$(stat -c %a /data/attachments/selftest)"
+same "data hardening does not follow a symlink outside the volume" 644 \
+    "$(stat -c %a "$outside")"
+rm -f /data/selftest-mode-link /data/backup.bak "$outside"
+
 same "/etc/msmtprc is 0600" 600 "$(stat -c %a /etc/msmtprc)"
 same "/etc/msmtprc belongs to vaultwarden" vaultwarden "$(stat -c %U /etc/msmtprc)"
 
