@@ -267,17 +267,31 @@ fi
 def check_backup_lock_error(image: str) -> None:
     """An unwritable lock is an operational error, not a concurrent run."""
     script = r"""
-mkdir -p /data/restic-logs
-chown vaultwarden:vaultwarden /data/restic-logs
+mkdir -p /data/restic-logs /tmp/stub
+chown vaultwarden:vaultwarden /data /data/restic-logs
 chmod 500 /data/restic-logs
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in' \
+    '    *api.telegram.org*) printf "telegram\n" >> /tmp/curl-calls; printf "%s\n200\n" "{\"ok\":true}" ;;' \
+    '    *health.invalid*) printf "heartbeat\n" >> /tmp/curl-calls ;;' \
+    'esac' > /tmp/stub/curl
+chmod +x /tmp/stub/curl
 rc=0
-output="$(RESTIC_PASSWORD=selftest /restic.sh backup 2>&1)" || rc=$?
+output="$(
+    PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+)" || rc=$?
 printf '%s\n' "$output"
 [ "$rc" -eq 2 ] || exit 1
 printf '%s\n' "$output" | grep -Fq 'Cannot create /data/restic-logs/backup.lock' || exit 1
 if printf '%s\n' "$output" | grep -Fq 'Another backup is already running'; then
     exit 1
 fi
+[ "$(grep -c '^telegram$' /tmp/curl-calls)" -eq 1 ] || exit 1
+[ "$(grep -c '^heartbeat$' /tmp/curl-calls)" -eq 1 ] || exit 1
+sed -n 's/^message=//p' /data/backup-status.txt | grep -Fq 'Cannot create backup lock' || exit 1
 """
     result = docker(
         "run",
@@ -290,9 +304,9 @@ fi
         check=False,
     )
     if result.returncode == 0:
-        suite.ok("an unwritable backup lock fails as an operational error")
+        suite.ok("an unwritable backup lock fails as one operational alert")
     else:
-        suite.bad("an unwritable backup lock is reported as a concurrent run")
+        suite.bad("an unwritable backup lock is masked or alerts more than once")
         print(combined(result), file=sys.stderr)
 
 
