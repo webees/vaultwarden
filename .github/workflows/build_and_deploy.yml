@@ -58,9 +58,6 @@ jobs:
           # .git/config where a later step could reuse it.
           persist-credentials: false
 
-      - name: 🌐 Refresh Cloudflare IP ranges
-        run: scripts/refresh_cloudflare_ips.sh
-
       - name: 🧹 Invalidate package layer cache
         id: cache-bust
         run: |
