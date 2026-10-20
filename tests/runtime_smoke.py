@@ -352,6 +352,76 @@ grep -Fq 'message=Backup complete (log trim failed)' /data/backup-status.txt
         print(combined(result), file=sys.stderr)
 
 
+def check_status_write_failure(image: str) -> None:
+    """A backup must fail closed when its monitoring marker cannot be updated."""
+    script = r"""
+set -eu
+rm -rf /data/* /tmp/logs /tmp/stub
+mkdir -p /data /tmp/logs /tmp/stub
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=seed\n' > /data/backup-status.txt
+chown root:root /data /data/backup-status.txt
+chmod 500 /data
+chmod 400 /data/backup-status.txt
+chown vaultwarden:vaultwarden /tmp/logs
+printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/restic
+printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/sqlite3
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in' \
+    '    *api.telegram.org*) printf "telegram\n" >> /tmp/logs/calls ;;' \
+    '    *health.invalid/*/fail*) printf "heartbeat\n" >> /tmp/logs/calls ;;' \
+    'esac' > /tmp/stub/curl
+chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
+rc=0
+output="$(
+    PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_DIR=/tmp/logs \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+)" || rc=$?
+chmod 700 /data
+printf '%s\n' "$output" >/tmp/status-write.log
+[ "$rc" -eq 2 ]
+grep -Fq 'Cannot record backup start state' /tmp/status-write.log
+[ "$(grep -c '^telegram$' /tmp/logs/calls)" -eq 1 ]
+[ "$(grep -c '^heartbeat$' /tmp/logs/calls)" -eq 1 ]
+grep -Fq 'state=unknown' /data/backup-status.txt
+
+rm -rf /data/*
+mkdir /data/backup-status.txt
+chown vaultwarden:vaultwarden /data /data/backup-status.txt
+chmod 700 /data /data/backup-status.txt
+: > /tmp/logs/calls
+rc=0
+output="$(
+    PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_DIR=/tmp/logs \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
+    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+)" || rc=$?
+printf '%s\n' "$output" >/tmp/status-write.log
+[ "$rc" -eq 2 ]
+grep -Fq 'Cannot record backup start state' /tmp/status-write.log
+[ "$(grep -c '^telegram$' /tmp/logs/calls)" -eq 1 ]
+[ "$(grep -c '^heartbeat$' /tmp/logs/calls)" -eq 1 ]
+[ -d /data/backup-status.txt ]
+[ "$(find /data/backup-status.txt -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 0 ]
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("an unwritable backup marker fails and alerts once")
+    else:
+        suite.bad("an unwritable backup marker is treated as a successful backup")
+        print(combined(result), file=sys.stderr)
+
+
 def check_app_exit_stops_stack(image: str) -> None:
     """Vaultwarden is authoritative: Fly must restart the whole container."""
     container = start_stack(
@@ -1006,6 +1076,7 @@ def main() -> int:
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
     check_log_rotation_failure(image)
+    check_status_write_failure(image)
     check_app_exit_stops_stack(image)
     check_required_tools(image)
     check_smtp_delivery(work, image)
