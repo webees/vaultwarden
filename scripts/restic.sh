@@ -668,11 +668,18 @@ restore_test() {
             /vaultwarden > "$boot_log" 2>&1 &
         boot_pid=$!
         trap 'kill "${boot_pid:-0}" 2>/dev/null || true' EXIT
+        boot_alive() {
+            [ -r "/proc/$boot_pid/stat" ] \
+                && [ "$(awk '{print $3}' "/proc/$boot_pid/stat")" != "Z" ]
+        }
         boot_ok=0
         for _ in $(seq 1 60); do
-            if wget -qO- http://127.0.0.1:18081/alive >/dev/null 2>&1; then
-                boot_ok=1
-                break
+            boot_alive || break
+            if wget -qO- http://127.0.0.1:18081/alive >/dev/null 2>&1 \
+                && sleep 1 \
+                && boot_alive; then
+                    boot_ok=1
+                    break
             fi
             sleep 0.5
         done
