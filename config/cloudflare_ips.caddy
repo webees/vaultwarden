@@ -1,3 +1,5 @@
+# Static Cloudflare origin ranges. Update this file only from the official
+# https://www.cloudflare.com/ips-v4 and /ips-v6 lists, then run the image tests.
 client_ip 173.245.48.0/20
 client_ip 103.21.244.0/22
 client_ip 103.22.200.0/22

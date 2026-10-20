@@ -48,9 +48,6 @@ jobs:
           done <<< "$files"
           python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
-      - name: 🌐 Refresh the Cloudflare ranges
-        run: scripts/refresh_cloudflare_ips.sh
-
       - name: 🧪 Helper self tests
         run: tests/selftest.sh
 

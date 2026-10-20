@@ -254,7 +254,7 @@ discovered for the first time during a real recovery.
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by `/supervise.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in Cloudflare's published origin ranges; the build workflow refreshes `config/cloudflare_ips.caddy` from Cloudflare before every image build |
+| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in the static range list in `config/cloudflare_ips.caddy`; update that file from Cloudflare's official IPv4/IPv6 lists when the ranges change |
 | A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (HTTP N)` or `(curl exit N)` followed by the API's own explanation with the token replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
@@ -303,9 +303,8 @@ commands.
 ```bash
 shellcheck scripts/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
-tests/selftest.sh                 # supervise.sh, refresh_cloudflare_ips.sh and deps.sh failure paths
+tests/selftest.sh                 # supervise.sh, dependency resolver and workflow failure paths
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
-scripts/refresh_cloudflare_ips.sh # Re-fetch the Cloudflare origin ranges used by Caddy
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic/overmind and recompute checksums
 scripts/deps.sh compare ...      # Compare resolved values against the Dockerfile pins
