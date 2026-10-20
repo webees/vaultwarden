@@ -225,6 +225,77 @@ def check_services_requires_unprivileged_user(image: str) -> None:
     suite.ok("the process table refuses to start directly as root")
 
 
+def check_timeout_process_group_cleanup(image: str) -> None:
+    """A helper that ignores TERM must not survive its command's process group."""
+    script = r"""
+set -eu
+mkdir -p /tmp/stub
+printf '%s\n' \
+    '#!/bin/sh' \
+    '(trap "" TERM; sleep 300) &' \
+    'echo "$!" > /tmp/helper.pid' \
+    'exit 0' > /tmp/stub/restic
+chmod +x /tmp/stub/restic
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest /restic.sh snapshots >/tmp/run.log 2>&1
+helper="$(cat /tmp/helper.pid)"
+sleep 0.2
+if [ -r "/proc/$helper/status" ]; then
+    state="$(awk '/^State:/ {print $2}' "/proc/$helper/status")"
+    if [ "$state" != "Z" ]; then
+        kill -KILL "$helper" 2>/dev/null || :
+        exit 1
+    fi
+fi
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("a helper that ignores TERM does not survive its command")
+    else:
+        suite.bad("a helper that ignores TERM survived the command cleanup")
+        print(combined(result), file=sys.stderr)
+
+
+def check_backup_lock_error(image: str) -> None:
+    """An unwritable lock is an operational error, not a concurrent run."""
+    script = r"""
+mkdir -p /data/restic-logs
+chown vaultwarden:vaultwarden /data/restic-logs
+chmod 500 /data/restic-logs
+rc=0
+output="$(RESTIC_PASSWORD=selftest /restic.sh backup 2>&1)" || rc=$?
+printf '%s\n' "$output"
+[ "$rc" -eq 2 ] || exit 1
+printf '%s\n' "$output" | grep -Fq 'Cannot create /data/restic-logs/backup.lock' || exit 1
+if printf '%s\n' "$output" | grep -Fq 'Another backup is already running'; then
+    exit 1
+fi
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("an unwritable backup lock fails as an operational error")
+    else:
+        suite.bad("an unwritable backup lock is reported as a concurrent run")
+        print(combined(result), file=sys.stderr)
+
+
 def check_app_exit_stops_stack(image: str) -> None:
     """Vaultwarden is authoritative: Fly must restart the whole container."""
     container = start_stack(
@@ -876,6 +947,8 @@ def main() -> int:
     check_apk_stub(work, image)
     check_invalid_restart_delay(image)
     check_services_requires_unprivileged_user(image)
+    check_timeout_process_group_cleanup(image)
+    check_backup_lock_error(image)
     check_app_exit_stops_stack(image)
     check_required_tools(image)
     check_smtp_delivery(work, image)

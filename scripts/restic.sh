@@ -128,6 +128,22 @@ require_positive_int() {
 # and the subshell keeps the backup lock out of the command's hands - a child
 # that outlives the run would hold it forever, and every later backup would
 # exit 3 as a "concurrent run", an exit that is deliberately not alerted.
+stop_process_group() {
+    local pid="$1" attempt=0
+    kill -TERM -"$pid" 2>/dev/null || return 0
+    while kill -0 -"$pid" 2>/dev/null; do
+        if [ "$attempt" -ge 10 ]; then
+            # A helper is allowed to clean up for one second. Ignoring TERM
+            # cannot leave it holding the captured pipe or the backup lock.
+            kill -KILL -"$pid" 2>/dev/null || :
+            break
+        fi
+        sleep 0.1
+        attempt=$((attempt + 1))
+    done
+    return 0
+}
+
 timed() {
     local seconds="$1"
     shift
@@ -137,7 +153,7 @@ timed() {
         timed_pid=$!
         wait "$timed_pid"
         timed_rc=$?
-        kill -TERM -"$timed_pid" 2>/dev/null
+        stop_process_group "$timed_pid"
         exit "$timed_rc"
     )
 }
@@ -365,8 +381,17 @@ backup() {
         heartbeat fail
     fi' EXIT
 
-    # Skip instead of fighting over the repository when a manual run is already active
-    exec 9>"$LOG_DIR/backup.lock"
+    # Skip instead of fighting over the repository when a manual run is already
+    # active. A lock that cannot be created is an operational failure, not a
+    # concurrent run: treating both as exit 3 hid a broken log directory behind
+    # the one exit code the backup trap deliberately does not alert.
+    if ! exec 9>"$LOG_DIR/backup.lock"; then
+        echo "Cannot create ${LOG_DIR}/backup.lock" >&2
+        write_status failed "Cannot create backup lock"
+        send_telegram "Cannot create backup lock"
+        heartbeat fail
+        exit 2
+    fi
     if ! flock -n 9; then
         log echo -e "${Y}Another backup is already running, skipping this run${X}"
         exit 3
