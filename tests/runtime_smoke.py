@@ -1031,6 +1031,38 @@ def check_restore_rejects_symlinked_hot_copy(image: str) -> None:
     suite.report()
 
 
+def check_restore_clears_stale_scratch_directory(image: str) -> None:
+    """A stale reserved scratch path must not crash-loop the entrypoint."""
+    container = scratch(image, f"restore-stale-scratch-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data/db.sqlite3.new/nested\n"
+        'printf "stale" > /data/db.sqlite3.new/nested/file\n'
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh echo started", check=False)
+    value = exec_in(container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and value == "7"
+        and not marker_left
+        and not scratch_left
+    ):
+        suite.ok("a stale restore scratch directory is cleared before the swap")
+        return
+    suite.bad("a stale restore scratch path prevented the pending restore")
+    print(
+        f"rc={started.returncode} value={value} marker_left={marker_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
 def check_restore_copy_failure(image: str) -> None:
     """A full volume must not leave the machine without a database at all."""
     container = scratch(image, f"restore-copyfail-{os.getpid()}")
@@ -1382,6 +1414,7 @@ def main() -> int:
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
     check_restore_rejects_symlinked_hot_copy(image)
+    check_restore_clears_stale_scratch_directory(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
     check_restore_drill_bind_policy(image)

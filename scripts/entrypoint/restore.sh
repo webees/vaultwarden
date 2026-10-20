@@ -29,7 +29,13 @@ apply_pending_restore() {
     # Write the replacement next to the live file and rename it into place: the
     # old rm-then-cp left a window with no database at all, so a failure in
     # between (or a crash) let Vaultwarden start on a fresh empty one.
-    rm -f "$new"
+    # The scratch name is reserved by this restore path. A directory or other
+    # stale object left by the application must not make the root entrypoint
+    # abort before it can keep the live database and let the app start.
+    if ! rm -rf -- "$new"; then
+        echo "could not clear the reserved restore scratch path; leaving the database alone" >&2
+        return 0
+    fi
     if ! cp "$backup" "$new"; then
         echo "could not copy /data/backup.bak into place; leaving the database alone" >&2
         rm -f "$new"
