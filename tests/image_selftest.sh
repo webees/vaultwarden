@@ -556,6 +556,27 @@ else
 fi
 exec 9>&-
 
+# A FIFO lock blocks a plain read-only open until a writer appears. The
+# freshness guard must reject the path type immediately and preserve it as
+# evidence instead of hanging the only hourly check above this marker.
+seed_running
+rm -f /data/restic-logs/backup.lock
+mkfifo /data/restic-logs/backup.lock
+chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
+timeout 5 /restic.sh check-freshness >/tmp/selftest-special-lock.log 2>&1
+special_lock_rc=$?
+same "a non-regular backup lock is rejected without blocking" 2 "$special_lock_rc"
+same "a non-regular backup lock is reported as uninspectable" 1 \
+    "$(grep -c 'Cannot inspect the backup lock' /tmp/selftest-special-lock.log)"
+if [ -p /data/restic-logs/backup.lock ]; then
+    ok "a non-regular backup lock is left untouched for diagnosis"
+else
+    bad "a non-regular backup lock was modified instead of rejected"
+fi
+rm -f /data/restic-logs/backup.lock
+: > /data/restic-logs/backup.lock
+chown vaultwarden:vaultwarden /data/restic-logs/backup.lock
+
 # The lock itself can be uninspectable (missing, volume full, directory
 # read-only). The check must not create it, but it also cannot treat that as a
 # healthy run: a stale running marker with no inspectable lock needs an alert.
