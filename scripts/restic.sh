@@ -749,17 +749,29 @@ fi
 trim_logs
 check_audit_trail
 
+command="${1:-}"
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
-    if [ "${1:-}" = "backup" ]; then
-        write_status failed "RESTIC_PASSWORD not set"
-        send_telegram "RESTIC_PASSWORD not set"
-    fi
-    echo "Error: RESTIC_PASSWORD not set"
-    heartbeat fail
-    exit 1
+    case "$command" in
+        check-freshness|check-disk|'')
+            # The readiness guards do not touch the repository, so they must
+            # keep working when the repository credential is unavailable.
+            ;;
+        backup)
+            write_status failed "RESTIC_PASSWORD not set"
+            send_telegram "RESTIC_PASSWORD not set"
+            echo "Error: RESTIC_PASSWORD not set" >&2
+            heartbeat fail
+            exit 1
+            ;;
+        restore|restore-test|snapshots|verify)
+            echo "Error: RESTIC_PASSWORD not set" >&2
+            heartbeat fail
+            exit 1
+            ;;
+    esac
 fi
 
-case "${1:-}" in
+case "$command" in
     backup)          backup ;;
     check-freshness) check_freshness ;;
     check-disk)      check_disk ;;
