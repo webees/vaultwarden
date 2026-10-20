@@ -4,6 +4,8 @@ set -euo pipefail
 entrypoint_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/entrypoint"
 # shellcheck source=scripts/entrypoint/filesystem.sh
 . "${entrypoint_dir}/filesystem.sh"
+# shellcheck source=scripts/entrypoint/config.sh
+. "${entrypoint_dir}/config.sh"
 # shellcheck source=scripts/entrypoint/restore.sh
 . "${entrypoint_dir}/restore.sh"
 # shellcheck source=scripts/entrypoint/smtp.sh

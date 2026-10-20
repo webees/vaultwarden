@@ -41,7 +41,7 @@ for script in scripts/entrypoint.sh scripts/entrypoint/*.sh scripts/services.sh;
         bad "${script} is missing"
     fi
 done
-for module in filesystem restore smtp; do
+for module in filesystem config restore smtp; do
     if grep -Fq "entrypoint/${module}.sh" scripts/entrypoint.sh; then
         ok "the bootstrap sources the ${module} entrypoint module"
     else
@@ -1275,8 +1275,9 @@ fi
 # The README promises the entrypoint reports the /data/config.json keys that
 # override a Fly secret. A key the warning does not cover stays invisible while
 # `fly secrets set` silently does nothing, and signups_allowed is the one that
-# decides whether anyone can register.
-entry_keys="$(sed -n 's/.*for key in \(.*\); do.*/\1/p' scripts/entrypoint/filesystem.sh | head -n 1)"
+# decides whether anyone can register. `smtp_*` must be matched by its prefix,
+# not by a short hardcoded list that misses host, port or future keys.
+entry_keys="$(sed -n 's/.*for key in \(.*\); do.*/\1/p' scripts/entrypoint/config.sh | head -n 1)"
 missing_keys=""
 for key in admin_token signups_allowed; do
     case " $entry_keys " in
@@ -1284,12 +1285,11 @@ for key in admin_token signups_allowed; do
         *) missing_keys="${missing_keys} ${key}" ;;
     esac
 done
-case " $entry_keys " in
-    *" smtp_"*) ;;
-    *) missing_keys="${missing_keys} smtp_*" ;;
-esac
+if ! grep -Fq '"smtp_[A-Za-z0-9_]+"' scripts/entrypoint/config.sh; then
+    missing_keys="${missing_keys} smtp_*"
+fi
 if [ -z "$missing_keys" ]; then
-    ok "the config.json override warning covers every key the README names"
+    ok "the config.json override warning covers known keys and every smtp_* key"
 else
     bad "the config.json override warning misses documented keys:${missing_keys}"
 fi
