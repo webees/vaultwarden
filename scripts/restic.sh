@@ -220,16 +220,43 @@ send_mail() {
 # are secrets: the request contains them, but the persistent run log must not.
 send_telegram() {
     [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && return 0
-    local text="$1" out rc status body
+    local text="$1" out rc status body status_file tail_rc
+    status_file="$(mktemp "${TMPDIR:-/tmp}/restic-telegram-status.XXXXXX")"
+    if [ -z "$status_file" ]; then
+        log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
+        return 0
+    fi
+    if ! exec 3>"$status_file"; then
+        rm -f "$status_file" \
+            || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
+        log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
+        return 0
+    fi
     # No --fail on purpose: the API answers a rejection with its own explanation,
     # and --fail discards that body, so the run log kept "exit 22" as the only
     # clue. Success is read from the body below, so a 4xx cannot pass as sent.
-    out="$(curl -sS -m 10 --retry 2 \
-        -w '\n%{http_code}' \
-        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-        --data-urlencode "text=[$APP_NAME] ${text}" \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1)"
-    rc=$?
+    # Only the bounded response reaches memory; the temporary file carries the
+    # numeric transport status and never any response content or credentials.
+    out="$(
+        {
+            curl -sS -m 10 --retry 2 \
+                -w '\n%{http_code}' \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=[$APP_NAME] ${text}" \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1
+            printf '%s\n' "$?" >&3
+        } | tail -c "$MAX_LOG_BYTES"
+    )"
+    tail_rc=$?
+    exec 3>&-
+    if [ "$tail_rc" -ne 0 ] || ! rc="$(cat "$status_file")"; then
+        rm -f "$status_file" \
+            || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
+        log echo -e "${R}Telegram notification failed (cannot record response)${X}"
+        return 0
+    fi
+    rm -f "$status_file" \
+        || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
     # curl appends the HTTP status after the body; keep them apart so a JSON
     # error body is not mistaken for the transport result.
     status="${out##*$'\n'}"
