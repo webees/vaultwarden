@@ -31,7 +31,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          shellcheck scripts/*.sh tests/*.sh
+          mapfile -d '' shell_files < <(find scripts tests -type f -name '*.sh' -print0)
+          shellcheck "${shell_files[@]}"
           python3 -m py_compile tests/*.py
 
       # Every YAML file under .github, not a list of names: the composite action
