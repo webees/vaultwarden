@@ -1015,9 +1015,10 @@ case "$*" in
     unlock) exit 0 ;;
     snapshots*)
         dd if=/dev/zero bs=1024 count=64 2>/dev/null | tr '\000' x
-        printf '\nrepository=%s\npassword=%s\naws-access=%s\naws-secret=%s\nsmtp-password=%s\nsmtp-recipient=%s\ndomain=%s\n' \
+        printf '\nrepository=%s\npassword=%s\naws-access=%s\naws-secret=%s\nsmtp-password=%s\nsmtp-username=%s\nsmtp-sender=%s\nsmtp-recipient=%s\norg-users=%s\ndomain=%s\n' \
             "$RESTIC_REPOSITORY" "$RESTIC_PASSWORD" "$AWS_ACCESS_KEY_ID" \
-            "$AWS_SECRET_ACCESS_KEY" "$SMTP_PASSWORD" "$SMTP_TO" "$DOMAIN"
+            "$AWS_SECRET_ACCESS_KEY" "$SMTP_PASSWORD" "$SMTP_USERNAME" \
+            "$SMTP_FROM" "$SMTP_TO" "$ORG_CREATION_USERS" "$DOMAIN"
         ;;
     *) exit 1 ;;
 esac
@@ -1030,7 +1031,10 @@ PATH="$leak_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
     AWS_ACCESS_KEY_ID=selftest-aws-access \
     AWS_SECRET_ACCESS_KEY=selftest-aws-secret \
     SMTP_PASSWORD=selftest-smtp-password \
+    SMTP_USERNAME=selftest-smtp-username \
+    SMTP_FROM=selftest-sender@invalid \
     SMTP_TO=selftest-recipient@invalid \
+    ORG_CREATION_USERS=selftest-owner@invalid,selftest-admin@invalid \
     DOMAIN=selftest-domain.invalid \
     /restic.sh snapshots > "$leak_output" 2>&1
 leak_rc=$?
@@ -1041,7 +1045,8 @@ same "repository query output is visibly redacted" 1 \
     "$(grep -q '<redacted>' "$leak_output" && echo 1 || echo 0)"
 for leaked in selftest-repository-secret selftest-restic-password \
     selftest-aws-access selftest-aws-secret selftest-smtp-password \
-    selftest-domain.invalid; do
+    selftest-smtp-username selftest-sender@invalid selftest-recipient@invalid \
+    selftest-owner@invalid selftest-admin@invalid selftest-domain.invalid; do
     same "repository query output does not expose ${leaked}" 0 \
         "$(grep -Fc "$leaked" "$leak_output")"
 done
