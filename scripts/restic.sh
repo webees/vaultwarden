@@ -867,7 +867,7 @@ verify() {
 # that has stopped entirely still needs HEALTHCHECK_URL, an external service.
 # Every branch here runs hourly, so the alert stays on Telegram.
 check_freshness() {
-    local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s lock_state
+    local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s lock_state active_backup=false
     now="$(date -u +%s)"
 
     # A run that was killed mid-flight leaves the status at "running" forever.
@@ -878,7 +878,7 @@ check_freshness() {
         backup_is_running
         lock_state=$?
         case "$lock_state" in
-            0) ;;
+            0) active_backup=true ;;
             1) log echo -e "${R}The last backup started but never finished${X}"
                write_status failed "Backup did not finish"
                send_telegram "Backup did not finish"
@@ -960,6 +960,15 @@ check_freshness() {
             exit 2
             ;;
     esac
+
+    # The last successful run predates the one currently in flight. Its age
+    # cannot prove the active run stale: the lock is held and the marker still
+    # says running. Wait for that run to finish rather than overwriting its
+    # evidence and sending a false stale alert.
+    if [ "$active_backup" = true ]; then
+        log echo -e "${Y}Backup is still running; skipping the last-success age check${X}"
+        return 0
+    fi
 
     if [ "$LAST_SUCCESS" = "0" ]; then
         # A fresh volume has no baseline yet, so only complain once the instance
