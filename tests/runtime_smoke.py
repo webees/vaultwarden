@@ -355,6 +355,110 @@ grep -qx 'state=failed' /data/backup-status.txt
         print(combined(result), file=sys.stderr)
 
 
+def check_telegram_error_redaction(image: str) -> None:
+    """Both Telegram credentials must stay out of the persistent run log."""
+    script = r"""
+set -eu
+mkdir -p /data/restic-logs /tmp/stub
+chown -R vaultwarden:vaultwarden /data
+printf 'state=ok\nupdated_at=1\nlast_success=1\nmessage=stale\n' \
+    >/data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+cat >/tmp/stub/curl <<'EOF'
+#!/bin/sh
+printf '%s\n' '{"ok":false,"description":"rejected 123456:selftest @selftest_channel"}'
+printf '%s\n' 401
+EOF
+chmod +x /tmp/stub/curl
+rc=0
+PATH="/tmp/stub:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/telegram-redaction.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+if grep -Fq '123456:selftest' /tmp/telegram-redaction.log; then
+    cat /tmp/telegram-redaction.log >&2
+    exit 1
+fi
+if grep -Fq '@selftest_channel' /tmp/telegram-redaction.log; then
+    cat /tmp/telegram-redaction.log >&2
+    exit 1
+fi
+if ! grep -Fq '<redacted>' /tmp/telegram-redaction.log; then
+    cat /tmp/telegram-redaction.log >&2
+    exit 1
+fi
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("Telegram error responses redact the token and chat id")
+    else:
+        suite.bad("a Telegram error response leaked a credential into the run log")
+        print(combined(result), file=sys.stderr)
+
+
+def check_snapshot_argument_boundaries(image: str) -> None:
+    """Snapshot references must never be parsed as restic options."""
+    script = r"""
+set -eu
+chown -R vaultwarden:vaultwarden /data
+mkdir -p /tmp/stub
+cat >/tmp/stub/restic <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>/tmp/restic-args
+case "$1" in
+    stats) printf '{"total_size":1024}\n' ;;
+esac
+exit 0
+EOF
+chmod +x /tmp/stub/restic
+rm -f /tmp/restic-args
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo RESTORE_CONFIRM=yes \
+    PATH="/tmp/stub:$PATH" /restic.sh restore --help >/tmp/restore-arg.log 2>&1
+if ! grep -Fq 'restore --target / -- --help' /tmp/restic-args; then
+    cat /tmp/restic-args /tmp/restore-arg.log >&2
+    exit 1
+fi
+
+rc=0
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    PATH="/tmp/stub:$PATH" /restic.sh restore-test --help \
+    >/tmp/restore-test-arg.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+if ! grep -Fq 'stats --json -- --help' /tmp/restic-args; then
+    cat /tmp/restic-args /tmp/restore-test-arg.log >&2
+    exit 1
+fi
+if ! grep -Eq '^restore --target /tmp/restic-restore\..* -- --help$' /tmp/restic-args; then
+    cat /tmp/restic-args /tmp/restore-test-arg.log >&2
+    exit 1
+fi
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("snapshot references stay behind the restic option boundary")
+    else:
+        suite.bad("a snapshot reference is parsed as a restic option")
+        print(combined(result), file=sys.stderr)
+
+
 def check_log_rotation_failure(image: str) -> None:
     """A log that cannot be capped must not leave a healthy backup marker."""
     script = r"""
@@ -1199,6 +1303,8 @@ def main() -> int:
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
     check_freshness_uptime_read_failure(image)
+    check_telegram_error_redaction(image)
+    check_snapshot_argument_boundaries(image)
     check_log_rotation_failure(image)
     check_status_write_failure(image)
     check_app_exit_stops_stack(image)
