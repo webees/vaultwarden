@@ -240,11 +240,12 @@ fly apps restart                                                  # entrypoint s
 ```
 
 The swap is refused, and the marker kept, when `/data/backup.bak` is a symlink, is missing or is not
-a readable database: the machine keeps running on the database it already has, and the reason is in
-`fly logs`. Fix the file and restart to retry, instead of following a link outside the volume or
-booting on a database Vaultwarden cannot open. The reserved `/data/db.sqlite3.new` scratch path is
-cleared before copying, so a stale directory or link left in the writable volume cannot crash-loop
-the entrypoint.
+a readable database. It is also refused when an old `db.sqlite3-wal` or `db.sqlite3-shm` path is not
+a regular file, symlink or missing path. The machine keeps running on the database it already has,
+and the reason is in `fly logs`. Fix the path and restart to retry, instead of following a link
+outside the volume or booting on a database Vaultwarden cannot open. The reserved
+`/data/db.sqlite3.new` scratch path is cleared before copying, so a stale directory or link left in
+the writable volume cannot crash-loop the entrypoint.
 
 `/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
 Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong. The boot
