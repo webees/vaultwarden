@@ -16,6 +16,18 @@ on:
         description: "Merge the generated dependency PR automatically"
         type: boolean
         default: true
+      operation:
+        description: "Run one fixed production operation"
+        type: choice
+        default: none
+        options:
+          - none
+          - audit
+          - check-freshness
+          - snapshots
+          - verify
+          - restore-test
+          - backup
   schedule:
     # Every two hours: a Vaultwarden release should not wait a full day to be
     # noticed. Minute 41 keeps the run out of the top-of-the-hour queue spike,
@@ -33,6 +45,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.operation == 'none'
     runs-on: ubuntu-24.04
     # The post-merge step alone waits up to ten minutes for the pull request to
     # land, so bound the whole job rather than the six-hour default.
@@ -259,6 +272,39 @@ jobs:
           if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
             gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
+
+  production_operation:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: 🚀 Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: 🔍 Run one fixed production operation
+        id: operation
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          OPERATION: ${{ github.event.inputs.operation }}
+        run: |
+          set -euo pipefail
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          case "$OPERATION" in
+            audit)           command="/restic.sh audit" ;;
+            check-freshness) command="/restic.sh check-freshness" ;;
+            snapshots)       command="/restic.sh snapshots" ;;
+            verify)          command="/restic.sh verify" ;;
+            restore-test)    command="/restic.sh restore-test" ;;
+            backup)          command="/restic.sh backup" ;;
+            *)
+              echo "::error::unsupported production operation" >&2
+              exit 2
+              ;;
+          esac
+          timeout 2400 flyctl ssh console --app "$FLY_APP" --command "$command"
 
   watchdog:
     # The app's scheduler cannot report its own silence. This job runs on the
