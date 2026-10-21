@@ -9,7 +9,7 @@
 # operator can fix the file and restart, and lets the app start: exiting would
 # crash-loop the machine on a restore that cannot be applied.
 apply_pending_restore() {
-    local new=/data/db.sqlite3.new backup=/data/backup.bak
+    local new=/data/db.sqlite3.new backup=/data/backup.bak sidecar
     # This function runs as root before the application starts. A link in the
     # writable data volume must never make the restore input resolve outside it.
     if [ -L "$backup" ]; then
@@ -26,6 +26,15 @@ apply_pending_restore() {
         echo "restore-pending is set but /data/backup.bak is not a readable database; leaving the database alone" >&2
         return 0
     fi
+    # The old sidecars must be removable without following links. Reject
+    # directories, FIFOs, sockets and devices before replacing the database so
+    # a malformed sidecar cannot turn the post-swap cleanup into a failed boot.
+    for sidecar in /data/db.sqlite3-wal /data/db.sqlite3-shm; do
+        if [ ! -L "$sidecar" ] && [ ! -f "$sidecar" ] && [ -e "$sidecar" ]; then
+            echo "restore-pending is set but ${sidecar} is not a regular file; leaving the database alone" >&2
+            return 0
+        fi
+    done
     # Write the replacement next to the live file and rename it into place: the
     # old rm-then-cp left a window with no database at all, so a failure in
     # between (or a crash) let Vaultwarden start on a fresh empty one.
@@ -61,9 +70,10 @@ apply_pending_restore() {
         return 0
     fi
     # The old write-ahead log belongs to the database that was just replaced and
-    # must not be replayed on top of the new one. Nothing opens the database
-    # between the rename above and this line, and a crash in between leaves the
-    # marker set, so the next start runs this whole block again.
+    # must not be replayed on top of the new one. The preflight above allows only
+    # regular files, symlinks or missing paths here, so rm removes a link itself
+    # and never follows it. Nothing opens the database between the rename and
+    # this line, and a crash in between leaves the marker set for a retry.
     rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm
     rm -f /data/restore-pending
     echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
