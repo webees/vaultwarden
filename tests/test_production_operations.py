@@ -41,6 +41,7 @@ private fdaa:0:1234::5678 address
 Image ID: img_01JABCDEFGH1234567890
 app_01JABCDEFGH1234567890
 vol_01JABCDEFGH1234567890
+deadbeef  2026-10-21 10:00:00  8a7b6c5d4e3f2011         /data
 """
 SAFE_FLY_DIAGNOSTIC = "network policy rejected the request"
 
@@ -203,6 +204,7 @@ class ProductionOperationTest(unittest.TestCase):
         for value in (
             "1234567890abcdef",
             "fedcba0987654321",
+            "8a7b6c5d4e3f2011",
             "abcdef1234567890",
             "234567890abcdef1",
             "0123456789abcdef",
@@ -210,6 +212,7 @@ class ProductionOperationTest(unittest.TestCase):
             "img_01JABCDEFGH1234567890",
             "app_01JABCDEFGH1234567890",
             "vol_01JABCDEFGH1234567890",
+            "fedcba0987654321",
         ):
             self.assertNotIn(value, output)
         for marker in (
@@ -217,8 +220,10 @@ class ProductionOperationTest(unittest.TestCase):
             "[redacted-fly-private-ipv6]",
             "[redacted-fly-image-id]",
             "[redacted-fly-id]",
+            "[redacted-fly-machine-host]",
         ):
             self.assertIn(marker, output)
+        self.assertIn("deadbeef", output)
         self.assertIn(SAFE_FLY_DIAGNOSTIC, output)
 
     def test_dispatch_exposes_only_fixed_operations(self) -> None:

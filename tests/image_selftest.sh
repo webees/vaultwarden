@@ -1022,6 +1022,8 @@ case "$*" in
             "$RESTIC_REPOSITORY" "$RESTIC_PASSWORD" "$AWS_ACCESS_KEY_ID" \
             "$AWS_SECRET_ACCESS_KEY" "$SMTP_PASSWORD" "$SMTP_USERNAME" \
             "$SMTP_FROM" "$SMTP_TO" "$ORG_CREATION_USERS" "$DOMAIN"
+        printf '\nID        Time                 Host                     Paths\n'
+        printf 'deadbeef  2026-10-21 10:00:00  8a7b6c5d4e3f2011         /data\n'
         ;;
     *) exit 1 ;;
 esac
@@ -1053,6 +1055,12 @@ for leaked in selftest-repository-secret selftest-restic-password \
     same "repository query output does not expose ${leaked}" 0 \
         "$(grep -Fc "$leaked" "$leak_output")"
 done
+same "repository query output does not expose the snapshot host" 0 \
+    "$(grep -Fc '8a7b6c5d4e3f2011' "$leak_output")"
+same "repository query output marks the redacted snapshot host" 1 \
+    "$(grep -Fc '[redacted-fly-machine-host]' "$leak_output")"
+same "repository query output preserves the short snapshot id" 1 \
+    "$(grep -Fc 'deadbeef' "$leak_output")"
 multiline_password='selftest-password-first
 selftest-password-second'
 PATH="$leak_stub_dir:$PATH" RESTIC_LOG_MAX_BYTES=4096 \
