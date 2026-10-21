@@ -927,6 +927,16 @@ def check_smtp_delivery(work: Path, image: str) -> None:
         print("\n".join(smtp_run.read_text().splitlines()[:20]), file=sys.stderr)
         suite.report()
     suite.ok("the run recorded the delivery")
+    mail_log = exec_in(
+        container,
+        "sh",
+        "-c",
+        'if [ -e /data/restic-logs/msmtp.log ]; then '
+        'awk -v needle="$SMTP_TO" \'index($0, needle) {count++} END {print count + 0}\' '
+        '/data/restic-logs/msmtp.log; else printf "0\\n"; fi',
+        env={"SMTP_TO": "ops@example.com"},
+    )
+    suite.same("the mailer does not persist the recipient in a delivery log", "0", mail_log.stdout.strip())
     suite.same("the alert path keeps the failing run's exit status", 2, result.returncode)
 
 
@@ -1263,40 +1273,27 @@ def check_entrypoint_symlink_safety(image: str) -> None:
         print(combined(started), file=sys.stderr)
 
 
-def check_mail_log_permissions(image: str) -> None:
-    """The SMTP delivery log must be owner-only and never follow a link."""
+def check_legacy_mail_log_removed(image: str) -> None:
+    """A legacy mailer log must be removed without following a link."""
     container = scratch(image, f"mail-log-{os.getpid()}")
     shell_in(
         container,
-        "rm -rf /data/*\n"
         "mkdir -p /data/restic-logs /target\n"
-        "printf previous > /data/restic-logs/msmtp.log\n"
-        "chown root:root /data/restic-logs/msmtp.log\n"
-        "chmod 0644 /data/restic-logs/msmtp.log\n",
-    )
-    first = shell_in(container, "/entrypoint.sh true", check=False)
-    mode = exec_in(container, "stat", "-c", "%U:%a", "/data/restic-logs/msmtp.log").stdout.strip()
-
-    shell_in(
-        container,
         "printf sentinel > /target/mail.log\n"
         "chmod 0644 /target/mail.log\n"
         "chown root:root /target/mail.log\n"
-        "rm /data/restic-logs/msmtp.log\n"
         "ln -s /target/mail.log /data/restic-logs/msmtp.log\n",
     )
     before = exec_in(container, "stat", "-c", "%u:%g:%a", "/target/mail.log").stdout.strip()
-    second = shell_in(container, "/entrypoint.sh true", check=False)
+    started = shell_in(container, "/entrypoint.sh true", check=False)
     after = exec_in(container, "stat", "-c", "%u:%g:%a", "/target/mail.log").stdout.strip()
-    is_file = exec_in(container, "test", "-f", "/data/restic-logs/msmtp.log", check=False).returncode == 0
-    is_link = exec_in(container, "test", "-L", "/data/restic-logs/msmtp.log", check=False).returncode == 0
+    log_left = exec_in(container, "test", "-e", "/data/restic-logs/msmtp.log", check=False).returncode == 0
 
-    suite.same("the SMTP delivery log is private to vaultwarden", "vaultwarden:600", mode)
-    suite.same("a symlinked SMTP delivery log is replaced by a regular file", True, is_file and not is_link)
-    suite.same("the SMTP delivery log link target is left unchanged", before, after)
-    if first.returncode != 0 or second.returncode != 0:
-        print(combined(first), file=sys.stderr)
-        print(combined(second), file=sys.stderr)
+    suite.same("the legacy SMTP delivery log is removed on boot", False, log_left)
+    suite.same("removing the legacy SMTP log leaves its link target unchanged", before, after)
+    if started.returncode != 0:
+        suite.bad("the entrypoint refused to start while removing the legacy SMTP log")
+        print(combined(started), file=sys.stderr)
 
 
 def check_restore_swap_failure(image: str) -> None:
@@ -1419,7 +1416,7 @@ def main() -> int:
     check_restore_chown_failure(image)
     check_restore_drill_bind_policy(image)
     check_entrypoint_symlink_safety(image)
-    check_mail_log_permissions(image)
+    check_legacy_mail_log_removed(image)
     check_restore_swap_failure(image)
     check_log_mode(image)
 

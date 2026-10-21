@@ -1335,24 +1335,29 @@ fi
 # mailbox fills, so pin the split to the source.
 for job in backup check_freshness check_disk; do
     body="$(sed -n "/^${job}() {/,/^}/p" scripts/restic.sh)"
-    if ! printf '%s\n' "$body" | grep -q 'send_telegram'; then
-        bad "${job}() no longer notifies at all"
-    elif printf '%s\n' "$body" | grep -q 'send_mail\|notify'; then
-        bad "${job}() still reaches the mailer for its hourly warning"
-    else
-        ok "${job}() notifies through Telegram only"
-    fi
+    case "$body" in
+        *send_telegram*)
+            case "$body" in
+                *send_mail*|*notify*)
+                    bad "${job}() still reaches the mailer for its hourly warning"
+                    ;;
+                *)
+                    ok "${job}() notifies through Telegram only"
+                    ;;
+            esac
+            ;;
+        *)
+            bad "${job}() no longer notifies at all"
+            ;;
+    esac
 done
-if sed -n '/^verify() {/,/^}/p' scripts/restic.sh | grep -q 'notify_rare'; then
-    ok "the monthly verify() keeps the incident email"
-else
-    bad "verify() lost the incident email channel"
-fi
-if sed -n '/^restore_test() {/,/^}/p' scripts/restic.sh | grep -q 'notify_rare'; then
-    ok "the monthly restore drill keeps the incident email"
-else
-    bad "restore_test() lost the incident email channel"
-fi
+for job in verify restore_test; do
+    body="$(sed -n "/^${job}() {/,/^}/p" scripts/restic.sh)"
+    case "$body" in
+        *notify_rare*) ok "the monthly ${job}() keeps the incident email" ;;
+        *) bad "${job}() lost the incident email channel" ;;
+    esac
+done
 
 # The README documents these knobs and the template is what a local run copies,
 # so a missing entry means the operator silently gets a default instead.
