@@ -310,6 +310,59 @@ sed -n 's/^message=//p' /data/backup-status.txt | grep -Fq 'Cannot create backup
         print(combined(result), file=sys.stderr)
 
 
+def check_read_only_audit(image: str) -> None:
+    """Production audit must report state without creating or changing files."""
+    container = scratch(image, f"audit-{os.getpid()}")
+    shell_in(
+        container,
+        r"""
+set -eu
+mkdir -p /data/restic-logs
+now="$(date -u +%s)"
+printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=selftest\n' \
+    "$now" "$now" > /data/backup-status.txt
+printf 'existing audit log\n' > /data/restic-logs/existing.log
+chown -R vaultwarden:vaultwarden /data
+chmod 700 /data/restic-logs
+chmod 600 /data/backup-status.txt /data/restic-logs/existing.log
+
+status_before="$(cksum /data/backup-status.txt)"
+status_meta_before="$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)"
+files_before="$(find /data/restic-logs -maxdepth 1 -type f -print | sort)"
+rc=0
+output="$(/restic.sh audit 2>&1)" || rc=$?
+[ "$rc" -eq 0 ]
+printf '%s\n' "$output" | grep -Fq 'Production audit passed'
+[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
+[ "$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)" = "$status_meta_before" ]
+[ "$(find /data/restic-logs -maxdepth 1 -type f -print | sort)" = "$files_before" ]
+
+chown root:root /data/backup-status.txt
+chmod 644 /data/backup-status.txt
+status_before="$(cksum /data/backup-status.txt)"
+status_meta_before="$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)"
+files_before="$(find /data/restic-logs -maxdepth 1 -type f -print | sort)"
+rc=0
+output="$(/restic.sh audit 2>&1)" || rc=$?
+[ "$rc" -eq 2 ]
+printf '%s\n' "$output" | grep -Fq 'status marker'
+[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
+[ "$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)" = "$status_meta_before" ]
+[ "$(find /data/restic-logs -maxdepth 1 -type f -print | sort)" = "$files_before" ]
+
+rm -rf /data/restic-logs
+status_before="$(cksum /data/backup-status.txt)"
+rc=0
+output="$(/restic.sh audit 2>&1)" || rc=$?
+[ "$rc" -eq 2 ]
+[ ! -e /data/restic-logs ]
+printf '%s\n' "$output" | grep -Fq 'log directory'
+[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
+""",
+    )
+    suite.ok("audit is read-only, creates no log directory, and needs no repository password")
+
+
 def check_freshness_uptime_read_failure(image: str) -> None:
     """A missing instance age must fail closed, not look like a new volume."""
     script = r"""
@@ -1480,6 +1533,7 @@ def main() -> int:
     check_services_requires_unprivileged_user(image)
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
+    check_read_only_audit(image)
     check_freshness_uptime_read_failure(image)
     check_telegram_error_redaction(image)
     check_snapshot_argument_boundaries(image)

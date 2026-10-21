@@ -189,6 +189,7 @@ fly releases rollback   # roll back to the previous image
 | Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check and the monthly restore drill also email, because they cannot repeat 24 times a day. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build, so a fully silent scheduler still fails an external workflow and GitHub notifies the repository owner |
 
 ```bash
+fly ssh console -C "/restic.sh audit"          # read-only recovery-control audit
 fly ssh console -C "/restic.sh backup"         # manual backup
 fly ssh console -C "/restic.sh snapshots"      # list snapshots
 fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
@@ -196,6 +197,14 @@ fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp
 fly ssh console -C "/restic.sh check-disk"     # how full the data volume is
 fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
 ```
+
+The dependency workflow also exposes a fixed production-operation menu: `audit`,
+`check-freshness`, `snapshots`, `verify`, `restore-test` and `backup`. It accepts no
+arbitrary command or arguments. Only `audit` is strictly read-only: it does not
+create logs, change the status file, acquire a repository lock or require
+`RESTIC_PASSWORD`. The other choices may read the repository, update the status
+file, take a lock or send an alert. The destructive `restore` operation is
+deliberately absent and remains a manually confirmed SSH operation.
 
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
@@ -274,7 +283,7 @@ being restorable is not discovered for the first time during a real recovery.
 | `check-freshness` reports `state is failed` while `last_success` looks recent | The latest backup, verification or restore drill failed; the previous success timestamp is not accepted as evidence for the latest run. Read the preserved `message=` value and the matching run log, then fix the failure and let the next backup record `state=ok` |
 | Backup exits with `Cannot record backup start state` or `Cannot record backup completion state` | `/data/backup-status.txt` is not a writable regular file. The backup job fails with exit 2 and sends its normal failure alert instead of reporting a false success; repair the path type and owner under `/data` before retrying |
 | Container exits with `… must be a positive integer` | One of `RESTIC_LOG_MAX_BYTES`, `RESTIC_LOG_DIR_MAX_BYTES`, `RESTIC_QUICK_TIMEOUT`, `RESTIC_LONG_TIMEOUT`, `BACKUP_MAX_AGE` or `BACKUP_MAX_USAGE_PERCENT` is zero or not a number; set a positive integer (the usage limit also has to be 100 or less) |
-| Repository command exits with `RESTIC_PASSWORD not set` | `backup`, `snapshots`, `restore`, `restore-test` and `verify` require the secret. `check-freshness` and `check-disk` deliberately continue without it so monitoring is not disabled by a missing repository credential |
+| Repository command exits with `RESTIC_PASSWORD not set` | `backup`, `snapshots`, `restore`, `restore-test` and `verify` require the secret. `audit`, `check-freshness` and `check-disk` deliberately continue without it: the read-only audit and local guards must keep working when the repository credential is unavailable |
 | Run log says `/data is …% full` | The volume is past `BACKUP_MAX_USAGE_PERCENT` (default 85). Move `icon_cache` aside, trim attachments, or migrate to a larger Fly volume with `fly volumes create` + `fly machine update`; the hourly backup keeps working until the volume is actually full |
 | Caddy exited and the proxy stopped responding | The static process table in `/services.sh` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
 
@@ -292,6 +301,7 @@ fly apps restart               # Restart all instances
 ### Backup Operations (via SSH)
 
 ```bash
+/restic.sh audit               # Read-only recovery-control audit
 /restic.sh backup              # Run manual backup
 /restic.sh snapshots           # List all snapshots
 /restic.sh restore-test        # Restore latest snapshot into /tmp and validate
@@ -309,7 +319,8 @@ fly logs                        # Container output, including mailer errors
 
 The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
 production access), `tests/test_deploy_verification.py` (the real deploy verifier against controlled Fly
-responses) and `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
+responses), `tests/test_production_operations.py` (the fixed production dispatch and command map) and
+`tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
 `tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
 
@@ -317,6 +328,7 @@ commands.
 shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
+tests/test_production_operations.py # fixed production dispatch and command allowlist
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic and recompute checksums

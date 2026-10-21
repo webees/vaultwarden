@@ -2,10 +2,16 @@
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-# Usage: /restic.sh {backup|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}
+# Usage: /restic.sh {backup|audit|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}
 #        `restore <id>` overwrites the live /data and needs RESTORE_CONFIRM=yes.
 
 set -uo pipefail
+
+COMMAND="${1:-}"
+READ_ONLY_AUDIT=false
+if [ "$COMMAND" = "audit" ]; then
+    READ_ONLY_AUDIT=true
+fi
 
 # Run as the unprivileged owner so files created here never become root-owned.
 # `fly ssh console` starts as root; without this, cleans before forever.
@@ -89,7 +95,9 @@ if [ -e "$STATUS_FILE" ]; then
     fi
 fi
 CURRENT_STEP=""
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+if [ "$READ_ONLY_AUDIT" != true ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+fi
 
 # Diagnostics can repeat whatever the backend sent on stderr. Never persist a
 # configured credential or private endpoint verbatim in a run log. Keep longer
@@ -149,7 +157,13 @@ log() {
     local body redacted
     body="$("$@" 2>&1)"
     redacted="$(redact_raw "$body")"
-    [ -n "$redacted" ] && printf '%s\n' "$redacted" | tee -a "$LOG"
+    if [ -n "$redacted" ]; then
+        if [ "$READ_ONLY_AUDIT" = true ]; then
+            printf '%s\n' "$redacted"
+        else
+            printf '%s\n' "$redacted" | tee -a "$LOG"
+        fi
+    fi
     return 0
 }
 
@@ -1045,6 +1059,140 @@ check_disk() {
     exit 2
 }
 
+# Report the local recovery controls without changing backup state. This is the
+# fixed read-only entry used by the production audit dispatch: it checks the
+# persistent log directory, status marker, ownership, permissions, volume space
+# and backup freshness in one bounded run.
+audit() {
+    local failed=0 file_count log_bytes bad_files dir_meta status_meta check_status
+    local used_percent available_kb marker_state now age detail
+
+    record_audit() {
+        local result="$1" label="$2" detail="$3"
+        if [ "$result" -eq 0 ]; then
+            log echo -e "${G}✓ ${label}: ${detail}${X}"
+        else
+            failed=$((failed + 1))
+            log echo -e "${R}✗ ${label}: ${detail}${X}"
+        fi
+    }
+
+    if [ -L "$LOG_DIR" ] || [ ! -d "$LOG_DIR" ]; then
+        record_audit 1 "log directory" "not a real directory"
+    else
+        if dir_meta="$(stat -c '%U %a' "$LOG_DIR" 2>/dev/null)"; then
+            if [ "$dir_meta" = "vaultwarden 700" ]; then
+                check_status=0
+            else
+                check_status=1
+            fi
+            record_audit "$check_status" "log directory" "owner/mode=${dir_meta}"
+        else
+            record_audit 1 "log directory" "metadata unreadable"
+        fi
+
+        if log_bytes="$(log_dir_size)"; then
+            if [ "$log_bytes" -le "$MAX_LOG_DIR_BYTES" ]; then
+                check_status=0
+            else
+                check_status=1
+            fi
+            record_audit "$check_status" "log bytes" "${log_bytes}/${MAX_LOG_DIR_BYTES}"
+        else
+            record_audit 1 "log bytes" "unreadable"
+        fi
+
+        if file_count="$(find "$LOG_DIR" -maxdepth 1 -type f ! -name backup.lock -print | wc -l)"; then
+            record_audit 0 "log files" "$file_count"
+        else
+            record_audit 1 "log files" "unreadable"
+        fi
+
+        if bad_files="$(find "$LOG_DIR" -maxdepth 1 -type f \
+            -exec stat -c '%U %a' {} + 2>/dev/null \
+            | awk '$1 != "vaultwarden" || $2 != "600" {count++} END {print count + 0}')"; then
+            if [ "$bad_files" -eq 0 ]; then
+                check_status=0
+            else
+                check_status=1
+            fi
+            record_audit "$check_status" "log ownership" "noncompliant=${bad_files}"
+        else
+            record_audit 1 "log ownership" "metadata unreadable"
+        fi
+
+        if [ -e "$LOG_DIR/backup.lock" ] && ! is_regular_file "$LOG_DIR/backup.lock"; then
+            record_audit 1 "backup lock" "not a regular file"
+        else
+            record_audit 0 "backup lock" "regular-or-absent"
+        fi
+    fi
+
+    if ! is_regular_file "$STATUS_FILE"; then
+        record_audit 1 "status marker" "not a regular file"
+    elif status_meta="$(stat -c '%U %a' "$STATUS_FILE" 2>/dev/null)"; then
+        if [ "$status_meta" = "vaultwarden 600" ]; then
+            check_status=0
+        else
+            check_status=1
+        fi
+        record_audit "$check_status" "status marker" "owner/mode=${status_meta}"
+    else
+        record_audit 1 "status marker" "metadata unreadable"
+    fi
+
+    marker_state="$STATUS_STATE"
+    case "$STATUS_MARKER_ERROR:$marker_state" in
+        :ok|:running) record_audit 0 "status state" "$marker_state" ;;
+        ':failed' ) record_audit 1 "status state" "failed" ;;
+        ':unknown' ) record_audit 1 "status state" "unknown" ;;
+        :*) record_audit 1 "status state" "unusable" ;;
+        *) record_audit 1 "status state" "unreadable" ;;
+    esac
+
+    now="$(date -u +%s)"
+    if [ "$STATUS_MARKER_ERROR" != "" ] || [ "$LAST_SUCCESS" -eq 0 ]; then
+        record_audit 1 "backup age" "no usable success timestamp"
+    else
+        age=$((now - LAST_SUCCESS))
+        if [ "$age" -lt 0 ]; then
+            record_audit 1 "backup age" "timestamp is in the future"
+        else
+            if [ "$age" -le "${BACKUP_MAX_AGE:-7200}" ]; then
+                check_status=0
+            else
+                check_status=1
+            fi
+            record_audit "$check_status" "backup age" "${age}s/${BACKUP_MAX_AGE:-7200}s"
+        fi
+    fi
+
+    if detail="$(df -Pk "$DATA" 2>/dev/null | awk 'NR == 2 {gsub(/%/, "", $5); print $5, $4}')"; then
+        used_percent="${detail%% *}"
+        available_kb="${detail#* }"
+        case "${used_percent}${available_kb}" in
+            ''|*[!0-9]*) record_audit 1 "volume space" "unreadable" ;;
+            *)
+                if [ "$used_percent" -lt "${BACKUP_MAX_USAGE_PERCENT:-85}" ]; then
+                    check_status=0
+                else
+                    check_status=1
+                fi
+                record_audit "$check_status" "volume space" \
+                    "used=${used_percent}% available=${available_kb}KiB"
+                ;;
+        esac
+    else
+        record_audit 1 "volume space" "unreadable"
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        log echo -e "${R}Production audit failed (${failed} checks)${X}"
+        exit 2
+    fi
+    log echo -e "${G}Production audit passed${X}"
+}
+
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 require_positive_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES"
@@ -1085,13 +1233,14 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
     esac
 fi
 
-trim_logs
-check_audit_trail
+if [ "$READ_ONLY_AUDIT" != true ]; then
+    trim_logs
+    check_audit_trail
+fi
 
-command="${1:-}"
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
-    case "$command" in
-        check-freshness|check-disk|'')
+    case "$COMMAND" in
+        audit|check-freshness|check-disk|'')
             # The readiness guards do not touch the repository, so they must
             # keep working when the repository credential is unavailable.
             ;;
@@ -1110,13 +1259,14 @@ if [ -z "${RESTIC_PASSWORD:-}" ]; then
     esac
 fi
 
-case "$command" in
+case "$COMMAND" in
     backup)          backup ;;
+    audit)           audit ;;
     check-freshness) check_freshness ;;
     check-disk)      check_disk ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
     snapshots)       clear_stale_locks; run_visible "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
-    *)               echo "Usage: $0 {backup|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
+    *)               echo "Usage: $0 {backup|audit|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
