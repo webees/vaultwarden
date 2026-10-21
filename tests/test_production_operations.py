@@ -31,6 +31,17 @@ EXPECTED_COMMANDS = {
     "restore-test": "/restic.sh restore-test",
     "backup": "/restic.sh backup",
 }
+SENSITIVE_FLY_OUTPUT = """\
+Machine ID: 1234567890abcdef
+machine config for fedcba0987654321
+lease for abcdef1234567890 acquired
+{"MachineID":"0123456789abcdef"}
+private fdaa:0:1234::5678 address
+Image ID: img_01JABCDEFGH1234567890
+app_01JABCDEFGH1234567890
+vol_01JABCDEFGH1234567890
+"""
+SAFE_FLY_DIAGNOSTIC = "network policy rejected the request"
 
 
 def load_workflow() -> dict[str, object]:
@@ -83,12 +94,44 @@ def operation_body(workflow: dict[str, object]) -> str:
     return step["run"]
 
 
+def watchdog_body(workflow: dict[str, object]) -> str:
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        raise AssertionError("workflow jobs are missing")
+    job = jobs.get("watchdog")
+    if not isinstance(job, dict):
+        raise AssertionError("watchdog job is missing")
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise AssertionError("watchdog steps are missing")
+    step = next(
+        (
+            item
+            for item in steps
+            if isinstance(item, dict)
+            and "/restic.sh check-freshness" in str(item.get("run", ""))
+        ),
+        None,
+    )
+    if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+        raise AssertionError("watchdog heartbeat step is missing")
+    return step["run"]
+
+
 def write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def run_operation(body: str, operation: str) -> tuple[subprocess.CompletedProcess[str], str]:
+def run_operation(
+    body: str,
+    operation: str,
+    *,
+    workflow_env: dict[str, str] | None = None,
+    fly_stdout: str = "",
+    fly_stderr: str = "",
+    fly_exit: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], str]:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         bin_dir = root / "bin"
@@ -106,6 +149,9 @@ exec "$@"
             bin_dir / "flyctl",
             """#!/bin/sh
 printf '%s\n' "$*" > "$FLY_ARGS_FILE"
+printf '%s' "$FLY_STDOUT"
+printf '%s' "$FLY_STDERR" >&2
+exit "$FLY_EXIT"
 """,
         )
         script = root / "operation.sh"
@@ -117,10 +163,15 @@ printf '%s\n' "$*" > "$FLY_ARGS_FILE"
                 "FLY_API_TOKEN": "token-must-not-be-printed",
                 "FLY_APP": "test-app",
                 "FLY_ARGS_FILE": str(args_file),
+                "FLY_EXIT": str(fly_exit),
+                "FLY_STDERR": fly_stderr,
+                "FLY_STDOUT": fly_stdout,
                 "OPERATION": operation,
                 "PATH": f"{bin_dir}:{environment['PATH']}",
             }
         )
+        if workflow_env:
+            environment.update(workflow_env)
         result = subprocess.run(
             ["bash", str(script)],
             cwd=REPO_ROOT,
@@ -139,6 +190,34 @@ class ProductionOperationTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = load_workflow()
         cls.body = operation_body(cls.workflow)
+        cls.watchdog_body = watchdog_body(cls.workflow)
+        cls.workflow_env = cls.workflow.get("env")
+        if not isinstance(cls.workflow_env, dict):
+            raise AssertionError("workflow environment is missing")
+
+    def assert_fly_output_is_redacted(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        output = result.stderr + result.stdout
+        for value in (
+            "1234567890abcdef",
+            "fedcba0987654321",
+            "abcdef1234567890",
+            "0123456789abcdef",
+            "fdaa:0:1234::5678",
+            "img_01JABCDEFGH1234567890",
+            "app_01JABCDEFGH1234567890",
+            "vol_01JABCDEFGH1234567890",
+        ):
+            self.assertNotIn(value, output)
+        for marker in (
+            "[redacted-fly-machine-id]",
+            "[redacted-fly-private-ipv6]",
+            "[redacted-fly-image-id]",
+            "[redacted-fly-id]",
+        ):
+            self.assertIn(marker, output)
+        self.assertIn(SAFE_FLY_DIAGNOSTIC, output)
 
     def test_dispatch_exposes_only_fixed_operations(self) -> None:
         operation = dispatch_inputs(self.workflow).get("operation")
@@ -155,7 +234,11 @@ class ProductionOperationTest(unittest.TestCase):
 
         for operation, command in EXPECTED_COMMANDS.items():
             with self.subTest(operation=operation):
-                result, args = run_operation(self.body, operation)
+                result, args = run_operation(
+                    self.body,
+                    operation,
+                    workflow_env=self.workflow_env,
+                )
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 self.assertIn(f"ssh console --app test-app --command {command}", args)
                 self.assertNotIn("token-must-not-be-printed", result.stdout)
@@ -167,6 +250,36 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(args, "")
         self.assertIn("unsupported production operation", result.stderr)
+
+    def test_production_output_is_redacted_and_exit_status_is_preserved(self) -> None:
+        result, _ = run_operation(
+            self.body,
+            "audit",
+            workflow_env=self.workflow_env,
+            fly_stdout=SENSITIVE_FLY_OUTPUT,
+            fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
+            fly_exit=19,
+        )
+
+        self.assertEqual(result.returncode, 19)
+        self.assert_fly_output_is_redacted(result)
+
+    def test_watchdog_output_is_redacted_and_exit_status_is_preserved(self) -> None:
+        result, args = run_operation(
+            self.watchdog_body,
+            "",
+            workflow_env=self.workflow_env,
+            fly_stdout=SENSITIVE_FLY_OUTPUT,
+            fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
+            fly_exit=17,
+        )
+
+        self.assertEqual(result.returncode, 17)
+        self.assertIn(
+            "ssh console --app test-app --command /restic.sh check-freshness",
+            args,
+        )
+        self.assert_fly_output_is_redacted(result)
 
 
 if __name__ == "__main__":

@@ -16,19 +16,57 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = Path(".github/workflows/build_and_deploy.yml")
 EXPECTED_IMAGE = "ghcr.io/example/image@sha256:" + "a" * 64
+SENSITIVE_FLY_OUTPUT = """\
+Machine ID: 1234567890abcdef
+machine config for fedcba0987654321
+lease for abcdef1234567890 acquired
+{"MachineID":"0123456789abcdef"}
+private fdaa:0:1234::5678 address
+Image ID: img_01JABCDEFGH1234567890
+app_01JABCDEFGH1234567890
+vol_01JABCDEFGH1234567890
+"""
+SAFE_FLY_DIAGNOSTIC = "deployment failed: upstream unavailable"
 
 
-def extract_verifier() -> str:
-    """Return the real workflow step body so tests exercise shipped behavior."""
+def extract_step(step_id: str) -> str:
+    """Return a real workflow step body so tests exercise shipped behavior."""
     ruby = """
       require "yaml"
       doc = YAML.load_file(ARGV.fetch(0))
       steps = doc.dig("jobs", "deploy", "steps") || []
-      step = steps.find { |item| item["id"] == "verify" }
-      abort "verify step is missing" if step.nil?
+      step = steps.find { |item| item["id"] == ARGV.fetch(1) }
+      abort "#{ARGV.fetch(1)} step is missing" if step.nil?
       body = step["run"].to_s
-      abort "verify step has no run body" if body.empty?
+      abort "#{ARGV.fetch(1)} step has no run body" if body.empty?
       print body
+    """
+    result = subprocess.run(
+        ["ruby", "-ryaml", "-e", ruby, str(WORKFLOW), step_id],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr.strip() or "could not extract workflow step")
+    return result.stdout
+
+
+def extract_verifier() -> str:
+    return extract_step("verify")
+
+
+def extract_release() -> str:
+    return extract_step("release")
+
+
+def workflow_environment() -> dict[str, str]:
+    ruby = """
+      require "json"
+      require "yaml"
+      doc = YAML.load_file(ARGV.fetch(0))
+      print JSON.generate(doc["env"] || {})
     """
     result = subprocess.run(
         ["ruby", "-ryaml", "-e", ruby, str(WORKFLOW)],
@@ -38,8 +76,8 @@ def extract_verifier() -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(result.stderr.strip() or "could not extract verifier")
-    return result.stdout
+        raise AssertionError(result.stderr.strip() or "could not read workflow env")
+    return json.loads(result.stdout)
 
 
 def write_fake_flyctl(directory: Path) -> None:
@@ -73,6 +111,57 @@ else:
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def run_release(
+    *,
+    fly_stdout: str = "",
+    fly_stderr: str = "",
+    fly_exit: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    body = extract_release()
+    body = body.replace("${{ env.REGISTRY }}", "ghcr.io")
+    body = body.replace("${{ env.IMAGE_NAME }}", "example/image")
+    body = body.replace("${{ needs.build.outputs.digest }}", "sha256:" + "a" * 64)
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        flyctl = bin_dir / "flyctl"
+        flyctl.write_text(
+            """#!/bin/sh
+printf '%s' "$FLY_STDOUT"
+printf '%s' "$FLY_STDERR" >&2
+exit "$FLY_EXIT"
+""",
+            encoding="utf-8",
+        )
+        flyctl.chmod(flyctl.stat().st_mode | stat.S_IXUSR)
+        release = root / "release.sh"
+        release.write_text(body, encoding="utf-8")
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "FLY_API_TOKEN": "test-token",
+                "FLY_APP": "test-app",
+                "FLY_EXIT": str(fly_exit),
+                "FLY_STDERR": fly_stderr,
+                "FLY_STDOUT": fly_stdout,
+                "PATH": f"{bin_dir}:{environment['PATH']}",
+            }
+        )
+        environment.update(workflow_environment())
+        return subprocess.run(
+            ["bash", str(release)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
 
 
 def healthy_responses() -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -155,6 +244,49 @@ def run_verifier(
 
 
 class DeploymentVerificationTest(unittest.TestCase):
+    def assert_release_output_is_redacted(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        output = result.stderr + result.stdout
+        for value in (
+            "1234567890abcdef",
+            "fedcba0987654321",
+            "abcdef1234567890",
+            "0123456789abcdef",
+            "fdaa:0:1234::5678",
+            "img_01JABCDEFGH1234567890",
+            "app_01JABCDEFGH1234567890",
+            "vol_01JABCDEFGH1234567890",
+        ):
+            self.assertNotIn(value, output)
+        for marker in (
+            "[redacted-fly-machine-id]",
+            "[redacted-fly-private-ipv6]",
+            "[redacted-fly-image-id]",
+            "[redacted-fly-id]",
+        ):
+            self.assertIn(marker, output)
+        self.assertIn(SAFE_FLY_DIAGNOSTIC, output)
+
+    def test_release_output_is_redacted(self) -> None:
+        result = run_release(
+            fly_stdout=SENSITIVE_FLY_OUTPUT,
+            fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assert_release_output_is_redacted(result)
+
+    def test_release_preserves_flyctl_exit_status(self) -> None:
+        result = run_release(
+            fly_stdout=SENSITIVE_FLY_OUTPUT,
+            fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
+            fly_exit=23,
+        )
+
+        self.assertEqual(result.returncode, 23)
+        self.assert_release_output_is_redacted(result)
+
     def test_verified_release_is_accepted(self) -> None:
         releases, status = healthy_responses()
         result = run_verifier(releases, status)

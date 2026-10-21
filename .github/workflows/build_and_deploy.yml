@@ -32,6 +32,12 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  FLY_LOG_REDACT: |
+    s/fdaa:[0-9a-fA-F:]+/[redacted-fly-private-ipv6]/g
+    s/(([Mm]achine[[:space:]]+[Ii][Dd][[:space:]]*:[[:space:]]*|[Mm]achine[[:space:]]+[Cc]onfig[[:space:]]+for[[:space:]]+|[Ll]ease[[:space:]]+for[[:space:]]+|[Mm]achine[[:space:]]+)(img_)?)[[:alnum:]_-]{12,}/\1[redacted-fly-machine-id]/g
+    /[Mm]achine/ s/("(id|[Mm]achine[Ii][Dd])"[[:space:]]*:[[:space:]]*")[^"]+/\1[redacted-fly-machine-id]/g
+    s/(([Ii]mage[[:space:]]+[Ii][Dd][[:space:]]*:[[:space:]]*|[Ii]mage[[:space:]]+)(img_)?)[[:alnum:]_-]{12,}/\1[redacted-fly-image-id]/g
+    s/(img|app|vol|org|mach)_[[:alnum:]_-]+/[redacted-fly-id]/g
 
 concurrency:
   # Shared with ghcr_cleanup.yml: both workflows mutate the same package, and a
@@ -294,6 +300,7 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
       - name: 🛫 Release
+        id: release
         if: steps.guard.outputs.skip != 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -305,7 +312,7 @@ jobs:
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
           flyctl deploy --app "$FLY_APP" \
             --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}" \
-            --yes
+            --yes 2>&1 | sed -E "$FLY_LOG_REDACT"
 
       # A zero exit from deploy only proves Fly accepted the operation. Close the
       # loop by requiring the newest release to be this exact digest, every
