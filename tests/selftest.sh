@@ -1073,6 +1073,15 @@ else
     bad "the deployment verifier is missing or rejects a healthy exact-digest release"
 fi
 
+# The manual production entry must stay a closed command map, not a second
+# shell-in-the-cloud surface. Exercise its parser and Fly invocation locally.
+echo "--- production operation dispatch"
+if python3 tests/test_production_operations.py; then
+    ok "production operations expose only the fixed command map"
+else
+    bad "the production operation map accepts an unexpected command"
+fi
+
 # The dependency job has two places that turned a real failure into a reassuring
 # message: `gh pr create ... || echo "PR already exists"` and a status-check poll
 # that read an API error as "no checks registered". Both leave the operator
