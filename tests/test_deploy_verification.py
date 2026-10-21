@@ -26,6 +26,7 @@ private fdaa:0:1234::5678 address
 Image ID: img_01JABCDEFGH1234567890
 app_01JABCDEFGH1234567890
 vol_01JABCDEFGH1234567890
+deadbeef  2026-10-21 10:00:00  8a7b6c5d4e3f2011         /data
 """
 SAFE_FLY_DIAGNOSTIC = "deployment failed: upstream unavailable"
 
@@ -259,6 +260,7 @@ class DeploymentVerificationTest(unittest.TestCase):
             "img_01JABCDEFGH1234567890",
             "app_01JABCDEFGH1234567890",
             "vol_01JABCDEFGH1234567890",
+            "8a7b6c5d4e3f2011",
         ):
             self.assertNotIn(value, output)
         for marker in (
@@ -266,8 +268,10 @@ class DeploymentVerificationTest(unittest.TestCase):
             "[redacted-fly-private-ipv6]",
             "[redacted-fly-image-id]",
             "[redacted-fly-id]",
+            "[redacted-fly-machine-host]",
         ):
             self.assertIn(marker, output)
+        self.assertIn("deadbeef", output)
         self.assertIn(SAFE_FLY_DIAGNOSTIC, output)
 
     def test_release_output_is_redacted(self) -> None:

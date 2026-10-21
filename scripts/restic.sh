@@ -141,7 +141,12 @@ redact_raw() {
     for value in "${SENSITIVE_VALUES[@]}"; do
         body="${body//"$value"/<redacted>}"
     done
-    printf '%s' "$body"
+    # `restic snapshots` prints the snapshot ID in the first table column and
+    # the machine hostname in a later column. A Fly host is a long hexadecimal
+    # identifier, while the user-facing snapshot ID is eight characters. Keep
+    # the latter readable and remove the former before any output is persisted.
+    printf '%s' "$body" | sed -E \
+        '/^[[:space:]]*[0-9a-fA-F]{8}[[:space:]]/ s/([[:space:]])[0-9a-fA-F]{12,}([[:space:]]|$)/\1[redacted-fly-machine-host]\2/g'
 }
 
 redact_file() {

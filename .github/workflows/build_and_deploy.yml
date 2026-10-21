@@ -39,6 +39,7 @@ env:
     /[Mm]achine/ s/("(id|[Mm]achine[Ii][Dd])"[[:space:]]*:[[:space:]]*")[^"]+/\1[redacted-fly-machine-id]/g
     s/(([Ii]mage[[:space:]]+[Ii][Dd][[:space:]]*:[[:space:]]*|[Ii]mage[[:space:]]+)(img_)?)[[:alnum:]_-]{12,}/\1[redacted-fly-image-id]/g
     s/(img|app|vol|org|mach)_[[:alnum:]_-]+/[redacted-fly-id]/g
+    /^[[:space:]]*[0-9a-fA-F]{8}[[:space:]]/ s/([[:space:]])[0-9a-fA-F]{12,}([[:space:]]|$)/\1[redacted-fly-machine-host]\2/g
 
 concurrency:
   # Shared with ghcr_cleanup.yml: both workflows mutate the same package, and a
