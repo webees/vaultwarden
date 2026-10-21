@@ -1064,6 +1064,15 @@ else
     bad "the deploy guard step or its actions:read permission is missing"
 fi
 
+# Deployment success means the exact digest is live, not just that flyctl
+# returned zero. Run the workflow's real verifier with controlled Fly responses.
+echo "--- deployment verification"
+if python3 tests/test_deploy_verification.py; then
+    ok "the deployment verifier accepts a fully healthy exact-digest release"
+else
+    bad "the deployment verifier is missing or rejects a healthy exact-digest release"
+fi
+
 # The dependency job has two places that turned a real failure into a reassuring
 # message: `gh pr create ... || echo "PR already exists"` and a status-check poll
 # that read an API error as "no checks registered". Both leave the operator
