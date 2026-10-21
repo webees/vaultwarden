@@ -1337,6 +1337,87 @@ def check_restore_swap_failure(image: str) -> None:
     suite.report()
 
 
+def check_restore_unsafe_sidecar(image: str) -> None:
+    """A malformed old WAL must not be replaced or abort the entrypoint."""
+    container = scratch(image, f"restore-sidecar-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data/db.sqlite3-wal\n"
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "cp /data/db.sqlite3 /tmp/live-before\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        'printf evidence > /data/db.sqlite3-wal/keep\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh true", check=False)
+    unchanged = exec_in(container, "cmp", "-s", "/data/db.sqlite3", "/tmp/live-before", check=False).returncode == 0
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    sidecar_left = exec_in(container, "test", "-d", "/data/db.sqlite3-wal", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+
+    if started.returncode == 0 and unchanged and marker_left and sidecar_left and not scratch_left:
+        suite.ok("an unsafe old WAL is preserved without replacing the live database")
+        return
+    suite.bad("an unsafe old WAL was removed after the live database had been replaced")
+    print(
+        f"rc={started.returncode} unchanged={unchanged} marker_left={marker_left} "
+        f"sidecar_left={sidecar_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    print(combined(started), file=sys.stderr)
+    suite.report()
+
+
+def check_restore_removes_sidecar_symlinks(image: str) -> None:
+    """The restore removes old sidecar links without touching their targets."""
+    container = scratch(image, f"restore-sidecar-links-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data /target\n"
+        'printf old-wal > /target/old-wal\n'
+        'printf old-shm > /target/old-shm\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        "ln -s /target/old-wal /data/db.sqlite3-wal\n"
+        "ln -s /target/old-shm /data/db.sqlite3-shm\n"
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh true", check=False)
+    value = exec_in(
+        container,
+        "sqlite3",
+        "/data/db.sqlite3",
+        "SELECT v FROM t",
+        check=False,
+    ).stdout.strip()
+    wal_link_left = exec_in(container, "test", "-L", "/data/db.sqlite3-wal", check=False).returncode == 0
+    shm_link_left = exec_in(container, "test", "-L", "/data/db.sqlite3-shm", check=False).returncode == 0
+    wal_target = exec_in(container, "cat", "/target/old-wal", check=False).stdout.strip()
+    shm_target = exec_in(container, "cat", "/target/old-shm", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+
+    if (
+        started.returncode == 0
+        and value == "7"
+        and not wal_link_left
+        and not shm_link_left
+        and wal_target == "old-wal"
+        and shm_target == "old-shm"
+        and not marker_left
+    ):
+        suite.ok("old sidecar links are removed without touching their targets")
+        return
+    suite.bad("the restore changed a sidecar symlink target or kept the old link")
+    print(
+        f"rc={started.returncode} value={value} wal_link_left={wal_link_left} "
+        f"shm_link_left={shm_link_left} wal_target={wal_target!r} "
+        f"shm_target={shm_target!r} marker_left={marker_left}",
+        file=sys.stderr,
+    )
+    print(combined(started), file=sys.stderr)
+    suite.report()
+
+
 def check_log_mode(image: str) -> None:
     """The caller's umask must not decide whether a run log is world-readable."""
     mode = docker(
@@ -1418,6 +1499,8 @@ def main() -> int:
     check_entrypoint_symlink_safety(image)
     check_legacy_mail_log_removed(image)
     check_restore_swap_failure(image)
+    check_restore_unsafe_sidecar(image)
+    check_restore_removes_sidecar_symlinks(image)
     check_log_mode(image)
 
     suite.report()
