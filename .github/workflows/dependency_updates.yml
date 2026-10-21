@@ -39,6 +39,14 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  FLY_LOG_REDACT: |
+    s/fdaa:[0-9a-fA-F:]+/[redacted-fly-private-ipv6]/g
+    s/(([Mm]achine[[:space:]]+[Ii][Dd][[:space:]]*:[[:space:]]*|[Mm]achine[[:space:]]+[Cc]onfig[[:space:]]+for[[:space:]]+|[Ll]ease[[:space:]]+for[[:space:]]+|[Mm]achine[[:space:]]+)(img_)?)[[:alnum:]_-]{12,}/\1[redacted-fly-machine-id]/g
+    /[Mm]achine/ s/("(id|[Mm]achine[Ii][Dd])"[[:space:]]*:[[:space:]]*")[^"]+/\1[redacted-fly-machine-id]/g
+    s/(([Ii]mage[[:space:]]+[Ii][Dd][[:space:]]*:[[:space:]]*|[Ii]mage[[:space:]]+)(img_)?)[[:alnum:]_-]{12,}/\1[redacted-fly-image-id]/g
+    s/(img|app|vol|org|mach)_[[:alnum:]_-]+/[redacted-fly-id]/g
+
 concurrency:
   group: dependency_updates
   cancel-in-progress: false
@@ -304,7 +312,8 @@ jobs:
               exit 2
               ;;
           esac
-          timeout 2400 flyctl ssh console --app "$FLY_APP" --command "$command"
+          timeout 2400 flyctl ssh console --app "$FLY_APP" --command "$command" \
+            2>&1 | sed -E "$FLY_LOG_REDACT"
 
   watchdog:
     # The app's scheduler cannot report its own silence. This job runs on the
@@ -328,4 +337,5 @@ jobs:
         run: |
           set -euo pipefail
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
-          flyctl ssh console --app "$FLY_APP" --command "/restic.sh check-freshness"
+          flyctl ssh console --app "$FLY_APP" --command "/restic.sh check-freshness" \
+            2>&1 | sed -E "$FLY_LOG_REDACT"
