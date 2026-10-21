@@ -37,13 +37,8 @@ configure_smtp() {
             fi
             printf 'tls on\n'
             printf 'tls_trust_file /etc/ssl/certs/ca-certificates.crt\n'
-            # msmtp opens this file itself, as the unprivileged user that sends
-            # the alert. /dev/stderr of the root process that writes this config
-            # cannot be reopened by `vaultwarden`, so every send printed "cannot
-            # log to /dev/stderr: cannot open: Permission denied" and the
-            # delivery line reached no log. Keep it on the volume: restic.sh caps
-            # and rotates the *.log files here, and excludes them from snapshots.
-            printf 'logfile /data/restic-logs/msmtp.log\n'
+            # msmtp's delivery log records recipient and relay details. The
+            # caller already records success or failure without those fields.
             printf 'timeout %s\n' "${SMTP_TIMEOUT:-15}"
             printf 'account default\n'
             printf 'host %s\n' "$SMTP_HOST"

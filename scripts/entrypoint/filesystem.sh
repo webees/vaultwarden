@@ -25,14 +25,13 @@ prepare_filesystem() {
     mkdir -p /data /app
     replace_unsafe_path /data/restic-logs dir
     replace_unsafe_path "$status_file" file
-    replace_unsafe_path "$mail_log" file
     mkdir -p /data/restic-logs
+    # Older images persisted recipient and relay metadata here. Remove only the
+    # path itself: `rm` unlinks a symlink rather than deleting its target.
+    rm -rf -- "$mail_log"
     if [ ! -f "$status_file" ]; then
         printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=No backup run recorded\n' \
             > "$status_file"
-    fi
-    if [ ! -f "$mail_log" ]; then
-        : > "$mail_log"
     fi
 
     chown -R vaultwarden:vaultwarden /data /app
@@ -44,5 +43,4 @@ prepare_filesystem() {
     find /data -xdev -type d -exec chmod 0700 {} +
     find /data -xdev -type f -exec chmod 0600 {} +
     chmod 0600 "$status_file"
-    chmod 0600 "$mail_log"
 }

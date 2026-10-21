@@ -299,7 +299,6 @@ fly apps restart               # Restart all instances
 
 ```bash
 cat /data/restic-logs/*.log     # Check persisted backup logs
-cat /data/restic-logs/msmtp.log # Owner-only delivery log written by the alert mailer
 fly logs                        # Container output, including mailer errors
 ```
 
