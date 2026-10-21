@@ -151,7 +151,9 @@ dispatches the image build directly instead of opening an empty PR.
 The same workflow then publishes a timestamped image and rolls that digest out to Fly by passing `--image`
 explicitly. `fly.toml` deliberately carries no image pin: a second copy of "what is
 running" is exactly what went stale before. Running `fly deploy` by hand builds this repository's pinned
-`Dockerfile` instead.
+`Dockerfile` instead. After deployment, the workflow polls Fly until the newest release is complete on the
+exact digest, every machine is started on that digest, and every configured health check is passing. A
+timeout or mismatch fails the workflow instead of reporting a successful deploy.
 
 `main` requires the `validate` check, so the dependency workflow arms auto-merge rather than merging
 directly: the bump lands only after shellcheck, the workflow lint, the self tests, the image build and the
@@ -306,7 +308,8 @@ fly logs                        # Container output, including mailer errors
 ### Verification
 
 The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
-production access) and `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
+production access), `tests/test_deploy_verification.py` (the real deploy verifier against controlled Fly
+responses) and `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
 `tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
 
