@@ -151,16 +151,14 @@ same "unauthenticated SMTP writes no empty user line" 0 \
 same "unauthenticated SMTP writes no empty password line" 0 \
     "$(grep -c '^password ' /etc/msmtprc)"
 
-# msmtp opens its logfile as the unprivileged user that sends the alert. Pointed
-# at the /dev/stderr of the root process that wrote the config, that path cannot
-# be reopened by `vaultwarden`: every send printed "cannot log to /dev/stderr:
-# cannot open: Permission denied" and the delivery line never reached any log.
-# The relay is unreachable on purpose, so the probe exercises the logfile
-# without delivering anything.
+# A mailer delivery log records the recipient and relay. The caller records the
+# outcome without either, so msmtp must not be given a persistent logfile.
 smtp_env SMTP_HOST=127.0.0.1 SMTP_PORT=1 SMTP_TO=ops@example.com >/dev/null
-mail_probe="$(su-exec vaultwarden sh -c 'echo probe | mail -s probe ops@example.com' 2>&1)"
-same "the alert mailer can open the logfile it is configured with" 0 \
-    "$(printf '%s\n' "$mail_probe" | grep -c 'cannot log to')"
+su-exec vaultwarden sh -c 'echo probe | mail -s probe ops@example.com' >/dev/null 2>&1 || :
+same "the alert mailer has no persistent logfile directive" 0 \
+    "$(grep -c '^logfile ' /etc/msmtprc)"
+same "the alert mailer creates no delivery log" false \
+    "$([ -e /data/restic-logs/msmtp.log ] && printf true || printf false)"
 
 # A half-configured credential pair is a typo, not a valid relay mode.
 smtp_env SMTP_HOST=smtp.example.com SMTP_TO=ops@example.com \
