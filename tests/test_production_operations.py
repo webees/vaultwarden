@@ -35,6 +35,7 @@ SENSITIVE_FLY_OUTPUT = """\
 Machine ID: 1234567890abcdef
 machine config for fedcba0987654321
 lease for abcdef1234567890 acquired
+> Updating 234567890abcdef1 [app]
 {"MachineID":"0123456789abcdef"}
 private fdaa:0:1234::5678 address
 Image ID: img_01JABCDEFGH1234567890
@@ -203,6 +204,7 @@ class ProductionOperationTest(unittest.TestCase):
             "1234567890abcdef",
             "fedcba0987654321",
             "abcdef1234567890",
+            "234567890abcdef1",
             "0123456789abcdef",
             "fdaa:0:1234::5678",
             "img_01JABCDEFGH1234567890",
