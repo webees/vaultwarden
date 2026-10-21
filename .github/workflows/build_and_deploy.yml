@@ -306,3 +306,76 @@ jobs:
           flyctl deploy --app "$FLY_APP" \
             --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}" \
             --yes
+
+      # A zero exit from deploy only proves Fly accepted the operation. Close the
+      # loop by requiring the newest release to be this exact digest, every
+      # machine to run it, and every configured health check to be passing.
+      - name: 🩺 Verify deployment
+        id: verify
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          EXPECTED_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          : "${EXPECTED_IMAGE:?the built image digest is missing}"
+
+          timeout_seconds="${DEPLOY_VERIFY_TIMEOUT_SECONDS:-300}"
+          poll_seconds="${DEPLOY_VERIFY_POLL_SECONDS:-5}"
+          [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || {
+            echo "::error::DEPLOY_VERIFY_TIMEOUT_SECONDS must be a whole number" >&2
+            exit 1
+          }
+          [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::DEPLOY_VERIFY_POLL_SECONDS must be a positive whole number" >&2
+            exit 1
+          }
+
+          deadline=$((SECONDS + timeout_seconds))
+          while :; do
+            releases_json=""
+            status_json=""
+            if releases_json="$(timeout 30 flyctl releases --app "$FLY_APP" --json)" &&
+              status_json="$(timeout 30 flyctl status --app "$FLY_APP" --json)" &&
+              jq -e \
+                --arg image "$EXPECTED_IMAGE" '
+                  (if type == "array" then sort_by(.Version) | last else empty end)
+                  as $latest
+                  | ($latest != null)
+                    and ($latest.ImageRef == $image)
+                    and (($latest.Status // "" | ascii_downcase) == "complete")
+                    and ($latest.InProgress == false)
+                ' <<< "$releases_json" >/dev/null &&
+              jq -e \
+                --arg image "$EXPECTED_IMAGE" '
+                  ((.Status // "" | ascii_downcase) == "deployed")
+                  and ((.Machines | length) > 0)
+                  and all(.Machines[];
+                    ((.state // "" | ascii_downcase) == "started")
+                    and ((.host_status // "" | ascii_downcase) == "ok")
+                    and (
+                      ((.image_ref.registry // "") + "/"
+                        + (.image_ref.repository // "") + "@"
+                        + (.image_ref.digest // "")) == $image
+                    )
+                    and ((.checks | length) > 0)
+                    and all(.checks[];
+                      ((.status // "" | ascii_downcase) == "passing")
+                    )
+                  )
+                ' <<< "$status_json" >/dev/null
+            then
+              echo "deployment verified: ${EXPECTED_IMAGE}"
+              exit 0
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              break
+            fi
+            sleep "$poll_seconds"
+          done
+
+          echo "::error::deployment verification failed after ${timeout_seconds}s" >&2
+          exit 1
