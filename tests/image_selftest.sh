@@ -1314,6 +1314,38 @@ same "the drill boots the restored database" 1 \
     "$(grep -c 'kept the restored database' /tmp/selftest-drill.log)"
 same "restore drill leaves nothing in /tmp" "" "$(leftovers)"
 
+# Scratch allocation has two ordered steps. A failure in either one must abort
+# cleanly, especially after the first step has already created a directory that
+# could otherwise retain a restored copy of the vault.
+mktemp_stub_dir="$(mktemp -d)"
+chmod 755 "$mktemp_stub_dir"
+real_mktemp="$(command -v mktemp)"
+# shellcheck disable=SC2016  # generated stub, not shell expansion
+printf '%s\n' '#!/bin/sh' \
+    'case "${MKTEMP_MODE:-}" in' \
+    '  dir-fail) case "$*" in *restic-restore.*) exit 1 ;; esac ;;' \
+    '  file-fail) case "$*" in *restic-boot.*) exit 1 ;; esac ;;' \
+    'esac' \
+    "exec '$real_mktemp' \"\$@\"" > "$mktemp_stub_dir/mktemp"
+chmod 755 "$mktemp_stub_dir/mktemp"
+
+PATH="$mktemp_stub_dir:$PATH" MKTEMP_MODE=dir-fail /restic.sh restore-test \
+    >/tmp/selftest-drill-mktemp-dir.log 2>&1
+same "restore drill stops when its scratch directory cannot be created" 2 "$?"
+same "restore drill reports a scratch-directory allocation failure" 1 \
+    "$(grep -c 'Unable to create restore scratch directory' /tmp/selftest-drill-mktemp-dir.log)"
+same "a scratch-directory allocation failure leaves nothing in /tmp" "" \
+    "$(leftovers)"
+
+PATH="$mktemp_stub_dir:$PATH" MKTEMP_MODE=file-fail /restic.sh restore-test \
+    >/tmp/selftest-drill-mktemp-file.log 2>&1
+same "restore drill stops when its boot log cannot be created" 2 "$?"
+same "restore drill reports a boot-log allocation failure" 1 \
+    "$(grep -c 'Unable to create restore scratch file' /tmp/selftest-drill-mktemp-file.log)"
+same "a boot-log allocation failure removes the already-created directory" "" \
+    "$(leftovers)"
+rm -rf "$mktemp_stub_dir"
+
 RESTIC_REPOSITORY=/tmp/selftest-missing /restic.sh restore-test \
     >/tmp/selftest-drill-fail.log 2>&1
 drill_status=$?
