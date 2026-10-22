@@ -707,9 +707,6 @@ restore_test() {
     local snapshot="${1:-latest}" tmp_parent free_bytes free_kb needed_bytes table stats_json
     tmp_parent="${TMPDIR:-/tmp}"
     [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
-    RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")"
-    RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")"
-    local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
     # The README promises the dead-man's-switch ping covers the drill and uses
     # the /fail URL when the run fails. Only the failure ping was missing, so a
     # broken drill left the switch armed as if nothing had run. Cleanup and the
@@ -727,6 +724,15 @@ restore_test() {
             notify_rare "Restore drill failed"
             heartbeat fail
         fi' EXIT
+
+    # Arm cleanup before creating either path. Otherwise a successful directory
+    # allocation followed by a failed boot-log allocation leaves a full restored
+    # snapshot behind, with no trap left to remove it.
+    RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")" \
+        || die "Unable to create restore scratch directory"
+    RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")" \
+        || die "Unable to create restore scratch file"
+    local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
 
     clear_stale_locks
     # Sizing has three distinct outcomes: a real number, a successful response
