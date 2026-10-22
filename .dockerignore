@@ -4,8 +4,10 @@
 .DS_Store
 *.log
 
-# Never ship local secrets or files that the Dockerfile does not COPY
-.env
+# Never ship local secrets or files that the Dockerfile does not COPY.
+# Include every .env variant: a remote builder receives the whole context, not
+# only the files named by COPY, so `.env` alone would still upload `.env.local`.
+.env*
 .github
 README.md
 LICENSE
