@@ -14,6 +14,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = Path(".github/workflows/dependency_updates.yml")
+BUILD_WORKFLOW = Path(".github/workflows/build_and_deploy.yml")
 EXPECTED_OPTIONS = {
     "none",
     "audit",
@@ -47,14 +48,14 @@ deadbeef  2026-10-21 10:00:00  8a7b6c5d4e3f2011         /data
 SAFE_FLY_DIAGNOSTIC = "network policy rejected the request"
 
 
-def load_workflow() -> dict[str, object]:
+def load_workflow(path: Path = WORKFLOW) -> dict[str, object]:
     ruby = """
       require "json"
       require "yaml"
       print JSON.generate(YAML.load_file(ARGV.fetch(0)))
     """
     result = subprocess.run(
-        ["ruby", "-e", ruby, str(WORKFLOW)],
+        ["ruby", "-e", ruby, str(path)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -390,6 +391,20 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertEqual(operation.get("type"), "choice")
         self.assertEqual(set(operation.get("options", [])), EXPECTED_OPTIONS)
         self.assertEqual(operation.get("default"), "none")
+
+    def test_build_trigger_matches_the_build_workflow_name(self) -> None:
+        build = load_workflow(BUILD_WORKFLOW)
+        build_name = build.get("name")
+        self.assertIsInstance(build_name, str)
+        self.assertTrue(build_name)
+
+        events = self.workflow.get("on", self.workflow.get("true"))
+        self.assertIsInstance(events, dict)
+        workflow_run = events.get("workflow_run")
+        self.assertIsInstance(workflow_run, dict)
+        names = workflow_run.get("workflows")
+        self.assertIsInstance(names, list)
+        self.assertEqual(names, [build_name])
 
     def test_operation_uses_the_canonical_restic_command_only(self) -> None:
         self.assertNotIn("eval", self.body)
