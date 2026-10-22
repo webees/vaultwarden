@@ -1229,7 +1229,8 @@ fi
 # land, so it must only run when this run is the one merging the PR. A manual
 # dispatch that leaves the merge to a human - the documented `auto_merge: false`
 # path - used to poll for ten minutes and fail a run that did exactly what was
-# asked. Both steps now read one decision, so they cannot drift apart.
+# asked. Both steps now read one decision, and the dispatch also requires the
+# preceding PR and auto-merge steps to succeed so their failures stay distinct.
 if ruby -ryaml -e '
     job = YAML.load_file(".github/workflows/dependency_updates.yml")["jobs"]["check"]
     gate = (job["env"] || {})["AUTO_MERGE"].to_s
@@ -1243,10 +1244,13 @@ if ruby -ryaml -e '
     exit 1 unless (arm["if"] || "").include?("env.AUTO_MERGE")
     exit 1 unless (dispatch["if"] || "").include?("env.AUTO_MERGE")
     exit 1 unless (dispatch["if"] || "").include?("always()")
+    exit 1 unless (dispatch["if"] || "").include?("steps.compare.outputs.changed == '\''true'\''")
+    exit 1 unless (dispatch["if"] || "").include?("steps.pr.outcome == '\''success'\''")
+    exit 1 unless (dispatch["if"] || "").include?("steps.arm.outcome == '\''success'\''")
   '; then
-    ok "the post-merge dispatch is gated on the same auto-merge decision as the merge"
+    ok "the post-merge dispatch requires the dependency PR and auto-merge steps to succeed"
 else
-    bad "the post-merge dispatch runs on a run that is not merging the pull request"
+    bad "the post-merge dispatch can run after a dependency PR or auto-merge failure"
 fi
 
 # ── docs consistency ──────────────────────────────────────────────────────────

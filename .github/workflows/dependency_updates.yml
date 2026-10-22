@@ -1,4 +1,4 @@
-name: 🛡️ Dependency Updates
+name: Dependency Updates
 
 on:
   # GitHub's schedule is best-effort: it can be delayed for tens of minutes and
@@ -245,7 +245,12 @@ jobs:
       # (a manual dispatch with auto_merge off) that merge arrives as an ordinary
       # push, and polling for ten minutes only failed a run that did its job.
       - name: 🚀 Build and deploy after the merge
-        if: always() && steps.compare.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
+        if: >-
+          always() &&
+          steps.compare.outputs.changed == 'true' &&
+          steps.pr.outcome == 'success' &&
+          steps.arm.outcome == 'success' &&
+          env.AUTO_MERGE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.pr.outputs.number }}
