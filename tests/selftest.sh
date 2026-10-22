@@ -251,13 +251,19 @@ case "$apk_out" in
 esac
 
 # A package-only update never changes the Dockerfile, so the pin comparison
-# cannot see it. Whether that needs a rebuild is a separate, testable unit.
-"$REPO_ROOT/scripts/deps.sh" rebuild-needed 3 >"$work/rebuild-yes.out" 2>&1
-same "a pending package upgrade asks for a rebuild" 0 "$?"
-"$REPO_ROOT/scripts/deps.sh" rebuild-needed 0 >"$work/rebuild-no.out" 2>&1
-same "no pending upgrade leaves the build alone" 1 "$?"
-"$REPO_ROOT/scripts/deps.sh" rebuild-needed bogus >/dev/null 2>&1
-same "an invalid package count is rejected" 2 "$?"
+# cannot see it. The decision must use the published image, not only the pinned
+# base image: apk upgrade removes the base image's pending upgrades from our
+# image, and inspecting the base again would rebuild on every schedule.
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 3 2 >"$work/rebuild-yes.out" 2>&1
+same "a published image with pending upgrades asks for a rebuild" 0 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 3 0 >"$work/rebuild-no.out" 2>&1
+same "upgrades already applied to the published image leave the build alone" 1 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 0 2 >"$work/rebuild-base-clean.out" 2>&1
+same "a clean pinned base image leaves the build alone" 1 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed bogus 0 >/dev/null 2>&1
+same "an invalid base package count is rejected" 2 "$?"
+"$REPO_ROOT/scripts/deps.sh" rebuild-needed 3 bogus >/dev/null 2>&1
+same "an invalid published package count is rejected" 2 "$?"
 
 # The pinned base image ships packages that already have newer builds. `apk add`
 # never touches them, so without an explicit upgrade the weekly rebuild would
@@ -522,6 +528,15 @@ else
     bad "a commit that cannot change the image still rebuilds and redeploys, or an ignored path is built into the image"
 fi
 
+# A remote builder receives the complete context before Dockerfile COPY rules
+# run. A local `.env.local` or `.env.production` must therefore be ignored by
+# the context itself, not merely absent from an explicit COPY instruction.
+if grep -Fxq '.env*' .dockerignore; then
+    ok "Docker build context excludes every .env variant"
+else
+    bad "Docker build context can upload .env.local or another .env variant"
+fi
+
 # The Fly app name is personal data, so it must never be committed: fly.toml
 # carries no `app` key and the deploy step reads it from a repository secret,
 # which also makes flyctl's own output masked in this public repo's logs.
@@ -779,22 +794,29 @@ else
 fi
 
 # The dependency check only opened a PR when a pin changed, so an Alpine-only
-# security update waited for the weekly rebuild. The apk probe has to run every
-# day, and a non-zero count has to dispatch the build workflow.
+# security update waited for the weekly rebuild. It has to probe the pinned base
+# for new package releases, then probe our published image before dispatching:
+# the base keeps reporting the same upgrades after apk upgrade has applied them.
 if ruby -ryaml -e '
     doc = YAML.load_file(".github/workflows/dependency_updates.yml")
     steps = doc["jobs"]["check"]["steps"]
     apk = steps.find { |s| (s["run"] || "").include?("deps.sh apk") }
     exit 1 if apk.nil? || apk.key?("if")
+    published = steps.find { |s| s["id"] == "published-apk" }
+    exit 1 if published.nil?
+    exit 1 unless (published["run"] || "").include?(":latest")
+    exit 1 unless (published["if"] || "").include?("steps.apk.outputs.count")
     rebuild = steps.find { |s| (s["run"] || "").include?("rebuild-needed") }
     exit 1 if rebuild.nil?
     exit 1 unless (rebuild["run"] || "").include?("gh workflow run")
+    exit 1 unless (rebuild["run"] || "").include?("PUBLISHED_APK_COUNT")
     exit 1 unless (rebuild["if"] || "").include?("success()")
+    exit 1 unless (rebuild["env"] || {}).key?("PUBLISHED_APK_COUNT")
     exit 1 unless (doc["permissions"] || {})["actions"] == "write"
   '; then
-    ok "the two-hour check probes packages every run and dispatches a rebuild when needed"
+    ok "the two-hour check compares the published image before dispatching a package rebuild"
 else
-    bad "package-only updates still wait for the weekly rebuild"
+    bad "the package rebuild still trusts the pinned base and can dispatch every two hours"
 fi
 
 # The apk probe reads the pinned base image, so it keeps reporting the same

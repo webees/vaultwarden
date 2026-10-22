@@ -40,6 +40,8 @@ permissions:
   pull-requests: write
 
 env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
   FLY_LOG_REDACT: |
     s/fdaa:[0-9a-fA-F:]+/[redacted-fly-private-ipv6]/g
     s/([Uu]pdating[[:space:]]+)[0-9a-fA-F]{12,}([[:space:]]+\[[^]]+\])/\1[redacted-fly-machine-id]\2/g
@@ -88,9 +90,22 @@ jobs:
             SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
             SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
 
-      - name: 📦 Compare the Alpine packages
+      - name: 📦 Compare the pinned base packages
         id: apk
         run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
+
+      # The pinned base keeps listing an upgrade after our build has applied it.
+      # Probe the image that is actually deployed before dispatching another
+      # build, otherwise every two-hour schedule repeats the same rebuild.
+      - name: 📦 Compare packages in the published image
+        id: published-apk
+        if: >-
+          success() &&
+          github.event_name != 'workflow_run' &&
+          steps.compare.outputs.changed != 'true' &&
+          steps.apk.outputs.count != '0'
+        continue-on-error: true
+        run: scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
 
       - name: 🔧 Update the pins and validate the build
         if: steps.compare.outputs.changed == 'true'
@@ -270,21 +285,27 @@ jobs:
           exit 1
 
       # A package-only update never changes the Dockerfile, so no PR exists to
-      # merge. Rebuild the published image directly instead of waiting for the
-      # weekly schedule; the build workflow upgrades the packages and deploys.
-      #
-      # Skip this for a workflow_run fallback: the apk probe reads the pinned
-      # base image, which still lists the same upgrades after our build has
-      # already applied them, so allowing it there would loop build -> check ->
-      # build. The schedule and the weekly rebuild still cover package updates.
+      # merge. Rebuild only when the published image still has the upgrades the
+      # pinned base advertised; a clean published image means this work is done.
+      # The workflow_run fallback stays out to bound retries after a failed build.
       - name: ♻️ Rebuild when only Alpine packages moved
-        if: success() && steps.compare.outputs.changed != 'true' && github.event_name != 'workflow_run'
+        if: >-
+          success() &&
+          steps.compare.outputs.changed != 'true' &&
+          steps.apk.outputs.count != '0' &&
+          github.event_name != 'workflow_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
+          PUBLISHED_APK_COUNT: ${{ steps.published-apk.outputs.count }}
+          PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}
         run: |
           set -euo pipefail
-          if scripts/deps.sh rebuild-needed "${APK_COUNT:-0}"; then
+          if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then
+            echo "::error::could not inspect packages in the latest published image" >&2
+            exit 1
+          fi
+          if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
 
