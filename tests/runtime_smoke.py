@@ -681,6 +681,51 @@ def check_client_ip(container: str) -> None:
     probe_code(container, "-H", "Host: example.com", "-H", "CF-Connecting-IP: 203.0.113.99", "http://127.0.0.1:8080/api/config")
 
 
+def check_admin_access_boundary(container: str) -> None:
+    """The origin must not serve /admin around Cloudflare Access."""
+    direct = probe_code(container, "-H", "Host: example.com", "http://127.0.0.1:8080/admin")
+    forged = probe_code(
+        container,
+        "-H",
+        "Host: example.com",
+        "-H",
+        "Fly-Client-IP: 203.0.113.9",
+        "-H",
+        "Cf-Access-Jwt-Assertion: forged",
+        "http://127.0.0.1:8080/admin",
+    )
+    no_jwt = probe_code(
+        container,
+        "-H",
+        "Host: example.com",
+        "-H",
+        "Fly-Client-IP: 173.245.48.10",
+        "http://127.0.0.1:8080/admin",
+    )
+    via_cloudflare = probe_code(
+        container,
+        "-H",
+        "Host: example.com",
+        "-H",
+        "Fly-Client-IP: 173.245.48.10",
+        "-H",
+        "CF-Connecting-IP: 203.0.113.9",
+        "-H",
+        "Cf-Access-Jwt-Assertion: selftest",
+        "http://127.0.0.1:8080/admin",
+    )
+    ordinary = probe_code(container, "-H", "Host: example.com", "http://127.0.0.1:8080/api/config")
+    if direct == forged == no_jwt == "403" and via_cloudflare != "403" and ordinary == "200":
+        suite.ok("admin requires both a Cloudflare source and an Access assertion; ordinary paths stay open")
+        return
+    suite.bad(
+        "admin boundary: "
+        f"direct={direct} forged={forged} no_jwt={no_jwt} "
+        f"via_cloudflare={via_cloudflare} ordinary={ordinary}"
+    )
+    suite.report()
+
+
 def check_access_log(container: str) -> str:
     """Capture the log once, and prove the probes are in it before asserting on it."""
     log = access_log(container)
@@ -1632,6 +1677,7 @@ def main() -> int:
     # security controls, and neither was asserted anywhere.
     check_host_whitelist(container)
     check_client_ip(container)
+    check_admin_access_boundary(container)
     check_security_headers(container)
     log = check_access_log(container)
     check_redaction(container, log)
