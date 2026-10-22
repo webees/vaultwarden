@@ -23,6 +23,7 @@ EXPECTED_OPTIONS = {
     "restore-test",
     "backup",
 }
+EXPECTED_ALERT_NEEDS = {"check", "production_operation", "watchdog"}
 EXPECTED_COMMANDS = {
     "audit": "/restic.sh audit",
     "check-freshness": "/restic.sh check-freshness",
@@ -120,6 +121,30 @@ def watchdog_body(workflow: dict[str, object]) -> str:
     return step["run"]
 
 
+def notify_body(workflow: dict[str, object]) -> str:
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        raise AssertionError("workflow jobs are missing")
+    job = jobs.get("notify_failure")
+    if not isinstance(job, dict):
+        raise AssertionError("notify_failure job is missing")
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise AssertionError("notify_failure steps are missing")
+    step = next(
+        (
+            item
+            for item in steps
+            if isinstance(item, dict)
+            and "Send the failure through Telegram" in str(item.get("name", ""))
+        ),
+        None,
+    )
+    if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+        raise AssertionError("Telegram failure step is missing")
+    return step["run"]
+
+
 def write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -187,12 +212,109 @@ exit "$FLY_EXIT"
         return result, args
 
 
+def run_notifier(
+    body: str,
+    credentials: str,
+    *,
+    fly_api_token: str | None = "fly-token-must-not-be-printed",
+    curl_status: str = "200",
+    curl_body: str = "",
+    curl_stderr: str = "",
+    curl_exit: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        args_file = root / "curl-args"
+
+        write_executable(
+            bin_dir / "timeout",
+            """#!/bin/sh
+shift
+exec "$@"
+""",
+        )
+        write_executable(
+            bin_dir / "flyctl",
+            """#!/bin/sh
+printf '%s' "$FLY_CREDENTIALS"
+""",
+        )
+        write_executable(
+            bin_dir / "curl",
+            """#!/bin/sh
+printf '%s\n' "$*" > "$CURL_ARGS_FILE"
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      shift
+      output="$1"
+      ;;
+  esac
+  shift
+done
+[ -z "$output" ] || printf '%s' "$CURL_BODY" > "$output"
+printf '%s' "$CURL_STATUS"
+printf '%s' "$CURL_STDERR" >&2
+exit "$CURL_EXIT"
+""",
+        )
+        script = root / "notify.sh"
+        script.write_text(body, encoding="utf-8")
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "CURL_ARGS_FILE": str(args_file),
+                "CURL_BODY": curl_body,
+                "CURL_EXIT": str(curl_exit),
+                "CURL_STATUS": curl_status,
+                "CURL_STDERR": curl_stderr,
+                "FAILED_JOBS": (
+                    "check=failure,production_operation=skipped,watchdog=skipped"
+                ),
+                "FLY_APP": "test-app",
+                "FLY_CREDENTIALS": credentials,
+                "PATH": f"{bin_dir}:{environment['PATH']}",
+                "RUNNER_TEMP": str(root),
+                "RUN_URL": "https://example.invalid/actions/runs/1",
+                "SHA": "0123456789abcdef0123456789abcdef01234567",
+                "WORKFLOW": "Dependency Updates",
+            }
+        )
+        if fly_api_token is None:
+            environment.pop("FLY_API_TOKEN", None)
+        else:
+            environment["FLY_API_TOKEN"] = fly_api_token
+        result = subprocess.run(
+            ["bash", str(script)],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        args = args_file.read_text(encoding="utf-8").strip() if args_file.exists() else ""
+        return result, args
+
+
+def visible_notifier_output(result: subprocess.CompletedProcess[str]) -> str:
+    output = result.stderr + result.stdout
+    return "\n".join(
+        line for line in output.splitlines() if not line.startswith("::add-mask::")
+    )
+
+
 class ProductionOperationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = load_workflow()
         cls.body = operation_body(cls.workflow)
         cls.watchdog_body = watchdog_body(cls.workflow)
+        cls.notify_body = notify_body(cls.workflow)
         cls.workflow_env = cls.workflow.get("env")
         if not isinstance(cls.workflow_env, dict):
             raise AssertionError("workflow environment is missing")
@@ -287,6 +409,117 @@ class ProductionOperationTest(unittest.TestCase):
             args,
         )
         self.assert_fly_output_is_redacted(result)
+
+    def test_failure_alert_waits_for_every_work_job_and_is_bounded(self) -> None:
+        jobs = self.workflow.get("jobs")
+        self.assertIsInstance(jobs, dict)
+        notify = jobs.get("notify_failure")
+        self.assertIsInstance(notify, dict)
+        self.assertEqual(notify.get("if"), "failure()")
+        self.assertEqual(set(notify.get("needs", [])), EXPECTED_ALERT_NEEDS)
+        self.assertEqual(notify.get("permissions"), {})
+        self.assertEqual(notify.get("timeout-minutes"), 5)
+
+        steps = notify.get("steps")
+        self.assertIsInstance(steps, list)
+        setup = next(
+            (
+                step
+                for step in steps
+                if isinstance(step, dict)
+                and "setup-flyctl" in str(step.get("uses", ""))
+            ),
+            None,
+        )
+        self.assertIsInstance(setup, dict)
+        self.assertRegex(str(setup.get("uses")), r"@[0-9a-f]{40}$")
+
+        self.assertIn("https://api.telegram.org/", self.notify_body)
+        self.assertIn("::add-mask::", self.notify_body)
+        self.assertIn("--data-urlencode", self.notify_body)
+        self.assertNotIn("set -x", self.notify_body)
+
+    def test_failure_alert_sends_and_redacts_credentials(self) -> None:
+        token = "123456789:AAHfake-token-for-tests"
+        chat_id = "@selftest_channel"
+        credentials = (
+            f"TELEGRAM_BOT_TOKEN={token}\nTELEGRAM_CHAT_ID={chat_id}\n"
+        )
+
+        result, args = run_notifier(self.notify_body, credentials)
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Telegram failure alert sent", result.stdout)
+        self.assertIn("https://api.telegram.org/", args)
+        self.assertIn(f"chat_id={chat_id}", args)
+        output = visible_notifier_output(result)
+        self.assertNotIn(token, output)
+        self.assertNotIn(chat_id, output)
+
+    def test_failure_alert_rejects_malformed_credentials_before_curl(self) -> None:
+        credentials = "TELEGRAM_BOT_TOKEN=not-a-token\nTELEGRAM_CHAT_ID=@selftest\n"
+
+        result, args = run_notifier(self.notify_body, credentials)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(args, "")
+        self.assertIn("usable Telegram bot token", result.stderr)
+        self.assertNotIn("not-a-token", result.stderr + result.stdout)
+        self.assertNotIn("@selftest", result.stderr + result.stdout)
+
+    def test_failure_alert_rejects_ambiguous_app_output(self) -> None:
+        credentials = (
+            "TELEGRAM_BOT_TOKEN=123456789:AAHfake-token-for-tests\n"
+            "TELEGRAM_CHAT_ID=@selftest_channel\n"
+            "unexpected output\n"
+        )
+
+        result, args = run_notifier(self.notify_body, credentials)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(args, "")
+        self.assertIn("unexpected credential output", result.stderr)
+        self.assertNotIn("123456789:AAHfake-token-for-tests", result.stderr)
+        self.assertNotIn("@selftest_channel", result.stderr)
+
+    def test_failure_alert_reports_missing_fly_token(self) -> None:
+        result, args = run_notifier(
+            self.notify_body,
+            "TELEGRAM_BOT_TOKEN=123456789:AAHfake-token-for-tests\n"
+            "TELEGRAM_CHAT_ID=@selftest_channel\n",
+            fly_api_token=None,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(args, "")
+        self.assertIn("FLY_API_TOKEN", result.stderr)
+        self.assertNotIn("123456789:AAHfake-token-for-tests", result.stderr)
+
+    def test_failure_alert_redacts_transport_and_api_errors(self) -> None:
+        token = "123456789:AAHfake-token-for-tests"
+        chat_id = "@selftest_channel"
+        credentials = (
+            f"TELEGRAM_BOT_TOKEN={token}\nTELEGRAM_CHAT_ID={chat_id}\n"
+        )
+        cases = (
+            {
+                "curl_exit": 7,
+                "curl_stderr": f"proxy rejected {token} for {chat_id}",
+            },
+            {
+                "curl_status": "401",
+                "curl_body": f'{{"description":"rejected {token} for {chat_id}"}}',
+            },
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                result, _ = run_notifier(self.notify_body, credentials, **case)
+                output = visible_notifier_output(result)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("<redacted>", output)
+                self.assertNotIn(token, output)
+                self.assertNotIn(chat_id, output)
 
 
 if __name__ == "__main__":
