@@ -11,11 +11,11 @@ ARG TARGETARCH
 # Upstream pins live here on purpose: .github/workflows/dependency_updates.yml
 # checks them every two hours, opens a PR with the newest release, and merges it once
 # validate passes, which rebuilds the image and rolls it out to Fly.
-ARG SUPERCRONIC_VERSION=v0.2.50
+ARG SUPERCRONIC_VERSION=v0.2.51
 
 # Artifact digests, so a replaced or truncated download fails the build.
-ARG SUPERCRONIC_SHA256_amd64=d2d7c97fbfefc763d5bbcbbb3f8d61f9dd3410ce5d05a737c414994b80b8cdd0
-ARG SUPERCRONIC_SHA256_arm64=a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e28156899e2
+ARG SUPERCRONIC_SHA256_amd64=cc232108374e8e2b537045f2d5eaa1229f619db314c3ba6a14d38b35dc0aa123
+ARG SUPERCRONIC_SHA256_arm64=4ae22576a78223d8ccdf5f3b3660a5cbb5288416bf0ca96afc4a36d195932b94
 
 # ── Environment ───────────────────────────────────────────────────────────────
 ENV HOME=/app \
