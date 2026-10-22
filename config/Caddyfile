@@ -84,6 +84,28 @@
 			respond "Access Denied: Domain not allowed" 403
 		}
 
+		# Cloudflare Access protects /admin at the edge. Enforce the same boundary
+		# at the origin as well: a direct request to the Fly hostname must not
+		# bypass Access by reaching Vaultwarden's admin panel directly. Fly owns
+		# Fly-Client-IP, so only a request arriving through a Cloudflare range can
+		# satisfy this matcher. The JWT is presence-checked here; signature
+		# validation remains Cloudflare's responsibility at the edge.
+		@admin path /admin /admin/*
+		@admin_via_cloudflare {
+			path /admin /admin/*
+			import /cloudflare_ips.caddy
+			header Cf-Access-Jwt-Assertion *
+		}
+		handle @admin_via_cloudflare {
+			reverse_proxy 127.0.0.1:8081 {
+				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+				header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+			}
+		}
+		handle @admin {
+			respond "Access Denied: Cloudflare Access required" 403
+		}
+
 		# Cloudflare publishes origin-facing ranges. Fly overwrites Fly-Client-IP
 		# at the edge, so a direct client cannot impersonate one; only then is
 		# CF-Connecting-IP trusted.
