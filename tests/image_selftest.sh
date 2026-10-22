@@ -1304,6 +1304,26 @@ kill "$port_pid" 2>/dev/null || true
 wait "$port_pid" 2>/dev/null || true
 rm -rf "$port_dir"
 
+# A failed restore boot must not turn an arbitrary crash-loop log into an
+# unbounded temporary file. Keep the cap small so a regression is visible in
+# the captured run output, and restore the real executable even when the probe
+# fails.
+mv /vaultwarden /vaultwarden.drill-real
+cat > /vaultwarden <<'EOF'
+#!/bin/sh
+dd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr '\000' x
+exit 1
+EOF
+chmod 755 /vaultwarden
+RESTIC_LOG_MAX_BYTES=4096 /restic.sh restore-test \
+    >/tmp/selftest-drill-large-boot.log 2>&1
+large_boot_rc=$?
+large_boot_bytes="$(wc -c < /tmp/selftest-drill-large-boot.log)"
+mv -f /vaultwarden.drill-real /vaultwarden
+same "restore drill stops when its cold boot emits an unbounded log" 2 "$large_boot_rc"
+same "restore drill bounds cold-boot diagnostics" 1 \
+    "$([ "$large_boot_bytes" -lt 65536 ] && echo 1 || echo 0)"
+
 /restic.sh restore-test >/tmp/selftest-drill.log 2>&1
 same "restore drill succeeds" 0 "$?"
 # The snapshot carries the consistent hot copy instead of the live db.* files,

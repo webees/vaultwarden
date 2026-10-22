@@ -443,15 +443,38 @@ check_audit_trail() {
 # cleanup would silently delete nothing, leaving a full copy in /tmp.
 RESTORE_TMP_DIR=""
 RESTORE_BOOT_LOG=""
+RESTORE_BOOT_PIPE=""
+RESTORE_BOOT_READER=""
+
+finish_restore_boot_log() {
+    local attempt=0
+    [ -n "$RESTORE_BOOT_READER" ] || return 0
+    # The reader normally reaches EOF as soon as Vaultwarden exits. Do not let a
+    # child that inherited the pipe keep the restore path blocked forever.
+    while kill -0 "$RESTORE_BOOT_READER" 2>/dev/null; do
+        if [ "$attempt" -ge 50 ]; then
+            kill "$RESTORE_BOOT_READER" 2>/dev/null || :
+            break
+        fi
+        sleep 0.1
+        attempt=$((attempt + 1))
+    done
+    wait "$RESTORE_BOOT_READER" 2>/dev/null || :
+    RESTORE_BOOT_READER=""
+}
 
 cleanup_restore_tmp() {
+    finish_restore_boot_log
     [ -n "$RESTORE_TMP_DIR" ] && rm -rf "$RESTORE_TMP_DIR"
     [ -n "$RESTORE_BOOT_LOG" ] && rm -f "$RESTORE_BOOT_LOG"
+    [ -n "$RESTORE_BOOT_PIPE" ] && rm -f "$RESTORE_BOOT_PIPE"
     # Bash keeps an EXIT trap set after the function that armed it returns, so
     # the same cleanup runs a second time at script exit. Clearing the paths
     # makes that second pass a no-op instead of a second recursive delete.
     RESTORE_TMP_DIR=""
     RESTORE_BOOT_LOG=""
+    RESTORE_BOOT_PIPE=""
+    RESTORE_BOOT_READER=""
     return 0
 }
 
@@ -732,6 +755,15 @@ restore_test() {
         || die "Unable to create restore scratch directory"
     RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")" \
         || die "Unable to create restore scratch file"
+    RESTORE_BOOT_PIPE="$RESTORE_TMP_DIR/restore-boot.fifo"
+    if ! mkfifo "$RESTORE_BOOT_PIPE"; then
+        die "Unable to create restore boot-log pipe"
+    fi
+    # Vaultwarden can emit an arbitrary amount of output before it fails. Keep
+    # the temporary file at the same bounded tail size as every other command
+    # diagnostic, rather than allowing a crash loop to fill /tmp.
+    tail -c "$MAX_LOG_BYTES" < "$RESTORE_BOOT_PIPE" > "$RESTORE_BOOT_LOG" &
+    RESTORE_BOOT_READER=$!
     local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
 
     clear_stale_locks
@@ -826,12 +858,13 @@ restore_test() {
     log echo -e "${B}Restore cold boot${X} "
     if (
         cd "$target"
+        boot_pid=""
+        trap '[ -n "${boot_pid:-}" ] && kill "$boot_pid" 2>/dev/null || :' EXIT
         DATA_FOLDER="$target/data" WEB_VAULT_ENABLED=false \
             ROCKET_ADDRESS=127.0.0.1 ROCKET_PORT=18081 \
             CONFIG_FILE="$target/restore-drill-config.json" \
-            /vaultwarden > "$boot_log" 2>&1 &
+            /vaultwarden > "$RESTORE_BOOT_PIPE" 2>&1 &
         boot_pid=$!
-        trap 'kill "${boot_pid:-0}" 2>/dev/null || true' EXIT
         boot_alive() {
             [ -r "/proc/$boot_pid/stat" ] \
                 && [ "$(awk '{print $3}' "/proc/$boot_pid/stat")" != "Z" ]
@@ -849,8 +882,10 @@ restore_test() {
         done
         kill "$boot_pid" 2>/dev/null || true
         wait "$boot_pid" 2>/dev/null || true
+        boot_pid=""
         [ "$boot_ok" = "1" ]
     ); then
+        finish_restore_boot_log
         log echo -e "${G}✓${X}"
         if [ "$(sqlite3 "$target/data/db.sqlite3" 'SELECT v FROM drill_sentinel' 2>/dev/null)" = "restore-drill" ]; then
             log echo -e "${G}The cold boot kept the restored database${X}"
@@ -859,6 +894,7 @@ restore_test() {
             exit 2
         fi
     else
+        finish_restore_boot_log
         log echo -e "${R}✗${X}"
         log redact_file "$boot_log"
         exit 2
