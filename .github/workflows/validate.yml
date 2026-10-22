@@ -39,9 +39,6 @@ jobs:
       # that expires GHCR tags was never parsed, so a syntax error there would
       # only surface when a run reached that step.
       - name: 🧾 Workflow, action and fly.toml syntax
-        env:
-          ACTIONLINT_VERSION: 1.7.12
-          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
           files="$(find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)"
@@ -52,6 +49,12 @@ jobs:
           done <<< "$files"
           python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
+      - name: 🧭 Lint GitHub Actions workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
