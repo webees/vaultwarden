@@ -1109,6 +1109,8 @@ def check_restore_rejects_directory_destination(image: str) -> None:
     evidence = exec_in(container, "cat", "/data/db.sqlite3/evidence", check=False).stdout.strip()
     marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
     scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    nested_scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3/db.sqlite3.new", check=False).returncode == 0
+    backup_left = exec_in(container, "test", "-f", "/data/backup.bak", check=False).returncode == 0
     output = combined(started)
 
     if (
@@ -1118,6 +1120,8 @@ def check_restore_rejects_directory_destination(image: str) -> None:
         and evidence == "live-directory"
         and marker_left
         and not scratch_left
+        and not nested_scratch_left
+        and backup_left
         and "/data/db.sqlite3 is not a regular file" in output
     ):
         suite.ok("a directory at the database path is refused without a false success")
@@ -1125,7 +1129,8 @@ def check_restore_rejects_directory_destination(image: str) -> None:
     suite.bad("a directory at the database path was treated as a restored database")
     print(
         f"rc={started.returncode} directory_left={directory_left} evidence={evidence!r} "
-        f"marker_left={marker_left} scratch_left={scratch_left}\n{output}",
+        f"marker_left={marker_left} scratch_left={scratch_left} "
+        f"nested_scratch_left={nested_scratch_left} backup_left={backup_left}\n{output}",
         file=sys.stderr,
     )
     suite.report()
@@ -1147,6 +1152,7 @@ def check_restore_rejects_symlinked_destination(image: str) -> None:
     value = exec_in(container, "sqlite3", "/target/live.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
     marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
     scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    backup_left = exec_in(container, "test", "-f", "/data/backup.bak", check=False).returncode == 0
     output = combined(started)
 
     if (
@@ -1156,6 +1162,7 @@ def check_restore_rejects_symlinked_destination(image: str) -> None:
         and value == "2"
         and marker_left
         and not scratch_left
+        and backup_left
         and "/data/db.sqlite3 is not a regular file" in output
     ):
         suite.ok("a symlink at the database path is refused without redirecting the restore")
@@ -1163,7 +1170,39 @@ def check_restore_rejects_symlinked_destination(image: str) -> None:
     suite.bad("a symlink at the database path redirected or replaced the restore target")
     print(
         f"rc={started.returncode} link_left={link_left} value={value} "
-        f"marker_left={marker_left} scratch_left={scratch_left}\n{output}",
+        f"marker_left={marker_left} scratch_left={scratch_left} backup_left={backup_left}\n{output}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
+def check_restore_allows_missing_destination(image: str) -> None:
+    """A missing live database is a valid target for the pending restore."""
+    container = scratch(image, f"restore-missing-target-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh echo started", check=False)
+    value = exec_in(container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and value == "7"
+        and not marker_left
+        and not scratch_left
+    ):
+        suite.ok("a pending restore still accepts a missing database path")
+        return
+    suite.bad("a pending restore refused a missing database path")
+    print(
+        f"rc={started.returncode} value={value} marker_left={marker_left} scratch_left={scratch_left}\n"
+        f"{combined(started)}",
         file=sys.stderr,
     )
     suite.report()
@@ -1623,6 +1662,7 @@ def main() -> int:
     check_restore_rejects_symlinked_hot_copy(image)
     check_restore_rejects_directory_destination(image)
     check_restore_rejects_symlinked_destination(image)
+    check_restore_allows_missing_destination(image)
     check_restore_clears_stale_scratch_directory(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
