@@ -379,54 +379,19 @@ jobs:
 
           # The Telegram credentials already live in the application secret
           # store. Keep them out of GitHub secrets and out of the step output.
-          credentials=""
-          # shellcheck disable=SC2016  # These variables expand inside the app.
-          if ! credentials="$(timeout 30 flyctl ssh console --quiet --app "$FLY_APP" \
-              --command 'printf "TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID"' \
-              2>/dev/null)"; then
-            echo "::error::Could not read Telegram credentials from the app environment" >&2
+          read_app_secret() {
+            timeout 30 flyctl ssh console --quiet --app "$FLY_APP" \
+              --command "printenv $1"
+          }
+
+          if ! token="$(read_app_secret TELEGRAM_BOT_TOKEN 2>/dev/null)"; then
+            echo "::error::Could not read TELEGRAM_BOT_TOKEN from the app environment" >&2
             exit 1
           fi
-
-          token=""
-          chat_id=""
-          token_seen=0
-          chat_id_seen=0
-          while IFS= read -r line; do
-            case "$line" in
-              TELEGRAM_BOT_TOKEN=*)
-                [ "$token_seen" -eq 0 ] || {
-                  echo "::error::The app returned ambiguous Telegram credentials" >&2
-                  exit 1
-                }
-                token="${line#TELEGRAM_BOT_TOKEN=}"
-                token_seen=1
-                ;;
-              TELEGRAM_CHAT_ID=*)
-                [ "$chat_id_seen" -eq 0 ] || {
-                  echo "::error::The app returned ambiguous Telegram credentials" >&2
-                  exit 1
-                }
-                chat_id="${line#TELEGRAM_CHAT_ID=}"
-                chat_id_seen=1
-                ;;
-              '')
-                ;;
-              *)
-                echo "::error::The app returned unexpected credential output" >&2
-                exit 1
-                ;;
-            esac
-          done <<< "$credentials"
-
-          [ "$token_seen" -eq 1 ] || {
-            echo "::error::The app did not provide TELEGRAM_BOT_TOKEN" >&2
+          if ! chat_id="$(read_app_secret TELEGRAM_CHAT_ID 2>/dev/null)"; then
+            echo "::error::Could not read TELEGRAM_CHAT_ID from the app environment" >&2
             exit 1
-          }
-          [ "$chat_id_seen" -eq 1 ] || {
-            echo "::error::The app did not provide TELEGRAM_CHAT_ID" >&2
-            exit 1
-          }
+          fi
 
           case "$token" in
             ''|*[!0-9A-Za-z:_-]*)
