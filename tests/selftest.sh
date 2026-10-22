@@ -528,6 +528,15 @@ else
     bad "a commit that cannot change the image still rebuilds and redeploys, or an ignored path is built into the image"
 fi
 
+# A remote builder receives the complete context before Dockerfile COPY rules
+# run. A local `.env.local` or `.env.production` must therefore be ignored by
+# the context itself, not merely absent from an explicit COPY instruction.
+if grep -Fxq '.env*' .dockerignore; then
+    ok "Docker build context excludes every .env variant"
+else
+    bad "Docker build context can upload .env.local or another .env variant"
+fi
+
 # The Fly app name is personal data, so it must never be committed: fly.toml
 # carries no `app` key and the deploy step reads it from a repository secret,
 # which also makes flyctl's own output masked in this public repo's logs.
