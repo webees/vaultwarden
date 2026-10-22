@@ -186,7 +186,7 @@ fly releases rollback   # roll back to the previous image
 | Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check and the monthly restore drill also email, because they cannot repeat 24 times a day. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build, so a fully silent scheduler still fails an external workflow and GitHub notifies the repository owner |
+| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check and the monthly restore drill also email, because they cannot repeat 24 times a day. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build. If that workflow fails, a bounded notification job reuses the app's Telegram credentials and sends the workflow, commit, failed jobs and run URL; GitHub email remains the fallback when the app cannot be reached |
 
 ```bash
 fly ssh console -C "/restic.sh audit"          # read-only recovery-control audit
@@ -319,7 +319,8 @@ fly logs                        # Container output, including mailer errors
 
 The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
 production access), `tests/test_deploy_verification.py` (the real deploy verifier against controlled Fly
-responses), `tests/test_production_operations.py` (the fixed production dispatch and command map) and
+responses), `tests/test_production_operations.py` (the fixed production dispatch, command map and failure
+alert path) and
 `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
 `tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
@@ -328,7 +329,7 @@ commands.
 shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
-tests/test_production_operations.py # fixed production dispatch and command allowlist
+tests/test_production_operations.py # production dispatch, command allowlist and failure alert path
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic and recompute checksums

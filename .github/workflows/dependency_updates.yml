@@ -346,3 +346,159 @@ jobs:
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
           flyctl ssh console --app "$FLY_APP" --command "/restic.sh check-freshness" \
             2>&1 | sed -E "$FLY_LOG_REDACT"
+
+  notify_failure:
+    # GitHub email is the last-resort channel if this job cannot reach Telegram.
+    # The notification job must wait for every possible work job, otherwise a
+    # failure could be reported before the job that actually failed has ended.
+    if: failure()
+    needs:
+      - check
+      - production_operation
+      - watchdog
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ secrets.FLY_APP }}
+    steps:
+      - name: 🚀 Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: 📣 Send the failure through Telegram
+        env:
+          WORKFLOW: ${{ github.workflow }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FAILED_JOBS: check=${{ needs.check.result }},production_operation=${{ needs.production_operation.result }},watchdog=${{ needs.watchdog.result }}
+        run: |
+          set -euo pipefail
+          : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+
+          # The Telegram credentials already live in the application secret
+          # store. Keep them out of GitHub secrets and out of the step output.
+          credentials=""
+          # shellcheck disable=SC2016  # These variables expand inside the app.
+          if ! credentials="$(timeout 30 flyctl ssh console --quiet --app "$FLY_APP" \
+              --command 'printf "TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID"' \
+              2>/dev/null)"; then
+            echo "::error::Could not read Telegram credentials from the app environment" >&2
+            exit 1
+          fi
+
+          token=""
+          chat_id=""
+          token_seen=0
+          chat_id_seen=0
+          while IFS= read -r line; do
+            case "$line" in
+              TELEGRAM_BOT_TOKEN=*)
+                [ "$token_seen" -eq 0 ] || {
+                  echo "::error::The app returned ambiguous Telegram credentials" >&2
+                  exit 1
+                }
+                token="${line#TELEGRAM_BOT_TOKEN=}"
+                token_seen=1
+                ;;
+              TELEGRAM_CHAT_ID=*)
+                [ "$chat_id_seen" -eq 0 ] || {
+                  echo "::error::The app returned ambiguous Telegram credentials" >&2
+                  exit 1
+                }
+                chat_id="${line#TELEGRAM_CHAT_ID=}"
+                chat_id_seen=1
+                ;;
+              '')
+                ;;
+              *)
+                echo "::error::The app returned unexpected credential output" >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$credentials"
+
+          [ "$token_seen" -eq 1 ] || {
+            echo "::error::The app did not provide TELEGRAM_BOT_TOKEN" >&2
+            exit 1
+          }
+          [ "$chat_id_seen" -eq 1 ] || {
+            echo "::error::The app did not provide TELEGRAM_CHAT_ID" >&2
+            exit 1
+          }
+
+          case "$token" in
+            ''|*[!0-9A-Za-z:_-]*)
+              echo "::error::The app did not provide a usable Telegram bot token" >&2
+              exit 1
+              ;;
+            *:*) ;;
+            *)
+              echo "::error::The app did not provide a usable Telegram bot token" >&2
+              exit 1
+              ;;
+          esac
+          case "$chat_id" in
+            @*)
+              case "${chat_id#@}" in
+                ''|*[!A-Za-z0-9_]*)
+                  echo "::error::The app did not provide a usable Telegram chat id" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            -[0-9]*|[0-9]*)
+              case "${chat_id#-}" in
+                ''|*[!0-9]*)
+                  echo "::error::The app did not provide a usable Telegram chat id" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "::error::The app did not provide a usable Telegram chat id" >&2
+              exit 1
+              ;;
+          esac
+          echo "::add-mask::${token}"
+          echo "::add-mask::${chat_id}"
+
+          message="$(printf 'Workflow failed: %s\nSHA: %s\nJobs: %s\nRun: %s' \
+            "$WORKFLOW" "$SHA" "$FAILED_JOBS" "$RUN_URL")"
+          response_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-response.XXXXXX")"
+          error_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-error.XXXXXX")"
+          cleanup() {
+            rm -f "$response_file" "$error_file"
+          }
+          trap cleanup EXIT
+
+          set +e
+          status="$(curl --silent --show-error --max-time 15 \
+            --output "$response_file" --write-out '%{http_code}' \
+            --request POST \
+            --data-urlencode "chat_id=${chat_id}" \
+            --data-urlencode "text=${message}" \
+            "https://api.telegram.org/bot${token}/sendMessage" 2>"$error_file")"
+          rc=$?
+          set -e
+
+          redact_file() {
+            local body
+            body="$(head -c 4096 "$1")"
+            body="${body//"$token"/<redacted>}"
+            body="${body//"$chat_id"/<redacted>}"
+            printf '%s' "$body"
+          }
+
+          if [ "$rc" -ne 0 ]; then
+            detail="$(redact_file "$error_file")"
+            echo "::error::Telegram failure alert transport failed (curl exit ${rc}): ${detail:-no diagnostic}" >&2
+            exit 1
+          fi
+          if [ "$status" != "200" ]; then
+            detail="$(redact_file "$response_file")"
+            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${detail:-no response body}" >&2
+            exit 1
+          fi
+          echo "Telegram failure alert sent"
