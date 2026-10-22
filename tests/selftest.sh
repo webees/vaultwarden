@@ -932,6 +932,28 @@ else
     fi
 fi
 
+# README says required validation includes the workflow lint. Parsing YAML only
+# checks syntax; actionlint catches invalid expressions, action inputs and shell
+# mistakes that YAML parsers accept. Keep the executable and checksum pinned so
+# validation cannot silently download a different tool.
+# shellcheck disable=SC2016  # Ruby source, not shell expansion
+if ruby -ryaml -e '
+    doc = YAML.load_file(".github/workflows/validate.yml")
+    steps = doc["jobs"]["validate"]["steps"] || []
+    lint = steps.find { |s| (s["run"] || "").include?("actionlint") }
+    exit 1 if lint.nil?
+    env = lint["env"] || {}
+    exit 1 unless env["ACTIONLINT_VERSION"].to_s.match?(/\A1\.[0-9]+\.[0-9]+\z/)
+    exit 1 unless env["ACTIONLINT_SHA256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    body = lint["run"].to_s
+    exit 1 unless body.include?("actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz")
+    exit 1 unless body.include?("sha256sum -c") && body.include?("actionlint\" -no-color")
+  '; then
+    ok "the required validation runs a checksum-pinned actionlint"
+else
+    bad "the required validation parses YAML but never runs the documented workflow lint"
+fi
+
 # The `gh api` calls in build_and_deploy.yml need the same bound as the ones in
 # deps.sh: gh has no timeout flag of its own.
 if ruby -ryaml -e '
