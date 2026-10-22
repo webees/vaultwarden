@@ -353,8 +353,10 @@ The Caddy configuration automatically applies the following security posture:
 - **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
 
 Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
-Fly health checks). The admin panel at `/admin` is served on allowed hosts and remains protected by
-`ADMIN_TOKEN`, so treat that token as a high-value secret. Caddy access logs strip `Authorization`,
+Fly health checks). `/admin` and `/admin/*` additionally require a request from a Cloudflare origin range
+with a `Cf-Access-Jwt-Assertion` header, so a direct request to the Fly hostname cannot bypass Cloudflare
+Access. The admin panel also remains protected by `ADMIN_TOKEN`, so treat that token as a high-value secret.
+Caddy access logs strip `Authorization`,
 `Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `CF-Access-Jwt-Assertion`,
 `X-Forwarded-For`, `X-Real-IP`, and `Fly-Client-IP` before writing to stdout. Query strings are
 replaced with `?redacted`, because one-time credentials and addresses do not belong in request logs;
