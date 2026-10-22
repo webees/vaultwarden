@@ -1,6 +1,6 @@
 # Named for what it does, not for the registry it pushes to: this workflow
 # builds the multi-arch image, publishes it and rolls that digest out to Fly.
-name: 🐳 Build and Deploy
+name: Build and Deploy
 
 on:
   workflow_dispatch: {}
