@@ -26,6 +26,14 @@ apply_pending_restore() {
         echo "restore-pending is set but /data/backup.bak is not a readable database; leaving the database alone" >&2
         return 0
     fi
+    # A directory or link at the destination would make mv place the restored
+    # file inside it (or otherwise follow an unexpected path) and then report
+    # success. Only replace a missing path or a regular database file.
+    if [ -L /data/db.sqlite3 ] \
+        || { [ -e /data/db.sqlite3 ] && [ ! -f /data/db.sqlite3 ]; }; then
+        echo "restore-pending is set but /data/db.sqlite3 is not a regular file; leaving the database alone" >&2
+        return 0
+    fi
     # The old sidecars must be removable without following links. Reject
     # directories, FIFOs, sockets and devices before replacing the database so
     # a malformed sidecar cannot turn the post-swap cleanup into a failed boot.

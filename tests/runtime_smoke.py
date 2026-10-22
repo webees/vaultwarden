@@ -1094,6 +1094,81 @@ def check_restore_rejects_symlinked_hot_copy(image: str) -> None:
     suite.report()
 
 
+def check_restore_rejects_directory_destination(image: str) -> None:
+    """A directory at the live database path must not become a restore target."""
+    container = scratch(image, f"restore-dir-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data/db.sqlite3\n"
+        'printf "live-directory" > /data/db.sqlite3/evidence\n'
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh echo started", check=False)
+    directory_left = exec_in(container, "test", "-d", "/data/db.sqlite3", check=False).returncode == 0
+    evidence = exec_in(container, "cat", "/data/db.sqlite3/evidence", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    output = combined(started)
+
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and directory_left
+        and evidence == "live-directory"
+        and marker_left
+        and not scratch_left
+        and "/data/db.sqlite3 is not a regular file" in output
+    ):
+        suite.ok("a directory at the database path is refused without a false success")
+        return
+    suite.bad("a directory at the database path was treated as a restored database")
+    print(
+        f"rc={started.returncode} directory_left={directory_left} evidence={evidence!r} "
+        f"marker_left={marker_left} scratch_left={scratch_left}\n{output}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
+def check_restore_rejects_symlinked_destination(image: str) -> None:
+    """A link at the live database path must not redirect the restore."""
+    container = scratch(image, f"restore-target-link-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data /target\n"
+        'sqlite3 /target/live.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "ln -s /target/live.sqlite3 /data/db.sqlite3\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh echo started", check=False)
+    link_left = exec_in(container, "test", "-L", "/data/db.sqlite3", check=False).returncode == 0
+    value = exec_in(container, "sqlite3", "/target/live.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+    output = combined(started)
+
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and link_left
+        and value == "2"
+        and marker_left
+        and not scratch_left
+        and "/data/db.sqlite3 is not a regular file" in output
+    ):
+        suite.ok("a symlink at the database path is refused without redirecting the restore")
+        return
+    suite.bad("a symlink at the database path redirected or replaced the restore target")
+    print(
+        f"rc={started.returncode} link_left={link_left} value={value} "
+        f"marker_left={marker_left} scratch_left={scratch_left}\n{output}",
+        file=sys.stderr,
+    )
+    suite.report()
+
+
 def check_restore_clears_stale_scratch_directory(image: str) -> None:
     """A stale reserved scratch path must not crash-loop the entrypoint."""
     container = scratch(image, f"restore-stale-scratch-{os.getpid()}")
@@ -1546,6 +1621,8 @@ def main() -> int:
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
     check_restore_rejects_symlinked_hot_copy(image)
+    check_restore_rejects_directory_destination(image)
+    check_restore_rejects_symlinked_destination(image)
     check_restore_clears_stale_scratch_directory(image)
     check_restore_copy_failure(image)
     check_restore_chown_failure(image)
