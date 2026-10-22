@@ -7,7 +7,7 @@ on:
   # check is a no-op when the pins already match, and the concurrency group
   # keeps it from overlapping the schedule.
   workflow_run:
-    workflows: ["🐳 Build and Deploy"]
+    workflows: ["Build and Deploy"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
