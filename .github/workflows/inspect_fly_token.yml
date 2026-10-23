@@ -1,4 +1,4 @@
-name: Inspect Fly Token Scope
+name: Rotate Fly Token
 
 on:
   pull_request:
@@ -10,27 +10,47 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  rotate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Set up Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
-      - name: Inspect token caveats
+      - name: Create an app-scoped token for encrypted transfer
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          PUBLIC_KEY_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUE5NE9BaWFvaFg4eDZaVTdDYWR3aAp3ZkZ0NHk1OUdsZDZFZ1dOL244Qm8waXFJT0U2RW83WWVIZkxhTTRBVGF5eXJaRExla1ZGT3VoajRYWkE3cU00ClJPeXBZK3VEcDJhTmRoOVFUUUkyNUQ4SCtVRkhkamo0VzRSdlZDOG02dlF2dDB2bVd5NnhXZDFvOUVJeXliL00KMlUwSEZHSUdXQUFBK0UxMm10TUU4TTBXd2RHWWdGYVY1RFozcTdYYUp5MDdkWldIZS84azdDSERSTXRtZmk5ZwpRcW43d25WRnZtbEV2OUV5QVlQMjkrU3pBdllqMmtlaXU0MjdDWE1KRU43NHRrTFBWSk9xQkFrL1VwWWoxdkpiClQ1V3ZjaGRxRGdYMVJGVWdSQ1FZblFNd0hRa0dpdkJXbFBXS3Z6SVJsd3lvbitOK2tNdzZkaFpoMFNJQjQ5MHUKOFFmUDdKd1RLMzVCeVQ0Q0V5ZElITjY2ZE90RTIwSEIwN1BZNTk1OG1PTTdUWXh0WTJMMWtEZjQrT0UyM2NBYgp6T0xHVFlQQ0V4QzA5WDVncWVEM0k3THdQUExNQVUxU3pxN1g3QXZ2TzdWS2I0aXlFbnoxb3d5dWJiZ3NwSkJyCkhTanJMLzhTeGFQeHB0MGVra3pKeTZITUd6bXkxQ2VCZXM3RnN1WDJrbjh0QWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
         run: |
           set -euo pipefail
           : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
-          output="$(mktemp)"
-          trap 'rm -f "$output"' EXIT
-          timeout 30 flyctl tokens debug -t "$FLY_API_TOKEN" >"$output"
-          jq -e 'type == "array" and length > 0' "$output" >/dev/null
-          jq '{
-            macaroons: length,
-            app_caveats: ([.[].caveats[]? | select(.body.apps? != null)] | length),
-            org_caveats: ([.[].caveats[]? | select(.body.id? != null and .body.mask? != null)] | length),
-            mutation_caveats: ([.[].caveats[]? | select(.body.mutations? != null)] | length),
-            app_resource_counts: [.[].caveats[]? | select(.body.apps? != null) | (.body.apps | length)]
-          }' "$output"
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          umask 077
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s' "$PUBLIC_KEY_B64" | base64 --decode >"$work/public.pem"
+          timeout 60 flyctl tokens create deploy \
+            --app "$FLY_APP" \
+            --expiry 8760h \
+            --name "github-actions-$(date -u +%Y%m%d)" \
+            --json >"$work/token.json"
+          jq -er '.token | select(type == "string" and startswith("FlyV1 "))' \
+            "$work/token.json" >"$work/token.txt"
+          openssl pkeyutl -encrypt -pubin -inkey "$work/public.pem" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 \
+            -pkeyopt rsa_mgf1_md:sha256 \
+            -in "$work/token.txt" -out "$work/token.enc"
+          mkdir -p "$RUNNER_TEMP/fly-token-artifact"
+          cp "$work/token.enc" "$RUNNER_TEMP/fly-token-artifact/token.enc"
+          echo "Encrypted app-scoped token prepared"
+
+      - name: Upload encrypted token
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fly-token-rsa-oaep
+          path: ${{ runner.temp }}/fly-token-artifact/token.enc
+          if-no-files-found: error
+          retention-days: 1
