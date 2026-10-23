@@ -34,6 +34,15 @@ MAX_LOG_BYTES="${RESTIC_LOG_MAX_BYTES:-262144}"
 MAX_LOG_DIR_BYTES="${RESTIC_LOG_DIR_MAX_BYTES:-10485760}"
 QUICK_TIMEOUT="${RESTIC_QUICK_TIMEOUT:-60}"
 LONG_TIMEOUT="${RESTIC_LONG_TIMEOUT:-1800}"
+# Configuration is untrusted even when it comes from an operator. Keep the
+# values accepted by this root-adjacent maintenance path inside ranges that
+# cannot overflow shell arithmetic or turn the bounded capture into a disk-fill
+# primitive. The defaults are far below these ceilings.
+LIMIT_LOG_BYTES=8388608
+LIMIT_LOG_DIR_BYTES=67108864
+LIMIT_QUICK_TIMEOUT=3600
+LIMIT_LONG_TIMEOUT=86400
+LIMIT_BACKUP_AGE=31536000
 NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
@@ -95,9 +104,6 @@ if [ -e "$STATUS_FILE" ]; then
     fi
 fi
 CURRENT_STEP=""
-if [ "$READ_ONLY_AUDIT" != true ]; then
-    mkdir -p "$LOG_DIR" 2>/dev/null || true
-fi
 
 # Diagnostics can repeat whatever the backend sent on stderr. Never persist a
 # configured credential or private endpoint verbatim in a run log. Keep longer
@@ -234,19 +240,30 @@ heartbeat() {
 # Log an error and abort; used when the scratch files below cannot be created.
 die() { log echo -e "${R}$1${X}"; exit 2; }
 
-# Reject misconfigured limits instead of clearing every log file or timing out
-# every restic command without saying why.
-require_positive_int() {
-    case "${2:-}" in
-        ''|*[!0-9]*)
-            echo "Error: $1 must be a positive integer, got '${2:-}'" >&2
+# Reject misconfigured limits instead of clearing every log file, constructing
+# an invalid tail size, or timing out every restic command without saying why.
+# Only canonical decimal integers are accepted so later arithmetic cannot hit
+# octal parsing or an overflowing signed shell integer.
+require_bounded_int() {
+    local name="$1" value="${2:-}" maximum="$3"
+    case "$value" in
+        [1-9]*) ;;
+        *)
+            echo "Error: ${name} must be between 1 and ${maximum}, got '${value}'" >&2
             exit 2
             ;;
     esac
-    [ "${2:-0}" -gt 0 ] || {
-        echo "Error: $1 must be a positive integer, got '${2:-}'" >&2
+    case "$value" in
+        *[!0-9]*)
+            echo "Error: ${name} must be between 1 and ${maximum}, got '${value}'" >&2
+            exit 2
+            ;;
+    esac
+    if [ "${#value}" -gt "${#maximum}" ] \
+        || { [ "${#value}" -eq "${#maximum}" ] && [ "$value" -gt "$maximum" ]; }; then
+        echo "Error: ${name} must be between 1 and ${maximum}, got '${value}'" >&2
         exit 2
-    }
+    fi
 }
 
 # Run a command under a hard timeout and then signal whatever it left behind.
@@ -504,14 +521,17 @@ run_command() {
         exec 9>&-
         timed "$timeout_seconds" "$@" 2>&1 | tail -c "$raw_limit" > "$raw_file"
     ) || rc=$?
-    tail -c "$MAX_LOG_BYTES" "$raw_file" > "$out_file"
-    rm -f "$raw_file"
+    if ! tail -c "$MAX_LOG_BYTES" "$raw_file" > "$out_file"; then
+        rm -f "$raw_file" "$out_file" || :
+        die "Unable to read the bounded command output"
+    fi
+    rm -f "$raw_file" || log echo -e "${Y}Warning: cannot remove temporary command output${X}"
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}✓${X}"
         if [ "$show_success" = true ] && [ -s "$out_file" ]; then
             log_result 0 cat "$out_file"
         fi
-        rm -f "$out_file"
+        rm -f "$out_file" || log echo -e "${Y}Warning: cannot remove temporary command output${X}"
         return 0
     fi
     log echo -e "${R}✗${X}"
@@ -519,7 +539,7 @@ run_command() {
         log echo "[output capped at ${MAX_LOG_BYTES} bytes]"
         log redact_file "$out_file"
     fi
-    rm -f "$out_file"
+    rm -f "$out_file" || log echo -e "${Y}Warning: cannot remove temporary command output${X}"
     exit 2
 }
 
@@ -1242,14 +1262,14 @@ audit() {
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-require_positive_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES"
-require_positive_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES"
-require_positive_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT"
-require_positive_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT"
-require_positive_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}"
-require_positive_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}"
-if [ "${BACKUP_MAX_USAGE_PERCENT:-85}" -gt 100 ]; then
-    echo "Error: BACKUP_MAX_USAGE_PERCENT must be between 1 and 100, got '${BACKUP_MAX_USAGE_PERCENT}'" >&2
+require_bounded_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES" "$LIMIT_LOG_BYTES"
+require_bounded_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES" "$LIMIT_LOG_DIR_BYTES"
+require_bounded_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT" "$LIMIT_QUICK_TIMEOUT"
+require_bounded_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT" "$LIMIT_LONG_TIMEOUT"
+require_bounded_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}" "$LIMIT_BACKUP_AGE"
+require_bounded_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}" 100
+if [ "$MAX_LOG_BYTES" -gt "$MAX_LOG_DIR_BYTES" ]; then
+    echo "Error: RESTIC_LOG_MAX_BYTES must not exceed RESTIC_LOG_DIR_MAX_BYTES, got '${MAX_LOG_BYTES}' greater than '${MAX_LOG_DIR_BYTES}'" >&2
     exit 2
 fi
 case "$NOTIFY_ON_SUCCESS" in
@@ -1281,6 +1301,7 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
 fi
 
 if [ "$READ_ONLY_AUDIT" != true ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
     trim_logs
     check_audit_trail
 fi

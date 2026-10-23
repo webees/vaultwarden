@@ -388,7 +388,7 @@ same "a corrupt last_success is not an arithmetic crash" 0 \
 # BACKUP_MAX_AGE the resulting "age" looked fresh even though the marker could
 # never be a real Unix timestamp.
 seed_status 18446744073709551616
-BACKUP_MAX_AGE=2000000000 /restic.sh check-freshness \
+BACKUP_MAX_AGE=31536000 /restic.sh check-freshness \
     >/tmp/selftest-overflow.log 2>&1
 overflow_rc=$?
 same "freshness guard refuses a last_success that overflows" 2 "$overflow_rc"
@@ -970,7 +970,8 @@ rm -rf "$unknown_log_dir"
 dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
 chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
 chmod 500 /data/restic-logs
-frozen_out="$(RESTIC_LOG_DIR_MAX_BYTES=1024 /restic.sh snapshots 2>&1)"
+frozen_out="$(RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1024 \
+    /restic.sh snapshots 2>&1)"
 same "a log directory that cannot be trimmed is reported" 1 \
     "$(printf '%s\n' "$frozen_out" | grep -c 'could not be trimmed')"
 chmod 700 /data/restic-logs
@@ -982,7 +983,7 @@ rm -f /data/restic-logs/selftest-frozen.log
 dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
 chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
 chmod 500 /data/restic-logs
-RESTIC_LOG_DIR_MAX_BYTES=1024 /restic.sh backup \
+RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1024 /restic.sh backup \
     >/tmp/selftest-frozen-backup.log 2>&1
 frozen_backup_rc=$?
 chmod 700 /data/restic-logs
