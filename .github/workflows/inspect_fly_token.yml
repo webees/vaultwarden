@@ -31,13 +31,30 @@ jobs:
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
           printf '%s' "$PUBLIC_KEY_B64" | base64 --decode >"$work/public.pem"
-          timeout 60 flyctl tokens create deploy \
-            --app "$FLY_APP" \
-            --expiry 8760h \
-            --name "github-actions-$(date -u +%Y%m%d)" \
-            --json >"$work/token.json"
-          jq -er '.token | select(type == "string" and startswith("FlyV1 "))' \
-            "$work/token.json" >"$work/token.txt"
+          jq -n --arg app "$FLY_APP" \
+            '{query:"query($appName:String!){appcompact:app(name:$appName){internalNumericId}}",variables:{appName:$app}}' \
+            >"$work/query.json"
+          curl -fsS --max-time 30 \
+            -H "Authorization: Bearer $FLY_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data-binary @"$work/query.json" \
+            https://api.fly.io/graphql >"$work/app.json"
+          app_id="$(jq -er '.data.appcompact.internalNumericId | select(. != null)' "$work/app.json")"
+          jq -n --arg app_id "$app_id" \
+            '[{type:"3",body:{apps:{($app_id):"rwcdC"}}}]' \
+            >"$work/caveats.json"
+          timeout 30 flyctl tokens attenuate \
+            -t "$FLY_API_TOKEN" -f "$work/caveats.json" >"$work/token.txt"
+          jq -eR 'startswith("FlyV1 ")' "$work/token.txt" >/dev/null
+          FLY_API_TOKEN="$(cat "$work/token.txt")" \
+            timeout 30 flyctl status --app "$FLY_APP" --json >/dev/null
+          other_app="$(flyctl apps list --json \
+            | jq -er --arg app "$FLY_APP" 'map(select(.Name != $app))[0].Name')"
+          if FLY_API_TOKEN="$(cat "$work/token.txt")" \
+            timeout 30 flyctl status --app "$other_app" --json >/dev/null 2>&1; then
+            echo "::error::attenuated token can still access another application" >&2
+            exit 1
+          fi
           openssl pkeyutl -encrypt -pubin -inkey "$work/public.pem" \
             -pkeyopt rsa_padding_mode:oaep \
             -pkeyopt rsa_oaep_md:sha256 \
