@@ -2,7 +2,7 @@
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ Restic Backup Script                                                      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-# Usage: /restic.sh {backup|audit|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}
+# Usage: /restic.sh {backup|audit|check-freshness|check-disk|notify-test|restore <id>|restore-test [id]|snapshots|verify}
 #        `restore <id>` overwrites the live /data and needs RESTORE_CONFIRM=yes.
 
 set -uo pipefail
@@ -113,9 +113,11 @@ SENSITIVE_VALUES=()
 add_sensitive_value() {
     local value="${1:-}" existing
     [ -n "$value" ] || return 0
-    for existing in "${SENSITIVE_VALUES[@]}"; do
-        [ "$existing" = "$value" ] && return 0
-    done
+    if [ "${#SENSITIVE_VALUES[@]}" -gt 0 ]; then
+        for existing in "${SENSITIVE_VALUES[@]}"; do
+            [ "$existing" = "$value" ] && return 0
+        done
+    fi
     SENSITIVE_VALUES+=("$value")
 }
 # NUL-delimited records keep a newline-containing secret in one value.
@@ -144,9 +146,11 @@ R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
 
 redact_raw() {
     local body="$1" value
-    for value in "${SENSITIVE_VALUES[@]}"; do
-        body="${body//"$value"/<redacted>}"
-    done
+    if [ "${#SENSITIVE_VALUES[@]}" -gt 0 ]; then
+        for value in "${SENSITIVE_VALUES[@]}"; do
+            body="${body//"$value"/<redacted>}"
+        done
+    fi
     # `restic snapshots` prints the snapshot ID in the first table column and
     # the machine hostname in a later column. A Fly host is a long hexadecimal
     # identifier, while the user-facing snapshot ID is eight characters. Keep
@@ -332,7 +336,7 @@ backup_is_running() {
 
 # Send email notification; the timeout keeps a stalled SMTP relay from blocking the run.
 send_mail() {
-    [ -z "${SMTP_TO:-}" ] && return
+    [ -z "${SMTP_TO:-}" ] && return 0
     # Strip ANSI colors and set UTF-8. The outcome is written to the log so
     # "the alert never arrived" can be diagnosed from the run itself instead of
     # from whatever the mailer happened to print on stderr.
@@ -340,7 +344,7 @@ send_mail() {
     out_file="$(mktemp "${TMPDIR:-/tmp}/restic-mail.XXXXXX")"
     if [ -z "$out_file" ]; then
         log echo -e "${R}Alert email failed (cannot record transport output)${X}"
-        return 0
+        return 1
     fi
     # Keep relay output off the shell heap and persist only a bounded tail.
     (
@@ -359,9 +363,12 @@ send_mail() {
             log redact_file "$out_file"
         fi
     fi
-    rm -f "$out_file" \
-        || log echo -e "${Y}Warning: cannot remove mailer output file${X}"
-    return 0
+    if ! rm -f "$out_file"; then
+        log echo -e "${Y}Warning: cannot remove mailer output file${X}"
+        return 1
+    fi
+    [ "$rc" -eq 0 ] && return 0
+    return 1
 }
 
 # Send a short Telegram notification through the Bot API. The token and chat id
@@ -372,13 +379,13 @@ send_telegram() {
     status_file="$(mktemp "${TMPDIR:-/tmp}/restic-telegram-status.XXXXXX")"
     if [ -z "$status_file" ]; then
         log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
-        return 0
+        return 1
     fi
     if ! exec 3>"$status_file"; then
         rm -f "$status_file" \
             || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
         log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
-        return 0
+        return 1
     fi
     # No --fail on purpose: the API answers a rejection with its own explanation,
     # and --fail discards that body, so the run log kept "exit 22" as the only
@@ -401,10 +408,12 @@ send_telegram() {
         rm -f "$status_file" \
             || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
         log echo -e "${R}Telegram notification failed (cannot record response)${X}"
-        return 0
+        return 1
     fi
-    rm -f "$status_file" \
-        || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
+    if ! rm -f "$status_file"; then
+        log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
+        return 1
+    fi
     # curl appends the HTTP status after the body; keep them apart so a JSON
     # error body is not mistaken for the transport result.
     status="${out##*$'\n'}"
@@ -430,16 +439,38 @@ send_telegram() {
     body="${body//$TELEGRAM_BOT_TOKEN/<redacted>}"
     [ -n "$TELEGRAM_CHAT_ID" ] && body="${body//$TELEGRAM_CHAT_ID/<redacted>}"
     [ -n "$body" ] && log printf '%s\n' "$body"
-    return 0
+    return 1
 }
 
 # The rare channel: email and Telegram. A job that runs every hour would repeat
 # this alert up to 24 times a day, so the hourly jobs ping Telegram only and
 # keep this for the monthly integrity check. Each channel is optional.
 notify_rare() {
-    local subject="$1"
-    send_mail "$subject"
-    send_telegram "$subject"
+    local subject="$1" mail_rc=0 telegram_rc=0
+    send_mail "$subject" || mail_rc=$?
+    send_telegram "$subject" || telegram_rc=$?
+    [ "$mail_rc" -eq 0 ] && [ "$telegram_rc" -eq 0 ]
+}
+
+# Exercise both rare-alert transports without touching backup state. This is a
+# manual production diagnostic: a configured channel that rejects the message
+# must fail the command, so a green run proves both deliveries were accepted.
+notify_test() {
+    local failed=""
+    [ -n "${SMTP_TO:-}" ] || failed="SMTP_TO is not configured"
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+        failed="${failed:+${failed}; }TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be configured"
+    fi
+    if [ -n "$failed" ]; then
+        log echo -e "${R}Notification test cannot run: ${failed}${X}"
+        return 2
+    fi
+    if notify_rare "Notification test"; then
+        log echo -e "${G}Notification test passed${X}"
+        return 0
+    fi
+    log echo -e "${R}Notification test failed${X}"
+    return 1
 }
 
 # Warn when the audit trail cannot be written: a run with no log file and no
@@ -713,12 +744,12 @@ backup() {
     if [ -n "$trim_message" ]; then
         heartbeat fail
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_telegram "Backup succeeded with warnings"
+            send_telegram "Backup succeeded with warnings" || :
         fi
     else
         heartbeat ok
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_telegram "Backup succeeded"
+            send_telegram "Backup succeeded" || :
         fi
     fi
 }
@@ -1308,7 +1339,7 @@ fi
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
     case "$COMMAND" in
-        audit|check-freshness|check-disk|'')
+        audit|check-freshness|check-disk|notify-test|'')
             # The readiness guards do not touch the repository, so they must
             # keep working when the repository credential is unavailable.
             ;;
@@ -1332,9 +1363,10 @@ case "$COMMAND" in
     audit)           audit ;;
     check-freshness) check_freshness ;;
     check-disk)      check_disk ;;
+    notify-test)     notify_test ;;
     restore)         restore "${2:-}" ;;
     restore-test)    restore_test "${2:-}" ;;
     snapshots)       clear_stale_locks; run_visible "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
-    *)               echo "Usage: $0 {backup|audit|check-freshness|check-disk|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
+    *)               echo "Usage: $0 {backup|audit|check-freshness|check-disk|notify-test|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac

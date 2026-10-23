@@ -198,17 +198,24 @@ fly ssh console -C "/restic.sh backup"         # manual backup
 fly ssh console -C "/restic.sh snapshots"      # list snapshots
 fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
 fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp and validate it
+fly ssh console -C "/restic.sh notify-test"    # send one test to both configured alert channels
 fly ssh console -C "/restic.sh check-disk"     # how full the data volume is
 fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
 ```
 
 The dependency workflow also exposes a fixed production-operation menu: `audit`,
-`check-freshness`, `snapshots`, `verify`, `restore-test` and `backup`. It accepts no
+`check-freshness`, `notify-test`, `snapshots`, `verify`, `restore-test` and `backup`. It accepts no
 arbitrary command or arguments. Only `audit` is strictly read-only: it does not
 create logs, change the status file, acquire a repository lock or require
 `RESTIC_PASSWORD`. The other choices may read the repository, update the status
 file, take a lock or send an alert. The destructive `restore` operation is
 deliberately absent and remains a manually confirmed SSH operation.
+
+`notify-test` sends one generic message through both the configured mail relay and
+Telegram channel. It exits successfully only when both providers accept the
+message; a missing setting, mailer failure, transport failure or non-200 Telegram
+response fails the operation. It neither changes backup status nor touches the
+repository, and its diagnostic output redacts configured addresses and credentials.
 
 `/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
 `BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
@@ -324,8 +331,9 @@ fly logs                        # Container output, including mailer errors
 
 The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
 production access), `tests/test_deploy_verification.py` (the real deploy verifier against controlled Fly
-responses), `tests/test_production_operations.py` (the fixed production dispatch, command map and failure
-alert path) and
+responses), `tests/test_notification_delivery.py` (both alert transports, failure propagation, redaction
+and scratch-file cleanup through local stubs), `tests/test_production_operations.py` (the fixed production
+dispatch, command map and failure alert path) and
 `tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
 `tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
 commands.
@@ -333,7 +341,9 @@ commands.
 ```bash
 shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
 python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
+python3 -m unittest discover -s tests -p 'test_*.py' # Every host-side Python suite
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
+tests/test_notification_delivery.py # both alert channels, failures, redaction and temp-file cleanup
 tests/test_production_operations.py # production dispatch, command allowlist and failure alert path
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest

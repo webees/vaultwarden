@@ -30,6 +30,7 @@ on:
           - none
           - audit
           - check-freshness
+          - notify-test
           - snapshots
           - verify
           - restore-test
@@ -395,6 +396,7 @@ jobs:
           case "$OPERATION" in
             audit)           command="/restic.sh audit" ;;
             check-freshness) command="/restic.sh check-freshness" ;;
+            notify-test)     command="/restic.sh notify-test" ;;
             snapshots)       command="/restic.sh snapshots" ;;
             verify)          command="/restic.sh verify" ;;
             restore-test)    command="/restic.sh restore-test" ;;

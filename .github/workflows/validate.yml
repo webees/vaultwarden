@@ -34,6 +34,7 @@ jobs:
           mapfile -d '' shell_files < <(find scripts tests -type f -name '*.sh' -print0)
           shellcheck "${shell_files[@]}"
           python3 -m py_compile tests/*.py
+          python3 -m unittest discover -s tests -p 'test_*.py'
 
       # Every YAML file under .github, not a list of names: the composite action
       # that expires GHCR tags was never parsed, so a syntax error there would
