@@ -1,0 +1,33 @@
+name: Inspect Fly Token Scope
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Inspect token caveats
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
+          output="$(mktemp)"
+          trap 'rm -f "$output"' EXIT
+          timeout 30 flyctl tokens debug -t "$FLY_API_TOKEN" >"$output"
+          jq -e 'type == "array" and length > 0' "$output" >/dev/null
+          jq '{
+            macaroons: length,
+            app_caveats: ([.[].caveats[]? | select(.body.apps? != null)] | length),
+            org_caveats: ([.[].caveats[]? | select(.body.id? != null and .body.mask? != null)] | length),
+            mutation_caveats: ([.[].caveats[]? | select(.body.mutations? != null)] | length),
+            app_resource_counts: [.[].caveats[]? | select(.body.apps? != null) | (.body.apps | length)]
+          }' "$output"
