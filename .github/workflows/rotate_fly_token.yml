@@ -1,0 +1,82 @@
+name: Rotate Fly Token
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rotate-fly-token-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  rotate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Attenuate and verify an app-scoped Fly token
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          PUBLIC_KEY_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUFwMHowTUpOeHU1aVplanlVV0dTMwpreVNERFVkdTcyTEUzcFR4MlBhU3piL3gxRUFHdVF1SlVwWHF5bDNLYzJjQjFUSGk4TEF3RWZocE92bmU3cWNJCkhwWkhPTHBYVzJzckt2czA4VStaSnBtSDBVVDBzVEFsVUlnc3J3WWlQNzNRMUxRaGk2TjdESXFzUGRXeTJ6M3gKbDZFc1hXMlJUTDNGOHd1YlNBUUYxSnJjYUVwcnI1WGZBYWlIN0YvckR0NkthZDk3ZjRSZ0duckFjbGM4dEZXWApXbmI5S2J4bzAvZkxGSGdCekFSVncraVdIc3JVbUlqRElJR3AzNndCb25ibTZ2UDQzWFpQb0kyWEZNaGUxSkhGClhhV28zN09hQ0lYSGtwZitFME1CbmMrU0hSZDVKMDZ5VWJOSXdFdUREVldiRVZGTCthRXJ4OEhJaWprcXBlWXMKejJObFNPVFNmNG9RR1lESzdUb0pQVjFaTUc5THdQdndLVGJmeVFjM2hOQXBsc2xaeDduU1o3ZTQ1WW82ODBHTQpVanpaOTd1UTVUZzU0OEFobDhRVzgxTENDcnpLWUp2VXhrVm1SZXBSRldzZk9VTFViZVFMWGYxSTBKWXFzWnJVClg2ZHcwb21iUWtvMlQwaDJMVHQwclJNbVNkU0poWWtLTXQvaGw2QUJ1cjB6QWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
+        run: |
+          set -euo pipefail
+          : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          umask 077
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          printf '%s' "$PUBLIC_KEY_B64" | base64 --decode >"$work/public.pem"
+          jq -n --arg app "$FLY_APP" \
+            '{query:"query($appName:String!){appcompact:app(name:$appName){internalNumericId}}",variables:{appName:$app}}' \
+            >"$work/query.json"
+          curl -fsS --max-time 30 \
+            -H "Authorization: Bearer $FLY_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data-binary @"$work/query.json" \
+            https://api.fly.io/graphql >"$work/app.json"
+          app_id="$(jq -er '.data.appcompact.internalNumericId | select(. != null)' "$work/app.json")"
+          jq -n --arg app_id "$app_id" \
+            '[{type:"IfPresent",body:{ifs:[{type:"Apps",body:{apps:{($app_id):"rwcdC"}}},{type:"FeatureSet",body:{features:{wg:"*"}}}],else:"r"}}]' \
+            >"$work/caveats.json"
+          timeout 30 flyctl tokens attenuate \
+            -t "$FLY_API_TOKEN" -f "$work/caveats.json" >"$work/token.txt"
+          jq -eR 'startswith("FlyV1 ")' "$work/token.txt" >/dev/null
+
+          FLY_API_TOKEN="$(cat "$work/token.txt")" \
+            timeout 30 flyctl status --app "$FLY_APP" --json >"$work/status.json"
+          jq -e '(.Machines | length) > 0' "$work/status.json" >/dev/null
+
+          FLY_API_TOKEN="$(cat "$work/token.txt")" \
+            timeout 30 flyctl apps list --json >"$work/apps.json"
+          other_app="$(jq -er --arg app "$FLY_APP" 'map(select(.Name != $app))[0].Name' "$work/apps.json")"
+          if FLY_API_TOKEN="$(cat "$work/token.txt")" \
+            timeout 30 flyctl status --app "$other_app" --json >/dev/null 2>&1; then
+            echo '::error::attenuated token can still access another application' >&2
+            exit 1
+          fi
+
+          openssl pkeyutl -encrypt -pubin -inkey "$work/public.pem" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 \
+            -pkeyopt rsa_mgf1_md:sha256 \
+            -in "$work/token.txt" -out "$work/token.enc"
+          mkdir -p "$RUNNER_TEMP/fly-token-artifact"
+          cp "$work/token.enc" "$RUNNER_TEMP/fly-token-artifact/token.enc"
+          echo 'Encrypted app-scoped token verified'
+
+      - name: Upload encrypted token
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fly-token-rsa-oaep
+          path: ${{ runner.temp }}/fly-token-artifact/token.enc
+          if-no-files-found: error
+          retention-days: 1
