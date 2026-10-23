@@ -406,6 +406,35 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertIsInstance(names, list)
         self.assertEqual(names, [build_name])
 
+    def test_dependabot_auto_merge_uses_target_context_without_checkout(self) -> None:
+        events = self.workflow.get("on", self.workflow.get("true"))
+        self.assertIsInstance(events, dict)
+        self.assertIn("pull_request_target", events)
+
+        jobs = self.workflow.get("jobs")
+        self.assertIsInstance(jobs, dict)
+        check = jobs.get("check")
+        auto = jobs.get("dependabot_automerge")
+        self.assertIsInstance(check, dict)
+        self.assertIsInstance(auto, dict)
+        self.assertIn("github.event_name == 'workflow_run'", check.get("if", ""))
+        self.assertIn("github.event_name == 'workflow_dispatch'", check.get("if", ""))
+        self.assertNotIn("github.event_name != 'workflow_dispatch'", check.get("if", ""))
+
+        gate = auto.get("if", "")
+        self.assertIn("github.event_name == 'pull_request_target'", gate)
+        self.assertIn("github.event.pull_request.user.login == 'dependabot[bot]'", gate)
+        steps = auto.get("steps")
+        self.assertIsInstance(steps, list)
+        self.assertEqual(len(steps), 1)
+        step = steps[0]
+        self.assertNotIn("actions/checkout", json.dumps(auto))
+        body = step.get("run", "")
+        self.assertIn("gh pr merge", body)
+        self.assertIn("--auto", body)
+        self.assertIn("/pulls/${PR_NUMBER}/files", body)
+        self.assertIn("refusing auto-merge for unexpected path", body)
+
     def test_operation_uses_the_canonical_restic_command_only(self) -> None:
         self.assertNotIn("eval", self.body)
         self.assertNotIn("bash -c", self.body)
