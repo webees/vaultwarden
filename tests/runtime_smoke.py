@@ -512,6 +512,88 @@ fi
         print(combined(result), file=sys.stderr)
 
 
+def check_restic_output_and_limit_failures(image: str) -> None:
+    """A failed tail must not pass, and unsafe limits must fail before work."""
+    script = r"""
+set -eu
+rm -rf /data/restic-logs /tmp/stub /tmp/tail-count /tmp/backend-called \
+    /tmp/unsafe-log-dir
+mkdir -p /data/restic-logs /tmp/stub
+chown -R vaultwarden:vaultwarden /data
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=seed\n' \
+    >/data/backup-status.txt
+chown vaultwarden:vaultwarden /data/backup-status.txt
+
+cat >/tmp/stub/tail <<'EOF'
+#!/bin/sh
+count_file=/tmp/tail-count
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
+[ "$count" -ne 2 ] || exit 1
+exec /bin/busybox tail "$@"
+EOF
+printf '%s\n' \
+    '#!/bin/sh' \
+    'printf called >>/tmp/backend-called' \
+    'exit 0' >/tmp/stub/restic
+chmod +x /tmp/stub/tail /tmp/stub/restic
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    /restic.sh snapshots >/tmp/restic-tail-failure.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'Unable to read the bounded command output' /tmp/restic-tail-failure.log
+
+# Every bound is checked before the log directory is created, the status marker
+# changes, or a backend command starts.
+status_before="$(cksum /data/backup-status.txt)"
+for spec in \
+    'RESTIC_LOG_MAX_BYTES=9223372036854775807' \
+    'RESTIC_LOG_DIR_MAX_BYTES=9223372036854775807' \
+    'RESTIC_QUICK_TIMEOUT=9223372036854775807' \
+    'RESTIC_LONG_TIMEOUT=9223372036854775807' \
+    'BACKUP_MAX_AGE=9223372036854775807' \
+    'RESTIC_LOG_MAX_BYTES=0' \
+    'RESTIC_LOG_MAX_BYTES=0100'; do
+    rm -f /tmp/backend-called /tmp/tail-count
+    rc=0
+    env "$spec" PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
+        RESTIC_REPOSITORY=/tmp/repo RESTIC_LOG_DIR=/tmp/unsafe-log-dir \
+        /restic.sh snapshots >/tmp/restic-limit.log 2>&1 || rc=$?
+    [ "$rc" -eq 2 ]
+    [ ! -e /tmp/backend-called ]
+    [ ! -e /tmp/unsafe-log-dir ]
+    [ "$(cksum /data/backup-status.txt)" = "$status_before" ]
+done
+
+rm -rf /tmp/unsafe-log-dir
+rc=0
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    RESTIC_LOG_MAX_BYTES=1048576 RESTIC_LOG_DIR_MAX_BYTES=524288 \
+    RESTIC_LOG_DIR=/tmp/unsafe-log-dir /restic.sh snapshots \
+    >/tmp/restic-limit.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'must not exceed RESTIC_LOG_DIR_MAX_BYTES' /tmp/restic-limit.log
+[ ! -e /tmp/unsafe-log-dir ]
+[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("bounded output failures and unsafe restic limits fail before work")
+    else:
+        suite.bad("a tail failure passed or an unsafe restic limit reached the backend")
+        print(combined(result), file=sys.stderr)
+
+
 def check_log_rotation_failure(image: str) -> None:
     """A log that cannot be capped must not leave a healthy backup marker."""
     script = r"""
@@ -1697,6 +1779,7 @@ def main() -> int:
     check_freshness_uptime_read_failure(image)
     check_telegram_error_redaction(image)
     check_snapshot_argument_boundaries(image)
+    check_restic_output_and_limit_failures(image)
     check_log_rotation_failure(image)
     check_status_write_failure(image)
     check_app_exit_stops_stack(image)
