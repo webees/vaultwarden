@@ -10,6 +10,12 @@ on:
     workflows: ["Build and Deploy"]
     types: [completed]
     branches: [main]
+  # Dependabot keeps the immutable action SHAs current. Arm auto-merge from a
+  # target-context workflow without checking out or executing the PR tree; the
+  # protected `validate` check still decides whether the update may land.
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [main]
   workflow_dispatch:
     inputs:
       auto_merge:
@@ -57,7 +63,10 @@ concurrency:
 
 jobs:
   check:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.operation == 'none'
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.operation == 'none')
     runs-on: ubuntu-24.04
     # The post-merge step alone waits up to ten minutes for the pull request to
     # land, so bound the whole job rather than the six-hour default.
@@ -308,6 +317,61 @@ jobs:
           if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
+
+  dependabot_automerge:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - name: 🔀 Arm auto-merge for the Dependabot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "invalid pull request number" >&2; exit 2 ;;
+          esac
+
+          # This event has write access, so allow only workflow/action pin
+          # changes. Never check out the pull request tree in this job.
+          files="$(gh api --paginate \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          [ -n "$files" ] || { echo "Dependabot PR has no changed files" >&2; exit 1; }
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/*.yml|.github/workflows/*.yaml|.github/actions/*/*.yml|.github/actions/*/*.yaml|.github/dependabot.yml) ;;
+              *) echo "refusing auto-merge for unexpected path: ${file}" >&2; exit 1 ;;
+            esac
+          done <<< "$files"
+
+          gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
+            --squash --delete-branch --auto
+
+          # A required check that never registers would leave auto-merge parked
+          # forever. Fail the automation job while leaving the PR protected.
+          for _ in $(seq 1 18); do
+            registered="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+              --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || true)"
+            case "$registered" in
+              ''|*[!0-9]*) ;;
+              0) ;;
+              *)
+                echo "auto-merge armed; ${registered} status check(s) registered"
+                exit 0
+                ;;
+            esac
+            sleep 10
+          done
+          echo "no status check registered on Dependabot PR within 180s" >&2
+          exit 1
 
   production_operation:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none'

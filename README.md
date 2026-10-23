@@ -159,6 +159,10 @@ timeout or mismatch fails the workflow instead of reporting a successful deploy.
 directly: the bump lands only after shellcheck, the workflow lint, the self tests, the image build and the
 runtime smoke test all pass.
 
+Dependabot keeps the immutable GitHub Actions pins current. A target-context job in the same dependency
+workflow arms auto-merge only for Dependabot PRs whose complete diff stays under `.github`; it never checks
+out or executes the pull request tree, and the protected `validate` check remains mandatory.
+
 Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
 The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
 Only commits that can change the image rebuild it: `.gitignore`, `README.md`, `LICENSE`, `.github/**` and
