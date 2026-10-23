@@ -34,6 +34,7 @@ jobs:
           jq '{
             macaroons: length,
             caveat_types: [.[].caveats[]?.type],
-            caveat_body_keys: [.[].caveats[]? | (.body // {}) | keys]
+            caveat_body_types: [.[].caveats[]?.body | type],
+            caveat_body_keys: [.[].caveats[]?.body | select(type == "object") | keys]
           }' "$work/token.json"
           jq '{status_ok:true, machine_count:(.Machines|length), has_app_name:(.Name != null)}' "$work/status.json"
