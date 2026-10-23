@@ -19,6 +19,7 @@ EXPECTED_OPTIONS = {
     "none",
     "audit",
     "check-freshness",
+    "notify-test",
     "snapshots",
     "verify",
     "restore-test",
@@ -28,6 +29,7 @@ EXPECTED_ALERT_NEEDS = {"check", "production_operation", "watchdog"}
 EXPECTED_COMMANDS = {
     "audit": "/restic.sh audit",
     "check-freshness": "/restic.sh check-freshness",
+    "notify-test": "/restic.sh notify-test",
     "snapshots": "/restic.sh snapshots",
     "verify": "/restic.sh verify",
     "restore-test": "/restic.sh restore-test",
