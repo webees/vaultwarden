@@ -103,7 +103,10 @@ pinned_version="$(sed -n 's/^ARG VAULTWARDEN_VERSION=//p' Dockerfile | head -n 1
 # repository pages are supplied by the caller; later pages are empty.
 make_dockerhub_stub() {
     local dir="$1" calls="$2" first="$3" second="${4:-}"
+    local auth_response="${5:-}" digest_header="${6:-}"
     [ -n "$second" ] || second='{"results":[]}'
+    [ -n "$auth_response" ] || auth_response='{"token":"stub"}'
+    [ -n "$digest_header" ] || digest_header='docker-content-digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     mkdir -p "$dir"
     : > "$calls"
     {
@@ -113,8 +116,8 @@ make_dockerhub_stub() {
         printf '  *page=1*) printf %%s %q ;;\n' "$first"
         printf '  *page=2*) printf %%s %q ;;\n' "$second"
         printf '  *hub.docker.com*) printf %%s %q ;;\n' '{"results":[]}'
-        printf '  *auth.docker.io*) printf %%s %q ;;\n' '{"token":"stub"}'
-        printf '  *) printf %%s %q ;;\n' 'docker-content-digest: sha256:stub'
+        printf '  *auth.docker.io*) printf %%s %q ;;\n' "$auth_response"
+        printf '  *) printf %%s %q ;;\n' "$digest_header"
         printf 'esac\n'
     } > "$dir/curl"
     chmod +x "$dir/curl"
@@ -315,12 +318,17 @@ timeout_log="$work/timeout-args"
 : > "$timeout_log"
 gh_stub="$work/gh-stub"
 mkdir -p "$gh_stub"
-gh_release='{"tag_name":"v0","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://example.com/a"},{"name":"supercronic-linux-arm64","browser_download_url":"https://example.com/b"}]}'
-{
-    printf '#!/bin/sh\n'
-    printf 'printf "%%s\\n" "$*" >> "%s"\n' "$gh_log"
-    printf 'printf "%%s\\n" %s\n' "'$gh_release'"
-} > "$gh_stub/gh"
+gh_release='{"tag_name":"v0.2.51","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-arm64"}]}'
+write_tools_stub() {
+    local release="$1"
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s\\n" "$*" >> "%s"\n' "$gh_log"
+        printf 'printf "%%s\\n" %q\n' "$release"
+    } > "$gh_stub/gh"
+    chmod +x "$gh_stub/gh"
+}
+write_tools_stub "$gh_release"
 {
     printf '#!/bin/sh\n'
     printf 'printf "%%s\\n" "$*" >> "%s"\n' "$timeout_log"
@@ -332,6 +340,26 @@ chmod +x "$gh_stub/gh" "$gh_stub/timeout" "$gh_stub/curl"
 PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools >/dev/null 2>&1 || true
 gh_timeouts="$(grep -c -E '^[0-9]+ gh api' "$timeout_log" 2>/dev/null || true)"
 same "every gh api call runs under a timeout" 1 "$gh_timeouts"
+
+write_tools_stub '{"tag_name":"v0.2.51","assets":[]}'
+tools_missing_status=0
+PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools \
+    >"$work/tools-missing.log" 2>&1 || tools_missing_status=$?
+same "a release without both architecture assets fails the resolver" 1 "$tools_missing_status"
+case "$(cat "$work/tools-missing.log")" in
+    *"missing or ambiguous"*) ok "the resolver names the missing architecture asset" ;;
+    *) bad "the resolver does not explain the missing architecture asset" ;;
+esac
+
+write_tools_stub '{"tag_name":"v0.2.51","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://attacker.invalid/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://attacker.invalid/supercronic-linux-arm64"}]}'
+tools_redirect_status=0
+PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools \
+    >"$work/tools-redirect.log" 2>&1 || tools_redirect_status=$?
+same "an off-host release asset fails the resolver" 1 "$tools_redirect_status"
+case "$(cat "$work/tools-redirect.log")" in
+    *"untrusted download URL"*) ok "the resolver rejects an off-host release asset" ;;
+    *) bad "the resolver does not name the untrusted release asset" ;;
+esac
 
 # Docker Hub can answer with an empty page (rate limit or malformed response).
 # Paginating 20 times through the retry wrapper would burn the whole job.
@@ -448,6 +476,39 @@ if command -v jq >/dev/null 2>&1; then
     esac
 else
     bad "jq is required to test Docker Hub pagination URLs"
+fi
+
+# Registry metadata is written into the Dockerfile, so a malformed token or
+# digest must stop before the dependency PR is created. Passing either through
+# turns an API or proxy error into a broken pin.
+if command -v jq >/dev/null 2>&1; then
+    bad_token_stub="$work/tag-bad-token-stub"
+    make_dockerhub_stub "$bad_token_stub" "$work/tag-bad-token-calls" \
+        '{"results":[]}' '' '{"message":"no token"}'
+    bad_token_status=0
+    GITHUB_OUTPUT="$work/bad-token-out" PATH="$bad_token_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/bad-token.log" 2>&1 \
+        || bad_token_status=$?
+    same "a registry response without a token fails the resolver" 1 "$bad_token_status"
+    case "$(cat "$work/bad-token.log")" in
+        *"malformed registry token"*) ok "the resolver names the malformed registry token" ;;
+        *) bad "the resolver does not explain the malformed registry token" ;;
+    esac
+
+    bad_digest_stub="$work/tag-bad-digest-stub"
+    make_dockerhub_stub "$bad_digest_stub" "$work/tag-bad-digest-calls" \
+        '{"results":[]}' '' '' 'docker-content-digest: not-a-digest'
+    bad_digest_status=0
+    GITHUB_OUTPUT="$work/bad-digest-out" PATH="$bad_digest_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" base >"$work/bad-digest.log" 2>&1 \
+        || bad_digest_status=$?
+    same "a malformed registry digest fails the resolver" 1 "$bad_digest_status"
+    case "$(cat "$work/bad-digest.log")" in
+        *"invalid registry digest"*) ok "the resolver names the malformed registry digest" ;;
+        *) bad "the resolver does not explain the malformed registry digest" ;;
+    esac
+else
+    bad "jq is required to test registry metadata validation"
 fi
 
 # ── .github naming ────────────────────────────────────────────────────────────

@@ -115,29 +115,57 @@ base() {
         | tail -n 1)"
     tag="${found}-alpine"
 
-    local token digest
-    token="$(fetch 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull' | jq -r .token)"
+    local auth_json token digest
+    auth_json="$(fetch 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull')"
+    if ! jq -e '
+        type == "object"
+        and (.token | type == "string" and test("^[A-Za-z0-9._~+/=-]+$"))
+    ' >/dev/null 2>&1 <<< "$auth_json"; then
+        echo "malformed registry token" >&2
+        exit 1
+    fi
+    token="$(jq -r .token <<< "$auth_json")"
     digest="$(fetch -I -H "Authorization: Bearer ${token}" \
         -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
         "${REGISTRY}/manifests/${tag}" \
         | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}')"
-    [ -n "$digest" ] || { echo "no digest for ${tag}" >&2; exit 1; }
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || { echo "invalid registry digest for ${tag}" >&2; exit 1; }
 
     emit version "${tag%-alpine}"
     emit digest "$digest"
 }
 
 tools() {
-    local sc_tag sc_release sc_url
+    local arch sc_tag sc_release sc_url urls
     sc_release="$(gh_api "${GH_API}/aptible/supercronic/releases?per_page=20" \
         --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
+    if ! jq -e '
+        type == "object"
+        and (.tag_name | type == "string" and test("^v[0-9]+(\\.[0-9]+){1,2}$"))
+        and (.assets | type == "array")
+    ' >/dev/null 2>&1 <<< "$sc_release"; then
+        echo "malformed supercronic release metadata" >&2
+        exit 1
+    fi
     sc_tag="$(jq -r .tag_name <<< "$sc_release")"
     for arch in amd64 arm64; do
-        sc_url="$(jq -r --arg a "linux-${arch}\$" '.assets[] | select(.name | test($a)) | .browser_download_url' <<< "$sc_release")"
+        urls="$(jq -r --arg name "supercronic-linux-${arch}" '
+            [.assets[] | select(.name == $name) | .browser_download_url]
+            | if length == 1 and (.[0] | type == "string") then .[0] else empty end
+        ' <<< "$sc_release")"
+        if [ -z "$urls" ] || [[ "$urls" == *$'\n'* ]]; then
+            echo "supercronic release ${sc_tag}: missing or ambiguous ${arch} asset" >&2
+            exit 1
+        fi
+        sc_url="$urls"
+        if [[ ! "$sc_url" =~ ^https://github\.com/aptible/supercronic/releases/download/${sc_tag}/supercronic-linux-${arch}$ ]]; then
+            echo "untrusted download URL for supercronic ${arch}" >&2
+            exit 1
+        fi
         emit "supercronic_sha_${arch}" "$(fetch "$sc_url" | sha256)"
     done
     emit supercronic_version "$sc_tag"
-
 }
 
 # Compare current pins against VAR=VALUE pairs; emit changed=true when any differ.
