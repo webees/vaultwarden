@@ -11,7 +11,9 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import time
 from typing import Optional, Sequence, TextIO, Union
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -20,7 +22,13 @@ DEFAULT_IPV4_URL = "https://www.cloudflare.com/ips-v4"
 DEFAULT_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 MAX_RESPONSE_BYTES = 64 * 1024
 MAX_RANGES_PER_FAMILY = 128
+MIN_IPV4_RANGES = 10
+MIN_IPV6_RANGES = 5
+MIN_TOTAL_RANGES = 20
 HTTP_TIMEOUT_SECONDS = 30
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAY_SECONDS = 2
+RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
@@ -121,6 +129,18 @@ def sync_ranges(
 ) -> SyncResult:
     ipv4 = _parse_range_list(ipv4_text, 4, "Cloudflare IPv4")
     ipv6 = _parse_range_list(ipv6_text, 6, "Cloudflare IPv6")
+    if len(ipv4) < MIN_IPV4_RANGES:
+        raise ValueError(
+            f"Cloudflare IPv4: {len(ipv4)} ranges is below minimum {MIN_IPV4_RANGES}"
+        )
+    if len(ipv6) < MIN_IPV6_RANGES:
+        raise ValueError(
+            f"Cloudflare IPv6: {len(ipv6)} ranges is below minimum {MIN_IPV6_RANGES}"
+        )
+    if len(ipv4) + len(ipv6) < MIN_TOTAL_RANGES:
+        raise ValueError(
+            f"Cloudflare: {len(ipv4) + len(ipv6)} ranges is below minimum {MIN_TOTAL_RANGES}"
+        )
     official = ipv4 + ipv6
     header, current = _read_ranges_file(path)
 
@@ -140,13 +160,30 @@ def sync_ranges(
     )
 
 
-def _fetch_text(url: str) -> str:
+def _fetch_once(url: str) -> str:
     request = Request(url, headers={"User-Agent": "vaultwarden-range-sync/1"})
     with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
         body = response.read(MAX_RESPONSE_BYTES + 1)
     if len(body) > MAX_RESPONSE_BYTES:
         raise ValueError(f"{url}: response exceeds {MAX_RESPONSE_BYTES} bytes")
     return body.decode("utf-8", errors="strict")
+
+
+def _fetch_text(url: str) -> str:
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return _fetch_once(url)
+        except HTTPError as exc:
+            retryable = exc.code in RETRYABLE_HTTP_STATUSES
+            exc.close()
+            if not retryable or attempt == FETCH_ATTEMPTS:
+                raise
+        except OSError:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+        if attempt < FETCH_ATTEMPTS:
+            time.sleep(FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
+    raise AssertionError("unreachable fetch retry state")
 
 
 def _write_outputs(result: SyncResult, handle: TextIO) -> None:
