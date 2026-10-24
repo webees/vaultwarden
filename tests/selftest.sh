@@ -11,6 +11,22 @@ cd "$REPO_ROOT" || exit 1
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+find_tomllib_python() {
+    local candidate path
+    for candidate in \
+        python3 python3.14 python3.13 python3.12 python3.11 \
+        /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        path="$(command -v "$candidate" 2>/dev/null || true)"
+        if [ -n "$path" ] && "$path" -c 'import tomllib' >/dev/null 2>&1; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+toml_python="$(find_tomllib_python || true)"
+
 # ── static process model ─────────────────────────────────────────────────────
 echo "--- process model"
 # Three long-running processes do not justify a downloaded process manager.
@@ -976,17 +992,25 @@ ruby -ryaml -e '
   ' > "$work/yaml-lint.sh" || true
 if ! [ -s "$work/yaml-lint.sh" ]; then
     bad "validate.yml no longer parses its YAML files"
-elif ! command -v python3 >/dev/null 2>&1; then
-    bad "python3 is required to execute the CI syntax step"
+elif [ -z "$toml_python" ]; then
+    bad "Python 3.11 or newer is required to execute the CI syntax step"
 else
     lint_tree="$work/lint-tree"
     mkdir -p "$lint_tree"
     cp -R .github "$lint_tree/"
     cp fly.toml "$lint_tree/"
-    ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint.log" 2>&1
+    mkdir -p "$work/python-bin"
+    ln -s "$toml_python" "$work/python-bin/python3"
+    (
+        cd "$lint_tree" || exit 1
+        PATH="$work/python-bin:$PATH" bash "$work/yaml-lint.sh"
+    ) > "$work/yaml-lint.log" 2>&1
     same "the CI syntax step accepts the tree as committed" 0 "$?"
     printf 'inputs: [\n' >> "$lint_tree/.github/actions/expire_tags/action.yml"
-    if ( cd "$lint_tree" && bash "$work/yaml-lint.sh" ) > "$work/yaml-lint-broken.log" 2>&1; then
+    if (
+        cd "$lint_tree" || exit 1
+        PATH="$work/python-bin:$PATH" bash "$work/yaml-lint.sh"
+    ) > "$work/yaml-lint-broken.log" 2>&1; then
         bad "the CI syntax step never parses the composite action"
     else
         ok "a broken composite action fails the CI syntax step"
