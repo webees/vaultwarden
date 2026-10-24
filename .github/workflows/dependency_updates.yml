@@ -100,6 +100,26 @@ jobs:
             SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
             SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
 
+      - name: 🌐 Synchronize the Cloudflare IP ranges
+        id: cloudflare
+        run: python3 scripts/cloudflare_ranges.py sync --github-output "$GITHUB_OUTPUT"
+
+      # Keep one decision for every update path. A malformed or missing upstream
+      # output must fail instead of looking like "nothing changed".
+      - name: 🧭 Decide whether dependency files changed
+        id: changed
+        run: |
+          set -euo pipefail
+          compare='${{ steps.compare.outputs.changed }}'
+          cloudflare='${{ steps.cloudflare.outputs.changed }}'
+          case "$compare" in true|false) ;; *) echo "invalid Dockerfile comparison result" >&2; exit 1 ;; esac
+          case "$cloudflare" in true|false) ;; *) echo "invalid Cloudflare comparison result" >&2; exit 1 ;; esac
+          if [ "$compare" = true ] || [ "$cloudflare" = true ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 📦 Compare the pinned base packages
         id: apk
         run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
@@ -112,32 +132,38 @@ jobs:
         if: >-
           success() &&
           github.event_name != 'workflow_run' &&
-          steps.compare.outputs.changed != 'true' &&
+          steps.changed.outputs.changed != 'true' &&
           steps.apk.outputs.count != '0'
         continue-on-error: true
         run: scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
 
       - name: 🔧 Update the pins and validate the build
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.changed.outputs.changed == 'true'
         run: |
-          scripts/deps.sh apply \
-            VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
-            VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
-            SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
-            SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
-            SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
+          if [ '${{ steps.compare.outputs.changed }}' = true ]; then
+            scripts/deps.sh apply \
+              VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
+              VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
+              SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
+              SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
+              SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
+          fi
           docker build --tag dependency-check:local .
           docker run --rm --entrypoint caddy dependency-check:local \
             validate --config /Caddyfile --adapter caddyfile
 
       - name: 📬 Open the dependency PR
         id: pr
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.changed.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.base.outputs.version }}
           DIGEST: ${{ steps.base.outputs.digest }}
           SUPERCRONIC: ${{ steps.tools.outputs.supercronic_version }}
+          CLOUDFLARE_COUNT: ${{ steps.cloudflare.outputs.range_count }}
+          CLOUDFLARE_IPV4: ${{ steps.cloudflare.outputs.ipv4_count }}
+          CLOUDFLARE_IPV6: ${{ steps.cloudflare.outputs.ipv6_count }}
+          CLOUDFLARE_CHANGED: ${{ steps.cloudflare.outputs.changed }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
@@ -146,7 +172,7 @@ jobs:
           # PR open with auto-merge armed when the version moves, so the stale
           # pins can merge after the newer update.
           branch="deps/upstream"
-          title="chore(deps): update pinned upstream dependencies (${VERSION})"
+          title="chore(deps): update upstream dependencies"
           body_file="${RUNNER_TEMP:-/tmp}/pr-body.md"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
 
@@ -157,6 +183,7 @@ jobs:
             echo "| :--- | :--- |"
             echo "| vaultwarden/server | ${VERSION}-alpine @ ${DIGEST} |"
             echo "| supercronic | ${SUPERCRONIC} |"
+            echo "| Cloudflare edge ranges | ${CLOUDFLARE_COUNT} (${CLOUDFLARE_IPV4} IPv4, ${CLOUDFLARE_IPV6} IPv6; changed: ${CLOUDFLARE_CHANGED}) |"
             echo
             echo "Alpine package updates available inside the base image (\`${APK_COUNT:-0}\`):"
             echo
@@ -174,7 +201,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
-          git add Dockerfile
+          git add Dockerfile config/cloudflare_ips.caddy
           git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
@@ -207,7 +234,7 @@ jobs:
       # workflow_dispatch run does not help, because its check suite is not
       # attached to the pull request. Release the held run instead.
       - name: ✅ Release the held validate run
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.changed.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ steps.pr.outputs.sha }}
@@ -229,7 +256,7 @@ jobs:
 
       - name: 🔀 Arm auto-merge on the dependency PR
         id: arm
-        if: steps.compare.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
+        if: steps.changed.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.pr.outputs.branch }}
@@ -272,7 +299,7 @@ jobs:
       - name: 🚀 Build and deploy after the merge
         if: >-
           always() &&
-          steps.compare.outputs.changed == 'true' &&
+          steps.changed.outputs.changed == 'true' &&
           steps.pr.outcome == 'success' &&
           steps.arm.outcome == 'success' &&
           env.AUTO_MERGE == 'true'
@@ -301,7 +328,7 @@ jobs:
       - name: ♻️ Rebuild when only Alpine packages moved
         if: >-
           success() &&
-          steps.compare.outputs.changed != 'true' &&
+          steps.changed.outputs.changed != 'true' &&
           steps.apk.outputs.count != '0' &&
           github.event_name != 'workflow_run'
         env:

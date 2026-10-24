@@ -146,6 +146,9 @@ Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` +
 `SUPERCRONIC_VERSION` + checksums. The `dependency_updates` workflow
 runs every two hours, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
+The same job synchronizes `config/cloudflare_ips.caddy` from Cloudflare's official IPv4 and IPv6
+endpoints. Empty, malformed, duplicate or wrong-family responses fail the job; a valid change follows the
+same protected PR, auto-merge, image build and deployment path as the other dependency updates.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
 dispatches the image build directly instead of opening an empty PR.
 The same workflow then publishes a timestamped image and rolls that digest out to Fly by passing `--image`
@@ -284,7 +287,7 @@ being restorable is not discovered for the first time during a real recovery.
 | Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
 | Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
 | Log line `[crontab] exited with status` | The scheduler crashed and was restarted by the static process table in `/services.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in the static range list in `config/cloudflare_ips.caddy`; update that file from Cloudflare's official IPv4/IPv6 lists when the ranges change |
+| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in `config/cloudflare_ips.caddy`; the dependency workflow refreshes both official lists every two hours and reports malformed or unreachable feeds as failures |
 | A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
 | No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (HTTP N)` or `(curl exit N)` followed by the API's own explanation with the token and chat id replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
@@ -340,9 +343,10 @@ commands.
 
 ```bash
 shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
-python3 -m py_compile tests/*.py  # Compile check for the host-side test scripts
+python3 -m py_compile scripts/*.py tests/*.py  # Compile check for host-side Python
 python3 -m unittest discover -s tests -p 'test_*.py' # Every host-side Python suite
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
+tests/test_cloudflare_ranges.py    # official range validation, atomic update and workflow wiring
 tests/test_notification_delivery.py # both alert channels, failures, redaction and temp-file cleanup
 tests/test_production_operations.py # production dispatch, command allowlist and failure alert path
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
