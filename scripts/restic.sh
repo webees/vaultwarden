@@ -48,6 +48,17 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 STATUS_FILE="/data/backup-status.txt"
 MAX_STATUS_BYTES=4096
+# SQLite reports some integrity failures as result rows with a successful exit
+# status. Treat "ok" as the complete output contract, not merely one line that
+# may be present among diagnostics.
+SQLITE_INTEGRITY_AWK='
+NR == 1 && $0 == "ok" { valid = 1; next }
+{ print; invalid = 1 }
+END {
+    if (NR == 0) print "PRAGMA integrity_check returned no result"
+    if (NR != 1 || !valid || invalid) exit 1
+}
+'
 
 is_regular_file() {
     [ ! -L "$1" ] && [ -f "$1" ]
@@ -581,6 +592,14 @@ run() { run_command false "$@"; }
 # reached the container log with the repository URL or credentials intact.
 run_visible() { run_command true "$@"; }
 
+sqlite_integrity_check() {
+    local label="$1" database="$2"
+    run "$label" "$QUICK_TIMEOUT" bash -c '
+        set -o pipefail
+        sqlite3 "$1" "PRAGMA integrity_check" | awk "$2"
+    ' sqlite "$database" "$SQLITE_INTEGRITY_AWK"
+}
+
 # ── Business Logic ────────────────────────────────────────────────────────────
 
 # The image ships BusyBox find, which supports no GNU printf-format predicate: a
@@ -715,7 +734,7 @@ backup() {
 
     # SQLite hot backup (ensures consistency)
     run "SQLite backup" "$QUICK_TIMEOUT" sqlite3 "$DATA/db.sqlite3" ".backup $DATA/backup.bak"
-    run "SQLite check" "$QUICK_TIMEOUT" sqlite3 "$DATA/backup.bak" "PRAGMA integrity_check"
+    sqlite_integrity_check "SQLite check" "$DATA/backup.bak"
 
     # Core operations (exclude live db files, rebuildable cache, and local logs)
     local log_exclude=()
@@ -879,7 +898,7 @@ restore_test() {
         log echo -e "${R}Restore drill is missing expected files${X}"
         exit 2
     fi
-    run "Restore SQLite check" "$QUICK_TIMEOUT" sqlite3 "$target/data/backup.bak" "PRAGMA integrity_check"
+    sqlite_integrity_check "Restore SQLite check" "$target/data/backup.bak"
     if ! sqlite3 "$target/data/backup.bak" ".tables" 2>/dev/null | grep -q .; then
         log echo -e "${R}Restored database has no tables${X}"
         exit 2

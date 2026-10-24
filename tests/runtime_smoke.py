@@ -516,6 +516,48 @@ fi
         print(combined(result), file=sys.stderr)
 
 
+def check_sqlite_integrity_contract(image: str) -> None:
+    """A non-ok integrity result must fail even when sqlite3 exits zero."""
+    script = r"""
+set -eu
+rm -rf /data /tmp/stub /tmp/restic-calls
+mkdir -p /data/restic-logs /tmp/stub
+chown -R vaultwarden:vaultwarden /data
+sqlite3 /data/db.sqlite3 \
+    "PRAGMA ignore_check_constraints=ON; CREATE TABLE t(v INTEGER CHECK(v > 0)); INSERT INTO t VALUES(-1);"
+printf 'test key\n' >/data/rsa_key.pem
+chown vaultwarden:vaultwarden /data/rsa_key.pem
+printf '%s\n' \
+    '#!/bin/sh' \
+    'printf "%s\\n" "$*" >>/tmp/restic-calls' \
+    'exit 0' >/tmp/stub/restic
+chmod 755 /tmp/stub/restic
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    /restic.sh backup >/tmp/sqlite-integrity.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'SQLite check' /tmp/sqlite-integrity.log
+grep -Fq 'CHECK constraint failed in t' /tmp/sqlite-integrity.log
+! grep -Eq '^backup ' /tmp/restic-calls
+grep -Fq 'state=failed' /data/backup-status.txt
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        script,
+        check=False,
+    )
+    if result.returncode == 0:
+        suite.ok("a non-ok SQLite integrity result stops the backup")
+    else:
+        suite.bad("a non-ok SQLite integrity result passed as a healthy backup")
+        print(combined(result), file=sys.stderr)
+
+
 def check_restic_output_and_limit_failures(image: str) -> None:
     """A failed tail must not pass, and unsafe limits must fail before work."""
     script = r"""
@@ -1783,6 +1825,7 @@ def main() -> int:
     check_freshness_uptime_read_failure(image)
     check_telegram_error_redaction(image)
     check_snapshot_argument_boundaries(image)
+    check_sqlite_integrity_contract(image)
     check_restic_output_and_limit_failures(image)
     check_log_rotation_failure(image)
     check_status_write_failure(image)
