@@ -288,6 +288,33 @@ class CloudflareRangeSyncTest(unittest.TestCase):
             [2, 4],
         )
 
+    def test_oversized_fetch_response_is_rejected(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b"x" * (cloudflare_ranges.MAX_RESPONSE_BYTES + 1)
+        )
+
+        with (
+            mock.patch.object(cloudflare_ranges, "urlopen", return_value=response),
+            self.assertRaisesRegex(ValueError, "response exceeds"),
+        ):
+            cloudflare_ranges._fetch_text("https://v4.invalid")
+
+    def test_excessive_range_count_is_rejected(self) -> None:
+        write_ranges(self.path, self.ipv4_ranges, self.ipv6_ranges)
+        excessive_ipv4 = [
+            ipv4(0x0A000000 + index * 0x100)
+            for index in range(cloudflare_ranges.MAX_RANGES_PER_FAMILY + 1)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "more than 128 ranges"):
+            cloudflare_ranges.sync_ranges(
+                self.path,
+                "\n".join(excessive_ipv4) + "\n",
+                "\n".join(self.ipv6_ranges) + "\n",
+                write=False,
+            )
+
 
 def load_workflow() -> dict[str, object]:
     ruby = """
