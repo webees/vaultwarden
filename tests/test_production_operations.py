@@ -219,6 +219,7 @@ def run_notifier(
     body: str,
     app_env: dict[str, str],
     *,
+    workflow_name: str = "Dependency Updates",
     fly_api_token: str | None = "fly-token-must-not-be-printed",
     curl_status: str = "200",
     curl_body: str = "",
@@ -287,16 +288,17 @@ exit "$CURL_EXIT"
                 "CURL_EXIT": str(curl_exit),
                 "CURL_STATUS": curl_status,
                 "CURL_STDERR": curl_stderr,
-                "FAILED_JOBS": (
-                    "check=failure,production_operation=skipped,watchdog=skipped"
-                ),
+                "CHECK_RESULT": "failure",
+                "EVENT": "workflow_dispatch",
                 "FLY_APP": "test-app",
                 "FLY_ARGS_FILE": str(fly_args_file),
+                "OPERATION_RESULT": "skipped",
                 "PATH": f"{bin_dir}:{environment['PATH']}",
                 "RUNNER_TEMP": str(root),
                 "RUN_URL": "https://example.invalid/actions/runs/1",
                 "SHA": "0123456789abcdef0123456789abcdef01234567",
-                "WORKFLOW": "Dependency Updates",
+                "WATCHDOG_RESULT": "skipped",
+                "WORKFLOW": workflow_name,
             }
         )
         environment.pop("FLY_TELEGRAM_BOT_TOKEN", None)
@@ -546,9 +548,29 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertIn("https://api.telegram.org/", curl_args)
         self.assertIn(f"chat_id={chat_id}", curl_args)
         self.assertIn("disable_web_page_preview=true", curl_args)
+        self.assertIn("parse_mode=HTML", curl_args)
+        self.assertIn("<b>工作流失败</b>", curl_args)
+        self.assertIn("<code>production_operation</code>: skipped", curl_args)
+        self.assertIn("查看 Actions 运行详情", curl_args)
         output = visible_notifier_output(result)
         self.assertNotIn(token, output)
         self.assertNotIn(chat_id, output)
+
+    def test_failure_alert_escapes_html_in_workflow_name(self) -> None:
+        app_env = {
+            "TELEGRAM_BOT_TOKEN": "123456789:AAHfake-token-for-tests",
+            "TELEGRAM_CHAT_ID": "@selftest_channel",
+        }
+
+        result, args = run_notifier(
+            self.notify_body,
+            app_env,
+            workflow_name="Build <Deploy> & Verify",
+        )
+        _, curl_args = split_notifier_args(args)
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Build &lt;Deploy&gt; &amp; Verify", curl_args)
 
     def test_failure_alert_rejects_malformed_credentials_before_curl(self) -> None:
         app_env = {
