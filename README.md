@@ -147,7 +147,8 @@ Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` +
 runs every two hours, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
 The same job synchronizes `config/cloudflare_ips.caddy` from Cloudflare's official IPv4 and IPv6
-endpoints. Empty, malformed, duplicate or wrong-family responses fail the job; a valid change follows the
+endpoints. Transient fetch failures are retried with a bound, while empty, malformed, duplicate,
+wrong-family or implausibly truncated responses fail the job; a valid change follows the
 same protected PR, auto-merge, image build and deployment path as the other dependency updates.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
 dispatches the image build directly instead of opening an empty PR.
