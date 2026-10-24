@@ -14,6 +14,42 @@ import ssl
 import sys
 
 
+MAX_LINE_BYTES = 8 * 1024
+MAX_MESSAGE_BYTES = 1024 * 1024
+MAX_MESSAGE_LINES = 10_000
+
+
+def _read_raw_line(reader):
+    raw = reader.readline(MAX_LINE_BYTES + 1)
+    if not raw:
+        raise EOFError("client closed the connection")
+    if len(raw) > MAX_LINE_BYTES:
+        raise ValueError(f"line exceeds {MAX_LINE_BYTES} bytes")
+    if not raw.endswith(b"\n"):
+        raise EOFError("client sent an incomplete line")
+    return raw
+
+
+def _readline(reader):
+    return _read_raw_line(reader).decode("utf-8", "replace").rstrip("\r\n")
+
+
+def read_message(reader):
+    lines = []
+    total_bytes = 0
+    while True:
+        raw = _read_raw_line(reader)
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if line == ".":
+            return "\n".join(lines)
+        if len(lines) >= MAX_MESSAGE_LINES:
+            raise ValueError(f"message has too many lines; limit is {MAX_MESSAGE_LINES}")
+        total_bytes += len(raw)
+        if total_bytes > MAX_MESSAGE_BYTES:
+            raise ValueError(f"message exceeds {MAX_MESSAGE_BYTES} bytes")
+        lines.append(line)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -53,10 +89,7 @@ def main():
         conn.sendall(line.encode() + b"\r\n")
 
     def readline():
-        raw = reader.readline()
-        if not raw:
-            raise EOFError("client closed the connection")
-        return raw.decode("utf-8", "replace").rstrip("\r\n")
+        return _readline(reader)
 
     message = None
     send("220 sink ESMTP ready")
@@ -84,20 +117,14 @@ def main():
                 send("250 OK")
             elif verb == "DATA":
                 send("354 End data with <CR><LF>.<CR><LF>")
-                lines = []
-                while True:
-                    data_line = readline()
-                    if data_line == ".":
-                        break
-                    lines.append(data_line)
-                message = "\n".join(lines)
+                message = read_message(reader)
                 send("250 OK queued")
             elif verb == "QUIT":
                 send("221 Bye")
                 break
             else:
                 send("502 Command not implemented")
-    except (EOFError, OSError, ssl.SSLError) as exc:
+    except (EOFError, OSError, ssl.SSLError, ValueError) as exc:
         if message is None:
             sys.exit("smtp sink: no message arrived (%s)" % exc)
 

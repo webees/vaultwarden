@@ -241,11 +241,11 @@ jobs:
         run: |
           set -euo pipefail
           for _ in $(seq 1 18); do
-            id="$(gh api \
+            id="$(timeout 30 gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${SHA}&per_page=20" \
               --jq '[.workflow_runs[] | select(.conclusion == "action_required")] | first | .id // empty')" || id=""
             if [ -n "$id" ]; then
-              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve" >/dev/null
+              timeout 30 gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve" >/dev/null
               echo "released the held pull_request run ${id}"
               exit 0
             fi
@@ -370,7 +370,7 @@ jobs:
 
           # This event has write access, so allow only workflow/action pin
           # changes. Never check out the pull request tree in this job.
-          files="$(gh api --paginate \
+          files="$(timeout 90 gh api --paginate \
             "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
           [ -n "$files" ] || { echo "Dependabot PR has no changed files" >&2; exit 1; }
           while IFS= read -r file; do

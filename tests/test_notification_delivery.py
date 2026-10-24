@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 import stat
@@ -213,6 +214,44 @@ class SmtpSinkBindingTest(unittest.TestCase):
         )
 
         self.assertEqual(args.bind, "127.0.0.1")
+
+    def test_message_terminator_and_exact_limits_are_accepted(self) -> None:
+        self.assertEqual(smtp_sink.read_message(io.BytesIO(b".\r\n")), "")
+
+        line = b"x" * (smtp_sink.MAX_LINE_BYTES - 2) + b"\r\n"
+        message = smtp_sink.read_message(
+            io.BytesIO(line * (smtp_sink.MAX_MESSAGE_BYTES // len(line)) + b".\r\n")
+        )
+        self.assertEqual(message.count("\n") + 1, smtp_sink.MAX_MESSAGE_BYTES // len(line))
+
+    def test_incomplete_lines_are_rejected(self) -> None:
+        for reader in (io.BytesIO(b""), io.BytesIO(b"x")):
+            with self.subTest(reader=reader.getvalue()), self.assertRaises(EOFError):
+                smtp_sink.read_message(reader)
+
+    def test_message_limits_reject_oversized_data(self) -> None:
+        cases = (
+            (
+                b"x" * (smtp_sink.MAX_LINE_BYTES + 1) + b"\r\n.\r\n",
+                "line exceeds",
+            ),
+            (
+                (b"x" * 1024 + b"\r\n")
+                * (smtp_sink.MAX_MESSAGE_BYTES // 1026 + 1)
+                + b".\r\n",
+                "message exceeds",
+            ),
+            (
+                b"x\r\n" * (smtp_sink.MAX_MESSAGE_LINES + 1) + b".\r\n",
+                "too many lines",
+            ),
+        )
+
+        for payload, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(
+                ValueError, message
+            ):
+                smtp_sink.read_message(io.BytesIO(payload))
 
 
 if __name__ == "__main__":

@@ -1029,17 +1029,18 @@ else
     bad "the required validation parses YAML but never runs the documented workflow lint"
 fi
 
-# The `gh api` calls in build_and_deploy.yml need the same bound as the ones in
-# deps.sh: gh has no timeout flag of its own.
+# Workflow `gh api` calls need the same bound as the ones in deps.sh: gh has no
+# timeout flag of its own.
 if ruby -ryaml -e '
-    doc = YAML.load_file(".github/workflows/build_and_deploy.yml")
-    runs = doc["jobs"].values.flat_map { |j| (j["steps"] || []).map { |s| s["run"] || "" } }.join("\n")
-    unbounded = runs.lines.select { |l| l.include?("gh api") && !l.include?("timeout") }
-    exit 1 unless unbounded.empty?
+    Dir[".github/workflows/*.yml"].each do |path|
+      doc = YAML.load_file(path)
+      runs = doc["jobs"].values.flat_map { |j| (j["steps"] || []).map { |s| s["run"] || "" } }.join("\n")
+      exit 1 if runs.lines.any? { |line| line.include?("gh api") && !line.include?("timeout") }
+    end
   '; then
-    ok "build_and_deploy.yml bounds every gh api call"
+    ok "every workflow bounds every gh api call"
 else
-    bad "build_and_deploy.yml calls gh api without a timeout"
+    bad "a workflow calls gh api without a timeout"
 fi
 
 # The cleanup guard used to swallow an unreadable schedule with `|| true`, so an
