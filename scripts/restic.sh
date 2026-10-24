@@ -398,6 +398,7 @@ send_telegram() {
                 -w '\n%{http_code}' \
                 --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
                 --data-urlencode "text=[$APP_NAME] ${text}" \
+                --data-urlencode "disable_web_page_preview=true" \
                 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1
             printf '%s\n' "$?" >&3
         } | tail -c "$MAX_LOG_BYTES"

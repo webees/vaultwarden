@@ -531,6 +531,7 @@ jobs:
             --request POST \
             --data-urlencode "chat_id=${chat_id}" \
             --data-urlencode "text=${message}" \
+            --data-urlencode "disable_web_page_preview=true" \
             "https://api.telegram.org/bot${token}/sendMessage" 2>"$error_file")"
           rc=$?
           set -e
