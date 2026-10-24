@@ -456,9 +456,12 @@ jobs:
       - name: 📣 Send the failure through Telegram
         env:
           WORKFLOW: ${{ github.workflow }}
+          EVENT: ${{ github.event_name }}
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          FAILED_JOBS: check=${{ needs.check.result }},production_operation=${{ needs.production_operation.result }},watchdog=${{ needs.watchdog.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          OPERATION_RESULT: ${{ needs.production_operation.result }}
+          WATCHDOG_RESULT: ${{ needs.watchdog.result }}
         run: |
           set -euo pipefail
           : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
@@ -516,8 +519,17 @@ jobs:
           echo "::add-mask::${token}"
           echo "::add-mask::${chat_id}"
 
-          message="$(printf 'Workflow failed: %s\nSHA: %s\nJobs: %s\nRun: %s' \
-            "$WORKFLOW" "$SHA" "$FAILED_JOBS" "$RUN_URL")"
+          html_escape() {
+            printf '%s' "$1" | sed \
+              -e 's/&/\&amp;/g' \
+              -e 's/</\&lt;/g' \
+              -e 's/>/\&gt;/g'
+          }
+          workflow_name="$(html_escape "$WORKFLOW")"
+          event_name="$(html_escape "$EVENT")"
+          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>production_operation</code>: %s\n<code>watchdog</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
+            "$workflow_name" "$CHECK_RESULT" "$OPERATION_RESULT" "$WATCHDOG_RESULT" \
+            "${SHA:0:12}" "$event_name" "$RUN_URL")"
           response_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-response.XXXXXX")"
           error_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-error.XXXXXX")"
           cleanup() {
@@ -530,6 +542,7 @@ jobs:
             --output "$response_file" --write-out '%{http_code}' \
             --request POST \
             --data-urlencode "chat_id=${chat_id}" \
+            --data-urlencode "parse_mode=HTML" \
             --data-urlencode "text=${message}" \
             --data-urlencode "disable_web_page_preview=true" \
             "https://api.telegram.org/bot${token}/sendMessage" 2>"$error_file")"
