@@ -43,18 +43,18 @@ class CloudflareRangeSyncTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.path = self.root / "cloudflare_ips.caddy"
-        self.v4_a = ipv4(0x0A000000)
-        self.v4_b = ipv4(0x0B000000)
+        self.v4_a = ipv4(0x01000000)
+        self.v4_b = ipv4(0x02000000)
         self.ipv4_ranges = [
-            ipv4(0x0A000000 + index * 0x100)
+            ipv4(0x01000000 + index * 0x100)
             for index in range(cloudflare_ranges.MIN_IPV4_RANGES + 5)
         ]
         self.ipv6_ranges = [
-            ipv6((0x20010DB8 + index) << 96)
+            ipv6((0x2400CB00 + index) << 96)
             for index in range(cloudflare_ranges.MIN_IPV6_RANGES + 2)
         ]
         self.extra_ipv6_ranges = [
-            ipv6((0x20010DB8 + len(self.ipv6_ranges) + index) << 96)
+            ipv6((0x2400CB00 + len(self.ipv6_ranges) + index) << 96)
             for index in range(4)
         ]
         self.v6_a = self.ipv6_ranges[0]
@@ -130,6 +130,24 @@ class CloudflareRangeSyncTest(unittest.TestCase):
                 f"{valid_ipv4}{self.v4_a}\n",
                 valid_ipv6,
                 "duplicate range",
+            ),
+            (
+                "overly broad",
+                f"8.0.0.0/8\n{valid_ipv4}",
+                valid_ipv6,
+                "prefix is wider than /12",
+            ),
+            (
+                "not globally routable",
+                f"0.0.0.0/24\n{valid_ipv4}",
+                valid_ipv6,
+                "not globally routable",
+            ),
+            (
+                "overlapping",
+                f"1.0.0.0/16\n{valid_ipv4}",
+                valid_ipv6,
+                "overlaps another range",
             ),
             ("empty", "", valid_ipv6, "no ranges returned"),
         )
@@ -303,7 +321,7 @@ class CloudflareRangeSyncTest(unittest.TestCase):
     def test_excessive_range_count_is_rejected(self) -> None:
         write_ranges(self.path, self.ipv4_ranges, self.ipv6_ranges)
         excessive_ipv4 = [
-            ipv4(0x0A000000 + index * 0x100)
+            ipv4(0x01000000 + index * 0x100)
             for index in range(cloudflare_ranges.MAX_RANGES_PER_FAMILY + 1)
         ]
 

@@ -148,7 +148,8 @@ runs every two hours, resolves each one from Docker Hub and the GitHub Releases 
 changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
 The same job synchronizes `config/cloudflare_ips.caddy` from Cloudflare's official IPv4 and IPv6
 endpoints. Transient fetch failures are retried with a bound, while empty, malformed, duplicate,
-wrong-family or implausibly truncated responses fail the job; a valid change follows the
+wrong-family, non-global, overlapping, overly broad or implausibly truncated responses fail the
+job; a valid change follows the
 same protected PR, auto-merge, image build and deployment path as the other dependency updates.
 When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
 dispatches the image build directly instead of opening an empty PR.
@@ -294,7 +295,7 @@ being restorable is not discovered for the first time during a real recovery.
 | Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
 | Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
 | Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB, maximum 8 MiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB, maximum 64 MiB), and files older than 10 hours are removed. The per-file cap cannot exceed the directory cap. Repository, mailer and restore cold-boot output is bounded before it reaches either the run log or container stdout, and configured credentials, addresses and private endpoints are replaced with `<redacted>`. A failed per-file rotation or final bounded-output read is reported as a failure instead of a false success |
-| Backup log directory cannot be trimmed | The run logs `Warning: log directory holds … could not be trimmed`, records `log trim failed` in `/data/backup-status.txt`, and sends a failure heartbeat when `HEALTHCHECK_URL` is set; free space or fix ownership under `/data/restic-logs` |
+| Backup log directory cannot be trimmed | The run logs `Warning: log directory holds … could not be trimmed`, records `log trim failed` in `/data/backup-status.txt`, sends a Telegram warning even when routine success notices are disabled, and sends a failure heartbeat when `HEALTHCHECK_URL` is set; free space or fix ownership under `/data/restic-logs` |
 | `check-freshness` reports `Cannot inspect the backup lock` | `/data/restic-logs/backup.lock` is missing, cannot be opened, or is not a symlink-free regular file. FIFOs, directories, devices and symlinks are rejected before opening so they cannot block the hourly guard. It keeps `state=running` as evidence but exits 2, sends a Telegram alert and pings the failure URL; restore read access and replace the path with a regular file, then verify the interrupted backup before clearing its marker |
 | `check-freshness` reports `state is failed` while `last_success` looks recent | The latest backup, verification or restore drill failed; the previous success timestamp is not accepted as evidence for the latest run. Read the preserved `message=` value and the matching run log, then fix the failure and let the next backup record `state=ok` |
 | Backup exits with `Cannot record backup start state` or `Cannot record backup completion state` | `/data/backup-status.txt` is not a writable regular file. The backup job fails with exit 2 and sends its normal failure alert instead of reporting a false success; repair the path type and owner under `/data` before retrying |

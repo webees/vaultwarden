@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 
+import smtp_sink
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SMTP_TO = "secret-recipient@example.invalid"
@@ -193,6 +195,24 @@ class NotificationDeliveryTest(unittest.TestCase):
         self.assertNotIn(TELEGRAM_TOKEN, output)
         self.assertNotIn(TELEGRAM_CHAT_ID, output)
         self.assertEqual(leftovers, ())
+
+
+class SmtpSinkBindingTest(unittest.TestCase):
+    def test_the_test_sink_binds_to_loopback_by_default(self) -> None:
+        args = smtp_sink.parse_args(
+            [
+                "--cert",
+                "cert.pem",
+                "--key",
+                "key.pem",
+                "--out",
+                "message.txt",
+                "--ready",
+                "port.txt",
+            ]
+        )
+
+        self.assertEqual(args.bind, "127.0.0.1")
 
 
 if __name__ == "__main__":

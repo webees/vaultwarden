@@ -765,9 +765,7 @@ backup() {
     # for the monthly integrity check only.
     if [ -n "$trim_message" ]; then
         heartbeat fail
-        if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_telegram "Backup succeeded with warnings" || :
-        fi
+        send_telegram "Backup succeeded with warnings" || :
     else
         heartbeat ok
         if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then

@@ -14,15 +14,18 @@ import ssl
 import sys
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--bind", default="127.0.0.1", help="interface to listen on (default: loopback)"
+    )
     parser.add_argument("--cert", required=True, help="PEM certificate chain")
     parser.add_argument("--key", required=True, help="PEM private key")
     parser.add_argument("--out", required=True, help="where to write the message")
     parser.add_argument("--ready", required=True, help="file holding the bound port")
     parser.add_argument("--port", type=int, default=0, help="0 picks a free port")
     parser.add_argument("--timeout", type=float, default=90.0)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main():
@@ -33,7 +36,7 @@ def main():
 
     server = socket.socket()
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", args.port))
+    server.bind((args.bind, args.port))
     server.listen(1)
     server.settimeout(args.timeout)
     with open(args.ready, "w", encoding="utf-8") as handle:
