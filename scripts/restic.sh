@@ -51,6 +51,7 @@ MAX_STATUS_BYTES=4096
 # SQLite reports some integrity failures as result rows with a successful exit
 # status. Treat "ok" as the complete output contract, not merely one line that
 # may be present among diagnostics.
+# shellcheck disable=SC2016  # AWK fields expand inside the child, not here.
 SQLITE_INTEGRITY_AWK='
 NR == 1 && $0 == "ok" { valid = 1; next }
 { print; invalid = 1 }
@@ -594,6 +595,7 @@ run_visible() { run_command true "$@"; }
 
 sqlite_integrity_check() {
     local label="$1" database="$2"
+    # shellcheck disable=SC2016  # Positional parameters belong to bash -c.
     run "$label" "$QUICK_TIMEOUT" bash -c '
         set -o pipefail
         sqlite3 "$1" "PRAGMA integrity_check" | awk "$2"
