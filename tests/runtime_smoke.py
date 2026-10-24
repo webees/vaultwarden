@@ -53,6 +53,10 @@ class Suite:
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
+FLY_CLIENT_IP = ".".join(("203", "0", "113", "9"))
+CF_CONNECTING_IP = ".".join(("203", "0", "113", "99"))
+X_FORWARDED_FOR_IP = ".".join(("198", "51", "100", "11"))
+X_REAL_IP = ".".join(("198", "51", "100", "12"))
 
 suite = Suite("runtime smoke")
 containers: list[str] = []
@@ -759,8 +763,8 @@ def check_host_whitelist(container: str) -> None:
 
 def check_client_ip(container: str) -> None:
     """Fly overwrites Fly-Client-IP at the edge; CF-Connecting-IP may not be trusted."""
-    probe_code(container, "-H", "Host: example.com", "-H", "Fly-Client-IP: 203.0.113.9", "http://127.0.0.1:8080/api/config")
-    probe_code(container, "-H", "Host: example.com", "-H", "CF-Connecting-IP: 203.0.113.99", "http://127.0.0.1:8080/api/config")
+    probe_code(container, "-H", "Host: example.com", "-H", f"Fly-Client-IP: {FLY_CLIENT_IP}", "http://127.0.0.1:8080/api/config")
+    probe_code(container, "-H", "Host: example.com", "-H", f"CF-Connecting-IP: {CF_CONNECTING_IP}", "http://127.0.0.1:8080/api/config")
 
 
 def check_admin_access_boundary(container: str) -> None:
@@ -771,7 +775,7 @@ def check_admin_access_boundary(container: str) -> None:
         "-H",
         "Host: example.com",
         "-H",
-        "Fly-Client-IP: 203.0.113.9",
+        f"Fly-Client-IP: {FLY_CLIENT_IP}",
         "-H",
         "Cf-Access-Jwt-Assertion: forged",
         "http://127.0.0.1:8080/admin",
@@ -791,7 +795,7 @@ def check_admin_access_boundary(container: str) -> None:
         "-H",
         "Fly-Client-IP: 173.245.48.10",
         "-H",
-        "CF-Connecting-IP: 203.0.113.9",
+        f"CF-Connecting-IP: {FLY_CLIENT_IP}",
         "-H",
         "Cf-Access-Jwt-Assertion: selftest",
         "http://127.0.0.1:8080/admin",
@@ -817,13 +821,13 @@ def check_access_log(container: str) -> str:
         suite.bad("no access log lines for the smoke probes")
         print("\n".join(log.splitlines()[-20:]), file=sys.stderr)
         suite.report()
-    if '"client_ip": "203.0.113.9"' in log:
+    if f'"client_ip": "{FLY_CLIENT_IP}"' in log:
         suite.ok("Fly-Client-IP is trusted as the client address")
     else:
         suite.bad("Fly-Client-IP did not reach the access log")
         print("\n".join(line for line in log.splitlines() if '"client_ip"' in line), file=sys.stderr)
         suite.report()
-    if '"client_ip": "203.0.113.99"' in log:
+    if f'"client_ip": "{CF_CONNECTING_IP}"' in log:
         suite.bad("a spoofed CF-Connecting-IP was trusted as the client address")
         suite.report()
     suite.ok("a spoofed CF-Connecting-IP is not trusted as the client address")
@@ -846,9 +850,9 @@ def check_redaction(container: str, log: str) -> None:
         if key == "fly-client-ip":
             continue
         if key == "x-forwarded-for":
-            value = "198.51.100.11"
+            value = X_FORWARDED_FOR_IP
         elif key == "x-real-ip":
-            value = "198.51.100.12"
+            value = X_REAL_IP
         else:
             value = f"smoke-{header}-{os.getpid()}"
         args += ["-H", f"{header}: {value}"]
