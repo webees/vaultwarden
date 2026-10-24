@@ -192,7 +192,7 @@ fly releases rollback   # roll back to the previous image
 | Item | Behaviour |
 | :--- | :--- |
 | Schedule | Hourly backup at `:17`, plus a monthly integrity check and a monthly restore drill, defined in `config/crontab` |
-| Data | `/data` volume, excluding the live `db.*` SQLite files, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
+| Data | `/data` volume, excluding the live `db.sqlite3` and its SQLite sidecars, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
 | Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
 | Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
 | Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check and the monthly restore drill also email, because they cannot repeat 24 times a day. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build. If that workflow fails, a bounded notification job reuses the app's Telegram credentials and sends the workflow, commit, failed jobs and run URL; GitHub email remains the fallback when the app cannot be reached |
@@ -255,7 +255,7 @@ reads to tell a backup that started but never finished, and the guard runs befor
 
 ### Recovering in place
 
-A snapshot never contains the live `db.*` files: the consistent database travels as `/data/backup.bak`.
+A snapshot never contains the live `db.sqlite3` files: the consistent database travels as `/data/backup.bak`.
 `restore` puts the keys, the attachments and that hot copy back, but swapping the database under a
 running process is not safe, so the swap is armed with a marker and applied by the entrypoint before
 Vaultwarden opens the database:

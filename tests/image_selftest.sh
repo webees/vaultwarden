@@ -676,12 +676,46 @@ same "a stale-backup alert records no email attempt" 0 \
 
 # The backup runs on the same hourly schedule, so neither its success nor its
 # failure may email. The success notification stays opt-in and Telegram only.
+mkdir -p /data/icon_cache /data/attachments/backup-regression
+printf 'rebuildable\n' > /data/icon_cache/cache
+printf 'attachment\n' > /data/db.pdf
+printf 'attachment\n' > /data/attachments/backup-regression/db.pdf
+printf 'attachment\n' > /data/attachments/backup-regression/db.sqlite3
+printf 'attachment\n' > /data/attachments/backup-regression/db.sqlite3-wal
+printf 'attachment\n' > /data/attachments/backup-regression/backup-status.txt
+mkdir -p /data/attachments/backup-regression/icon_cache
+printf 'attachment\n' > /data/attachments/backup-regression/icon_cache/keep.txt
+printf 'attachment\n' > /data/attachments/backup-regression/normal.pdf
 : > "$mail_log"
 PATH="$mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
     /restic.sh backup >/tmp/selftest-backup-ok.log 2>&1
 same "a successful backup never reaches the mailer" 0 "$(mail_calls)"
 same "an opt-in success notification records no email attempt" 0 \
     "$(grep -c 'Alert email' /tmp/selftest-backup-ok.log)"
+RESTIC_REPOSITORY="$RESTIC_REPOSITORY" RESTIC_PASSWORD="$RESTIC_PASSWORD" \
+    restic ls latest >/tmp/selftest-backup-paths.log 2>&1
+same "the backup keeps an attachment whose name starts with db." 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/db.pdf' /tmp/selftest-backup-paths.log)"
+same "the backup keeps a top-level attachment whose name starts with db." 1 \
+    "$(grep -Fxc '/data/db.pdf' /tmp/selftest-backup-paths.log)"
+same "the backup keeps an attachment named db.sqlite3" 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/db.sqlite3' /tmp/selftest-backup-paths.log)"
+same "the backup keeps a nested db.sqlite3 sidecar" 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/db.sqlite3-wal' /tmp/selftest-backup-paths.log)"
+same "the backup keeps an attachment named backup-status.txt" 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/backup-status.txt' /tmp/selftest-backup-paths.log)"
+same "the backup keeps a nested icon_cache directory" 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/icon_cache/keep.txt' /tmp/selftest-backup-paths.log)"
+same "the backup keeps an ordinary attachment beside the excluded names" 1 \
+    "$(grep -Fxc '/data/attachments/backup-regression/normal.pdf' /tmp/selftest-backup-paths.log)"
+same "the backup excludes only the live database" 0 \
+    "$(grep -Fxc '/data/db.sqlite3' /tmp/selftest-backup-paths.log)"
+same "the backup excludes only the top-level status marker" 0 \
+    "$(grep -Fxc '/data/backup-status.txt' /tmp/selftest-backup-paths.log)"
+same "the backup excludes only the top-level icon cache" 0 \
+    "$(grep -Fc '/data/icon_cache/' /tmp/selftest-backup-paths.log)"
+same "the backup excludes its own log directory" 0 \
+    "$(grep -Fc '/data/restic-logs/' /tmp/selftest-backup-paths.log)"
 
 # A wrong password fails the run without letting `backup` initialise anything,
 # which a missing repository would: `restic init` would quietly create it.
