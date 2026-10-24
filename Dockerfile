@@ -40,6 +40,7 @@ COPY scripts/entrypoint/ /entrypoint/
 # ── Dependencies ──────────────────────────────────────────────────────────────
 ARG CACHE_BUST=local
 RUN set -eu; \
+    echo "cache-bust=${CACHE_BUST}"; \
     date -u +%Y-%m-%dT%H:%M:%SZ; \
     case "$TARGETARCH" in \
         amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_SHA256_amd64" ;; \

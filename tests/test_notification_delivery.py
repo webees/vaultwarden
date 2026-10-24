@@ -197,6 +197,18 @@ class NotificationDeliveryTest(unittest.TestCase):
         self.assertNotIn(TELEGRAM_CHAT_ID, output)
         self.assertEqual(leftovers, ())
 
+    def test_nested_telegram_success_is_not_top_level_success(self) -> None:
+        result, _, _, leftovers = run_notify_test(
+            curl_status="200",
+            curl_body='{"ok":false,"result":{"ok":true}}',
+        )
+        output = result.stderr + result.stdout
+
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn("Telegram notification failed (HTTP 200)", output)
+        self.assertNotIn("Telegram notification sent", output)
+        self.assertEqual(leftovers, ())
+
 
 class SmtpSinkBindingTest(unittest.TestCase):
     def test_the_test_sink_binds_to_loopback_by_default(self) -> None:

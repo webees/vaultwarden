@@ -25,7 +25,12 @@ EXPECTED_OPTIONS = {
     "restore-test",
     "backup",
 }
-EXPECTED_ALERT_NEEDS = {"check", "production_operation", "watchdog"}
+EXPECTED_ALERT_NEEDS = {
+    "check",
+    "dependabot_automerge",
+    "production_operation",
+    "watchdog",
+}
 EXPECTED_COMMANDS = {
     "audit": "/restic.sh audit",
     "check-freshness": "/restic.sh check-freshness",
@@ -222,7 +227,7 @@ def run_notifier(
     workflow_name: str = "Dependency Updates",
     fly_api_token: str | None = "fly-token-must-not-be-printed",
     curl_status: str = "200",
-    curl_body: str = "",
+    curl_body: str = '{"ok":true}',
     curl_stderr: str = "",
     curl_exit: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
@@ -289,6 +294,7 @@ exit "$CURL_EXIT"
                 "CURL_STATUS": curl_status,
                 "CURL_STDERR": curl_stderr,
                 "CHECK_RESULT": "failure",
+                "DEPENDABOT_RESULT": "skipped",
                 "EVENT": "workflow_dispatch",
                 "FLY_APP": "test-app",
                 "FLY_ARGS_FILE": str(fly_args_file),
@@ -550,6 +556,7 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertIn("disable_web_page_preview=true", curl_args)
         self.assertIn("parse_mode=HTML", curl_args)
         self.assertIn("<b>工作流失败</b>", curl_args)
+        self.assertIn("<code>dependabot_automerge</code>: skipped", curl_args)
         self.assertIn("<code>production_operation</code>: skipped", curl_args)
         self.assertIn("查看 Actions 运行详情", curl_args)
         output = visible_notifier_output(result)
@@ -634,6 +641,10 @@ class ProductionOperationTest(unittest.TestCase):
             {
                 "curl_status": "401",
                 "curl_body": f'{{"description":"rejected {token} for {chat_id}"}}',
+            },
+            {
+                "curl_status": "200",
+                "curl_body": f'{{"ok":false,"description":"rejected {token} for {chat_id}"}}',
             },
         )
 
