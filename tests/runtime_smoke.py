@@ -520,7 +520,8 @@ def check_sqlite_integrity_contract(image: str) -> None:
     """A non-ok integrity result must fail even when sqlite3 exits zero."""
     script = r"""
 set -eu
-rm -rf /data /tmp/stub /tmp/restic-calls
+find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+rm -rf /tmp/stub /tmp/restic-calls
 mkdir -p /data/restic-logs /tmp/stub
 chown -R vaultwarden:vaultwarden /data
 sqlite3 /data/db.sqlite3 \
@@ -651,7 +652,10 @@ dd if=/dev/zero of=/data/restic-logs/unreadable.log bs=1024 count=64 2>/dev/null
 chown root:root /data/restic-logs/unreadable.log
 chmod 000 /data/restic-logs/unreadable.log
 printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/restic
-printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/sqlite3
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in *"PRAGMA integrity_check"*) printf "ok\n" ;; esac' \
+    'exit 0' > /tmp/stub/sqlite3
 printf '%s\n' \
     '#!/bin/sh' \
     'case "$*" in *fail*) printf "fail\n" >> /tmp/heartbeat-calls ;; esac' \
@@ -694,7 +698,10 @@ chmod 500 /data
 chmod 400 /data/backup-status.txt
 chown vaultwarden:vaultwarden /tmp/logs
 printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/restic
-printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/sqlite3
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in *"PRAGMA integrity_check"*) printf "ok\n" ;; esac' \
+    'exit 0' > /tmp/stub/sqlite3
 printf '%s\n' \
     '#!/bin/sh' \
     'case "$*" in' \
