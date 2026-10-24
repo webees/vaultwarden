@@ -1242,6 +1242,66 @@ def check_restore_with_corrupt_hot_copy(image: str) -> None:
     suite.report()
 
 
+def check_restore_rejects_non_ok_integrity_output(image: str) -> None:
+    """Only an integrity result of exactly `ok` may replace the live database."""
+    container = scratch(image, f"restore-integrity-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data /stub\n"
+        'real="$(command -v sqlite3)"\n'
+        "printf '%b' '#!/bin/sh\\ncase \"$*\" in *\"PRAGMA integrity_check\"*) printf \"ok\\\\nCHECK constraint failed in t\\\\n\"; exit 0 ;; esac\\nexec '\"$real\"' \"$@\"\\n' > /stub/sqlite3\n"
+        "chmod +x /stub/sqlite3\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "cp /data/db.sqlite3 /tmp/live-before\n"
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(
+        container, 'PATH="/stub:$PATH" /entrypoint.sh echo started', check=False
+    )
+    unchanged = (
+        exec_in(
+            container,
+            "cmp",
+            "-s",
+            "/data/db.sqlite3",
+            "/tmp/live-before",
+            check=False,
+        ).returncode
+        == 0
+    )
+    value = exec_in(
+        container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False
+    ).stdout.strip()
+    marker_left = (
+        exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode
+        == 0
+    )
+    scratch_left = (
+        exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode
+        == 0
+    )
+    if (
+        started.returncode == 0
+        and "started" in started.stdout
+        and "not a readable database" in combined(started)
+        and unchanged
+        and value == "2"
+        and marker_left
+        and not scratch_left
+    ):
+        suite.ok("a non-ok restore integrity result keeps the live database")
+        return
+    suite.bad("a mixed integrity result was accepted as a healthy restore")
+    print(
+        f"rc={started.returncode} unchanged={unchanged} value={value} "
+        f"marker_left={marker_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    print(combined(started), file=sys.stderr)
+    suite.report()
+
+
 def check_restore_rejects_symlinked_hot_copy(image: str) -> None:
     """A restore input link must not make the root entrypoint read outside /data."""
     container = scratch(image, f"restore-symlink-{os.getpid()}")
@@ -1842,6 +1902,7 @@ def main() -> int:
     check_restore_swap(image)
     check_restore_without_hot_copy(image)
     check_restore_with_corrupt_hot_copy(image)
+    check_restore_rejects_non_ok_integrity_output(image)
     check_restore_rejects_symlinked_hot_copy(image)
     check_restore_rejects_directory_destination(image)
     check_restore_rejects_symlinked_destination(image)
