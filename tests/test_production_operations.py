@@ -545,6 +545,7 @@ class ProductionOperationTest(unittest.TestCase):
         )
         self.assertIn("https://api.telegram.org/", curl_args)
         self.assertIn(f"chat_id={chat_id}", curl_args)
+        self.assertIn("disable_web_page_preview=true", curl_args)
         output = visible_notifier_output(result)
         self.assertNotIn(token, output)
         self.assertNotIn(chat_id, output)

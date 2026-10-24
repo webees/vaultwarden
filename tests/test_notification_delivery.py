@@ -134,6 +134,7 @@ class NotificationDeliveryTest(unittest.TestCase):
             any("Notification test" in argument for argument in mail_args), mail_args
         )
         self.assertIn("--data-urlencode", curl_args)
+        self.assertIn("disable_web_page_preview=true", curl_args)
         self.assertIn("https://api.telegram.org/", curl_args)
         self.assertIn("Alert email sent", result.stderr + result.stdout)
         self.assertIn("Telegram notification sent", result.stderr + result.stdout)
