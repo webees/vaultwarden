@@ -738,14 +738,23 @@ backup() {
     run "SQLite backup" "$QUICK_TIMEOUT" sqlite3 "$DATA/db.sqlite3" ".backup $DATA/backup.bak"
     sqlite_integrity_check "SQLite check" "$DATA/backup.bak"
 
-    # Core operations (exclude live db files, rebuildable cache, and local logs)
-    local log_exclude=()
+    # Restic treats a bare glob as "at any depth", which silently dropped user
+    # attachments named db.* or backup-status.txt. Anchor every exclusion at the
+    # data root and name the SQLite files exactly so unrelated user files stay in
+    # the snapshot.
+    local backup_excludes=(
+        --exclude="$DATA/db.sqlite3"
+        --exclude="$DATA/db.sqlite3-journal"
+        --exclude="$DATA/db.sqlite3-shm"
+        --exclude="$DATA/db.sqlite3-wal"
+        --exclude="$DATA/icon_cache"
+        --exclude="$DATA/backup-status.txt"
+    )
     case "$LOG_DIR" in
-        "$DATA"/*) log_exclude=(--exclude="${LOG_DIR#"$DATA"/}") ;;
+        "$DATA"/*) backup_excludes+=(--exclude="$LOG_DIR") ;;
     esac
     run "Data backup" "$LONG_TIMEOUT" restic backup --verbose \
-        --exclude='db.*' --exclude='icon_cache' --exclude='backup-status.txt' \
-        "${log_exclude[@]}" "$DATA"
+        "${backup_excludes[@]}" "$DATA"
     run "Health check" "$LONG_TIMEOUT" restic check
     run "Snapshot prune" "$LONG_TIMEOUT" restic forget \
         --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune
