@@ -992,6 +992,37 @@ same "a backup with an untrimmable log directory still completes" 0 "$frozen_bac
 same "the successful backup records the log trim failure" 1 \
     "$(grep -c 'log trim failed' /data/backup-status.txt)"
 
+# A volume-maintenance failure is not an opt-in success notice. It must reach
+# the high-frequency alert channel even while routine successful backups keep
+# Telegram quiet.
+warn_tg_dir=/tmp/selftest-trim-telegram
+warn_tg_calls="$warn_tg_dir/calls"
+rm -rf "$warn_tg_dir"
+mkdir -p "$warn_tg_dir"
+chmod 777 "$warn_tg_dir"
+: > "$warn_tg_calls"
+chmod 666 "$warn_tg_calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "200"\nexit 0\n' \
+    "$warn_tg_calls" > "$warn_tg_dir/curl"
+chmod 755 "$warn_tg_dir/curl"
+dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
+chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
+chmod 500 /data/restic-logs
+PATH="$warn_tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=false \
+    RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1024 \
+    /restic.sh backup >/tmp/selftest-trim-alert.log 2>&1
+trim_alert_rc=$?
+chmod 700 /data/restic-logs
+rm -f /data/restic-logs/selftest-frozen.log
+same "a backup with an untrimmable log directory still succeeds with warnings" 0 \
+    "$trim_alert_rc"
+same "a log maintenance failure sends Telegram even when success notices are off" 1 \
+    "$(grep -c 'sendMessage' "$warn_tg_calls")"
+same "the maintenance alert names the warning" 1 \
+    "$(grep -c 'Backup succeeded with warnings' "$warn_tg_calls")"
+rm -rf "$warn_tg_dir"
+
 # "Cannot read the log directory" is not "the log directory is empty". The size
 # probe used to print its fallback on top of awk's own zero, and the cap
 # comparison then rejected the two-line value as a non-integer: an unreadable

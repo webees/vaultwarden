@@ -25,6 +25,8 @@ MAX_RANGES_PER_FAMILY = 128
 MIN_IPV4_RANGES = 10
 MIN_IPV6_RANGES = 5
 MIN_TOTAL_RANGES = 20
+MIN_IPV4_PREFIX = 12
+MIN_IPV6_PREFIX = 28
 HTTP_TIMEOUT_SECONDS = 30
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_DELAY_SECONDS = 2
@@ -46,6 +48,7 @@ class SyncResult:
 def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ...]:
     networks: list[Network] = []
     seen: set[Network] = set()
+    min_prefix = MIN_IPV4_PREFIX if version == 4 else MIN_IPV6_PREFIX
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         value = raw_line.strip()
         if not value:
@@ -58,8 +61,16 @@ def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ..
             raise ValueError(
                 f"{source}:{line_number}: expected IPv{version}, got IPv{network.version}"
             )
+        if network.prefixlen < min_prefix:
+            raise ValueError(
+                f"{source}:{line_number}: prefix is wider than /{min_prefix}"
+            )
+        if not network.is_global:
+            raise ValueError(f"{source}:{line_number}: range is not globally routable")
         if network in seen:
             raise ValueError(f"{source}:{line_number}: duplicate range")
+        if any(network.overlaps(existing) for existing in networks):
+            raise ValueError(f"{source}:{line_number}: range overlaps another range")
         if len(networks) >= MAX_RANGES_PER_FAMILY:
             raise ValueError(f"{source}: more than {MAX_RANGES_PER_FAMILY} ranges")
         seen.add(network)

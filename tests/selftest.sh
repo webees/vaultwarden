@@ -81,29 +81,19 @@ fi
 # image depend on an unrelated live endpoint and could rewrite tracked source.
 # Validate the pinned data itself so a truncated or duplicated snapshot cannot
 # pass on line count alone.
-if cloudflare_ranges="$(python3 - config/cloudflare_ips.caddy <<'PY'
-import ipaddress
+if cloudflare_ranges="$(python3 - "$REPO_ROOT/scripts" config/cloudflare_ips.caddy <<'PY'
 import pathlib
 import sys
 
-ranges = []
-for number, line in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
-    fields = line.split()
-    if not fields or fields[0].startswith("#"):
-        continue
-    if len(fields) != 2 or fields[0] != "client_ip":
-        raise SystemExit(f"line {number}: expected 'client_ip <CIDR>'")
-    try:
-        network = ipaddress.ip_network(fields[1], strict=True)
-    except ValueError as error:
-        raise SystemExit(f"line {number}: {error}") from error
-    ranges.append(network)
+sys.path.insert(0, sys.argv[1])
+import cloudflare_ranges
 
-if len(ranges) < 20:
-    raise SystemExit(f"only {len(ranges)} ranges; expected at least 20")
-if len(ranges) != len(set(ranges)):
-    raise SystemExit("duplicate range")
-print(len(ranges))
+path = pathlib.Path(sys.argv[2])
+_, ranges = cloudflare_ranges._read_ranges_file(path)
+ipv4 = "\n".join(str(value) for value in ranges if value.version == 4)
+ipv6 = "\n".join(str(value) for value in ranges if value.version == 6)
+result = cloudflare_ranges.sync_ranges(path, ipv4, ipv6, write=False)
+print(result.range_count)
 PY
 )"; then
     ok "the Cloudflare range list is valid (${cloudflare_ranges} ranges)"

@@ -1079,6 +1079,7 @@ def check_smtp_delivery(work: Path, image: str) -> None:
     sink = subprocess.Popen(
         [
             sys.executable, str(TESTS_DIR / "smtp_sink.py"),
+            "--bind", "0.0.0.0",
             "--cert", str(cert), "--key", str(key),
             "--out", str(message), "--ready", str(ready), "--timeout", "120",
         ]
