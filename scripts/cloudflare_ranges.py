@@ -17,7 +17,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-DEFAULT_RANGES_FILE = Path("config/cloudflare_ips.caddy")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RANGES_FILE = REPO_ROOT / "config/cloudflare_ips.caddy"
 DEFAULT_IPV4_URL = "https://www.cloudflare.com/ips-v4"
 DEFAULT_IPV6_URL = "https://www.cloudflare.com/ips-v6"
 MAX_RESPONSE_BYTES = 64 * 1024
