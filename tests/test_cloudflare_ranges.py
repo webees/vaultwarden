@@ -333,6 +333,12 @@ class CloudflareRangeSyncTest(unittest.TestCase):
                 write=False,
             )
 
+    def test_default_target_is_repo_relative_not_process_relative(self) -> None:
+        args = cloudflare_ranges._parser().parse_args(["sync"])
+
+        self.assertTrue(args.file.is_absolute())
+        self.assertEqual(args.file, REPO_ROOT / "config" / "cloudflare_ips.caddy")
+
 
 def load_workflow() -> dict[str, object]:
     ruby = """
