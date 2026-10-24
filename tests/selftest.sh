@@ -106,9 +106,9 @@ if len(ranges) != len(set(ranges)):
 print(len(ranges))
 PY
 )"; then
-    ok "the static Cloudflare range list is valid (${cloudflare_ranges} ranges)"
+    ok "the Cloudflare range list is valid (${cloudflare_ranges} ranges)"
 else
-    bad "the static Cloudflare range list is truncated, duplicated or invalid"
+    bad "the Cloudflare range list is truncated, duplicated or invalid"
 fi
 
 # ── deps.sh ───────────────────────────────────────────────────────────────────
@@ -1284,7 +1284,8 @@ if [ -s "$work/pr-step.sh" ]; then
         : > "$pr_out"
         GITHUB_OUTPUT="$pr_out" GITHUB_REPOSITORY=example/repo RUNNER_TEMP="$work" \
             VERSION=1.2.3 DIGEST=sha256:stub SUPERCRONIC=v0 \
-            APK_COUNT=0 APK_ROWS='' OPEN_PR_COUNT="$1" \
+            CLOUDFLARE_COUNT=22 CLOUDFLARE_IPV4=15 CLOUDFLARE_IPV6=7 \
+            CLOUDFLARE_CHANGED=true APK_COUNT=0 APK_ROWS='' OPEN_PR_COUNT="$1" \
             PATH="$pr_stub:$PATH" bash "$work/pr-step.sh" \
             > "$work/pr-run.log" 2>&1
     }
@@ -1373,7 +1374,7 @@ if ruby -ryaml -e '
     exit 1 unless (arm["if"] || "").include?("env.AUTO_MERGE")
     exit 1 unless (dispatch["if"] || "").include?("env.AUTO_MERGE")
     exit 1 unless (dispatch["if"] || "").include?("always()")
-    exit 1 unless (dispatch["if"] || "").include?("steps.compare.outputs.changed == '\''true'\''")
+    exit 1 unless (dispatch["if"] || "").include?("steps.changed.outputs.changed == '\''true'\''")
     exit 1 unless (dispatch["if"] || "").include?("steps.pr.outcome == '\''success'\''")
     exit 1 unless (dispatch["if"] || "").include?("steps.arm.outcome == '\''success'\''")
   '; then
