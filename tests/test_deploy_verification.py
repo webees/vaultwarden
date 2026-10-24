@@ -82,6 +82,28 @@ def workflow_environment() -> dict[str, str]:
     return json.loads(result.stdout)
 
 
+def dependency_run_block() -> str:
+    """Return the first Dockerfile RUN instruction after the cache-bust ARG."""
+    lines = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    try:
+        argument = next(
+            index for index, line in enumerate(lines) if line.startswith("ARG CACHE_BUST=")
+        )
+        start = next(
+            index for index in range(argument + 1, len(lines)) if lines[index].startswith("RUN ")
+        )
+    except StopIteration as exc:
+        raise AssertionError("dependency RUN instruction is missing") from exc
+
+    block = [lines[start]]
+    while block[-1].rstrip().endswith("\\"):
+        start += 1
+        if start >= len(lines):
+            raise AssertionError("dependency RUN instruction is unterminated")
+        block.append(lines[start])
+    return "\n".join(block)
+
+
 def write_fake_flyctl(directory: Path) -> None:
     path = directory / "flyctl"
     path.write_text(
@@ -282,6 +304,9 @@ class DeploymentVerificationTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assert_release_output_is_redacted(result)
+
+    def test_dependency_layer_uses_the_cache_bust_argument(self) -> None:
+        self.assertRegex(dependency_run_block(), r"\$\{?CACHE_BUST\}?")
 
     def test_release_preserves_flyctl_exit_status(self) -> None:
         result = run_release(

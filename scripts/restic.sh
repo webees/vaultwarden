@@ -46,6 +46,9 @@ LIMIT_BACKUP_AGE=31536000
 NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+# The Bot API returns a top-level `ok` object field. Search for that exact
+# prefix instead of accepting an `ok: true` nested inside an error result.
+TELEGRAM_OK_PREFIX='^[[:space:]]*\{[[:space:]]*"ok"[[:space:]]*:[[:space:]]*true([[:space:]]*,|[[:space:]]*\})'
 STATUS_FILE="/data/backup-status.txt"
 MAX_STATUS_BYTES=4096
 # SQLite reports some integrity failures as result rows with a successful exit
@@ -432,7 +435,7 @@ send_telegram() {
     status="${out##*$'\n'}"
     body="${out%$'\n'*}"
     if [ "$rc" -eq 0 ] && [ "$status" = "200" ] \
-        && printf '%s\n' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+        && [[ "$body" =~ $TELEGRAM_OK_PREFIX ]]; then
         log echo -e "${G}Telegram notification sent${X}"
         return 0
     fi

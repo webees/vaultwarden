@@ -468,6 +468,7 @@ jobs:
     if: failure()
     needs:
       - check
+      - dependabot_automerge
       - production_operation
       - watchdog
     runs-on: ubuntu-24.04
@@ -487,6 +488,7 @@ jobs:
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CHECK_RESULT: ${{ needs.check.result }}
+          DEPENDABOT_RESULT: ${{ needs.dependabot_automerge.result }}
           OPERATION_RESULT: ${{ needs.production_operation.result }}
           WATCHDOG_RESULT: ${{ needs.watchdog.result }}
         run: |
@@ -554,8 +556,8 @@ jobs:
           }
           workflow_name="$(html_escape "$WORKFLOW")"
           event_name="$(html_escape "$EVENT")"
-          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>production_operation</code>: %s\n<code>watchdog</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
-            "$workflow_name" "$CHECK_RESULT" "$OPERATION_RESULT" "$WATCHDOG_RESULT" \
+          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>production_operation</code>: %s\n<code>watchdog</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
+            "$workflow_name" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" "$WATCHDOG_RESULT" \
             "${SHA:0:12}" "$event_name" "$RUN_URL")"
           response_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-response.XXXXXX")"
           error_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-error.XXXXXX")"
@@ -566,6 +568,7 @@ jobs:
 
           set +e
           status="$(curl --silent --show-error --max-time 15 \
+            --max-filesize 65536 \
             --output "$response_file" --write-out '%{http_code}' \
             --request POST \
             --data-urlencode "chat_id=${chat_id}" \
@@ -592,6 +595,11 @@ jobs:
           if [ "$status" != "200" ]; then
             detail="$(redact_file "$response_file")"
             echo "::error::Telegram failure alert rejected (HTTP ${status}): ${detail:-no response body}" >&2
+            exit 1
+          fi
+          if ! python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(0 if isinstance(data, dict) and data.get("ok") is True else 1)' "$response_file"; then
+            detail="$(redact_file "$response_file")"
+            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${detail:-no success response}" >&2
             exit 1
           fi
           echo "Telegram failure alert sent"
