@@ -874,7 +874,10 @@ def check_admin_access_boundary(container: str) -> None:
         "http://127.0.0.1:8080/admin",
     )
     ordinary = probe_code(container, "-H", "Host: example.com", "http://127.0.0.1:8080/api/config")
-    if direct == forged == no_jwt == "403" and via_cloudflare != "403" and ordinary == "200":
+    # The pinned Vaultwarden build renders the admin entry point with a 200 even
+    # when no token is configured. Accepting any non-403 status would also pass a
+    # 502, so require the exact upstream response after Caddy's Access gate.
+    if direct == forged == no_jwt == "403" and via_cloudflare == "200" and ordinary == "200":
         suite.ok("admin requires both a Cloudflare source and an Access assertion; ordinary paths stay open")
         return
     suite.bad(

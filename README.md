@@ -348,9 +348,9 @@ shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for
 python3 -m py_compile scripts/*.py tests/*.py  # Compile check for host-side Python
 python3 -m unittest discover -s tests -p 'test_*.py' # Every host-side Python suite
 tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
-tests/test_cloudflare_ranges.py    # official range validation, atomic update and workflow wiring
-tests/test_notification_delivery.py # both alert channels, failures, redaction and temp-file cleanup
-tests/test_production_operations.py # production dispatch, command allowlist and failure alert path
+python3 -m unittest tests.test_cloudflare_ranges -v    # official range validation, atomic update and workflow wiring
+python3 -m unittest tests.test_notification_delivery -v # both alert channels, failures, redaction and temp-file cleanup
+python3 -m unittest tests.test_production_operations -v # production dispatch, command allowlist and failure alert path
 tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
 scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
 scripts/deps.sh tools            # Resolve supercronic and recompute checksums
