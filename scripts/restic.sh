@@ -1196,7 +1196,7 @@ check_disk() {
 # and backup freshness in one bounded run.
 audit() {
     local failed=0 file_count log_bytes bad_files dir_meta status_meta check_status
-    local used_percent available_kb marker_state now age detail
+    local used_percent available_kb marker_state now age detail lock_state
 
     record_audit() {
         local result="$1" label="$2" detail="$3"
@@ -1274,7 +1274,19 @@ audit() {
 
     marker_state="$STATUS_STATE"
     case "$STATUS_MARKER_ERROR:$marker_state" in
-        :ok|:running) record_audit 0 "status state" "$marker_state" ;;
+        :ok) record_audit 0 "status state" "$marker_state" ;;
+        :running)
+            # `running` alone is not proof that a backup is alive: a killed job
+            # leaves the marker behind. Match the freshness guard's three-state
+            # lock decision instead of treating a stale marker as healthy.
+            backup_is_running
+            lock_state=$?
+            case "$lock_state" in
+                0) record_audit 0 "status state" "running (lock held)" ;;
+                1) record_audit 1 "status state" "running without a lock holder" ;;
+                *) record_audit 1 "status state" "running with an uninspectable lock" ;;
+            esac
+            ;;
         ':failed' ) record_audit 1 "status state" "failed" ;;
         ':unknown' ) record_audit 1 "status state" "unknown" ;;
         :*) record_audit 1 "status state" "unusable" ;;
