@@ -327,10 +327,11 @@ mkdir -p "$gh_stub"
 gh_release='[{"tag_name":"v0.2.51","prerelease":false,"draft":false,"assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-arm64"}]}]'
 write_tools_stub() {
     local release="$1"
+    printf '%s' "$release" > "$gh_stub/release.json"
     {
         printf '#!/bin/sh\n'
         printf 'printf "%%s\\n" "$*" >> "%s"\n' "$gh_log"
-        printf 'printf "%%s\\n" %q\n' "$release"
+        printf 'cat "%s/release.json"\n' "$gh_stub"
     } > "$gh_stub/gh"
     chmod +x "$gh_stub/gh"
 }
@@ -381,13 +382,17 @@ if command -v jq >/dev/null 2>&1; then
       ]}
     ]'
     write_tools_stub "$order_releases"
+    order_log="$work/tools-order.log"
     tools_order_status=0
     GITHUB_OUTPUT="$order_output" PATH="$gh_stub:$PATH" \
-        "$REPO_ROOT/scripts/deps.sh" tools >/dev/null 2>&1 || tools_order_status=$?
+        "$REPO_ROOT/scripts/deps.sh" tools >"$order_log" 2>&1 || tools_order_status=$?
+    if [ "$tools_order_status" -ne 0 ]; then
+        cat "$order_log" >&2
+    fi
     same "a reordered release feed still selects the highest stable Supercronic version" 0 \
         "$tools_order_status"
     same "the highest stable Supercronic version is selected" "supercronic_version=v0.2.52" \
-        "$(grep '^supercronic_version=' "$order_output")"
+        "$(grep '^supercronic_version=' "$order_output" 2>/dev/null || true)"
 else
     bad "jq is required to test Supercronic version ordering"
 fi
