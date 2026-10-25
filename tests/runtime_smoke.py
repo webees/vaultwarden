@@ -1183,20 +1183,30 @@ def check_restore_swap(image: str) -> None:
         'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
         'printf "stale-database" > /data/db.sqlite3\n'
         'printf "stale-wal" > /data/db.sqlite3-wal\n'
+        'printf "stale-journal" > /data/db.sqlite3-journal\n'
         "touch /data/restore-pending\n",
     )
     shell_in(container, "/entrypoint.sh true")
     value = exec_in(container, "sqlite3", "/data/db.sqlite3", "SELECT v FROM t", check=False).stdout.strip()
     wal_left = exec_in(container, "test", "-e", "/data/db.sqlite3-wal", check=False).returncode == 0
+    journal_left = exec_in(container, "test", "-e", "/data/db.sqlite3-journal", check=False).returncode == 0
     marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
     owner = exec_in(container, "stat", "-c", "%U", "/data/db.sqlite3", check=False).stdout.strip()
     scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
-    if value == "7" and not wal_left and not marker_left and owner == "vaultwarden" and not scratch_left:
-        suite.ok("an armed restore swaps backup.bak in before the app starts")
+    if (
+        value == "7"
+        and not wal_left
+        and not journal_left
+        and not marker_left
+        and owner == "vaultwarden"
+        and not scratch_left
+    ):
+        suite.ok("an armed restore swaps backup.bak and clears every SQLite sidecar")
         return
     suite.bad("an armed restore did not swap the database cleanly")
     print(
-        f"value={value} wal_left={wal_left} marker_left={marker_left} owner={owner} scratch_left={scratch_left}",
+        f"value={value} wal_left={wal_left} journal_left={journal_left} "
+        f"marker_left={marker_left} owner={owner} scratch_left={scratch_left}",
         file=sys.stderr,
     )
     suite.report()
@@ -1776,6 +1786,37 @@ def check_restore_unsafe_sidecar(image: str) -> None:
     suite.report()
 
 
+def check_restore_unsafe_rollback_journal(image: str) -> None:
+    """A malformed rollback journal must block the swap before data is replaced."""
+    container = scratch(image, f"restore-journal-{os.getpid()}")
+    shell_in(
+        container,
+        "mkdir -p /data/db.sqlite3-journal\n"
+        'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
+        "cp /data/db.sqlite3 /tmp/live-before\n"
+        'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
+        "printf evidence > /data/db.sqlite3-journal/keep\n"
+        "touch /data/restore-pending\n",
+    )
+    started = shell_in(container, "/entrypoint.sh true", check=False)
+    unchanged = exec_in(container, "cmp", "-s", "/data/db.sqlite3", "/tmp/live-before", check=False).returncode == 0
+    marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
+    journal_left = exec_in(container, "test", "-d", "/data/db.sqlite3-journal", check=False).returncode == 0
+    scratch_left = exec_in(container, "test", "-e", "/data/db.sqlite3.new", check=False).returncode == 0
+
+    if started.returncode == 0 and unchanged and marker_left and journal_left and not scratch_left:
+        suite.ok("an unsafe rollback journal is preserved without replacing the live database")
+        return
+    suite.bad("an unsafe rollback journal was ignored after the live database had been replaced")
+    print(
+        f"rc={started.returncode} unchanged={unchanged} marker_left={marker_left} "
+        f"journal_left={journal_left} scratch_left={scratch_left}",
+        file=sys.stderr,
+    )
+    print(combined(started), file=sys.stderr)
+    suite.report()
+
+
 def check_restore_removes_sidecar_symlinks(image: str) -> None:
     """The restore removes old sidecar links without touching their targets."""
     container = scratch(image, f"restore-sidecar-links-{os.getpid()}")
@@ -1784,10 +1825,12 @@ def check_restore_removes_sidecar_symlinks(image: str) -> None:
         "mkdir -p /data /target\n"
         'printf old-wal > /target/old-wal\n'
         'printf old-shm > /target/old-shm\n'
+        'printf old-journal > /target/old-journal\n'
         'sqlite3 /data/db.sqlite3 "CREATE TABLE t(v); INSERT INTO t VALUES(2);"\n'
         'sqlite3 /data/backup.bak "CREATE TABLE t(v); INSERT INTO t VALUES(7);"\n'
         "ln -s /target/old-wal /data/db.sqlite3-wal\n"
         "ln -s /target/old-shm /data/db.sqlite3-shm\n"
+        "ln -s /target/old-journal /data/db.sqlite3-journal\n"
         "touch /data/restore-pending\n",
     )
     started = shell_in(container, "/entrypoint.sh true", check=False)
@@ -1800,8 +1843,10 @@ def check_restore_removes_sidecar_symlinks(image: str) -> None:
     ).stdout.strip()
     wal_link_left = exec_in(container, "test", "-L", "/data/db.sqlite3-wal", check=False).returncode == 0
     shm_link_left = exec_in(container, "test", "-L", "/data/db.sqlite3-shm", check=False).returncode == 0
+    journal_link_left = exec_in(container, "test", "-L", "/data/db.sqlite3-journal", check=False).returncode == 0
     wal_target = exec_in(container, "cat", "/target/old-wal", check=False).stdout.strip()
     shm_target = exec_in(container, "cat", "/target/old-shm", check=False).stdout.strip()
+    journal_target = exec_in(container, "cat", "/target/old-journal", check=False).stdout.strip()
     marker_left = exec_in(container, "test", "-e", "/data/restore-pending", check=False).returncode == 0
 
     if (
@@ -1809,8 +1854,10 @@ def check_restore_removes_sidecar_symlinks(image: str) -> None:
         and value == "7"
         and not wal_link_left
         and not shm_link_left
+        and not journal_link_left
         and wal_target == "old-wal"
         and shm_target == "old-shm"
+        and journal_target == "old-journal"
         and not marker_left
     ):
         suite.ok("old sidecar links are removed without touching their targets")
@@ -1818,8 +1865,9 @@ def check_restore_removes_sidecar_symlinks(image: str) -> None:
     suite.bad("the restore changed a sidecar symlink target or kept the old link")
     print(
         f"rc={started.returncode} value={value} wal_link_left={wal_link_left} "
-        f"shm_link_left={shm_link_left} wal_target={wal_target!r} "
-        f"shm_target={shm_target!r} marker_left={marker_left}",
+        f"shm_link_left={shm_link_left} journal_link_left={journal_link_left} "
+        f"wal_target={wal_target!r} shm_target={shm_target!r} "
+        f"journal_target={journal_target!r} marker_left={marker_left}",
         file=sys.stderr,
     )
     print(combined(started), file=sys.stderr)
@@ -1916,6 +1964,7 @@ def main() -> int:
     check_legacy_mail_log_removed(image)
     check_restore_swap_failure(image)
     check_restore_unsafe_sidecar(image)
+    check_restore_unsafe_rollback_journal(image)
     check_restore_removes_sidecar_symlinks(image)
     check_log_mode(image)
 
