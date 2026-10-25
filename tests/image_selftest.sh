@@ -468,7 +468,9 @@ same "a multibyte marker over 4096 bytes is rejected" 1 \
     "$(grep -c 'exceeds 4096 bytes' /tmp/selftest-multibyte-marker.log)"
 
 seed_status "$(date -u +%s)"
-printf 'x' >> /data/backup-status.txt
+padding=$((4097 - $(wc -c < /data/backup-status.txt)))
+awk -v count="$padding" 'BEGIN {for (i = 0; i < count; i++) printf "x"}' \
+    >> /data/backup-status.txt
 oversized_marker_before="$(cksum < /data/backup-status.txt)"
 BACKUP_MAX_AGE=1 /restic.sh check-freshness >/tmp/selftest-oversized-marker.log 2>&1
 oversized_marker_rc=$?
