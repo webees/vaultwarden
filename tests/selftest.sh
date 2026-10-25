@@ -324,13 +324,14 @@ timeout_log="$work/timeout-args"
 : > "$timeout_log"
 gh_stub="$work/gh-stub"
 mkdir -p "$gh_stub"
-gh_release='{"tag_name":"v0.2.51","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-arm64"}]}'
+gh_release='[{"tag_name":"v0.2.51","prerelease":false,"draft":false,"assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-arm64"}]}]'
 write_tools_stub() {
     local release="$1"
+    printf '%s' "$release" > "$gh_stub/release.json"
     {
         printf '#!/bin/sh\n'
         printf 'printf "%%s\\n" "$*" >> "%s"\n' "$gh_log"
-        printf 'printf "%%s\\n" %q\n' "$release"
+        printf 'cat "%s/release.json"\n' "$gh_stub"
     } > "$gh_stub/gh"
     chmod +x "$gh_stub/gh"
 }
@@ -347,7 +348,7 @@ PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools >/dev/null 2>&1 || true
 gh_timeouts="$(grep -c -E '^[0-9]+ gh api' "$timeout_log" 2>/dev/null || true)"
 same "every gh api call runs under a timeout" 1 "$gh_timeouts"
 
-write_tools_stub '{"tag_name":"v0.2.51","assets":[]}'
+write_tools_stub '[{"tag_name":"v0.2.51","prerelease":false,"draft":false,"assets":[]}]'
 tools_missing_status=0
 PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools \
     >"$work/tools-missing.log" 2>&1 || tools_missing_status=$?
@@ -357,7 +358,7 @@ case "$(cat "$work/tools-missing.log")" in
     *) bad "the resolver does not explain the missing architecture asset" ;;
 esac
 
-write_tools_stub '{"tag_name":"v0.2.51","assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://attacker.invalid/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://attacker.invalid/supercronic-linux-arm64"}]}'
+write_tools_stub '[{"tag_name":"v0.2.51","prerelease":false,"draft":false,"assets":[{"name":"supercronic-linux-amd64","browser_download_url":"https://attacker.invalid/supercronic-linux-amd64"},{"name":"supercronic-linux-arm64","browser_download_url":"https://attacker.invalid/supercronic-linux-arm64"}]}]'
 tools_redirect_status=0
 PATH="$gh_stub:$PATH" "$REPO_ROOT/scripts/deps.sh" tools \
     >"$work/tools-redirect.log" 2>&1 || tools_redirect_status=$?
@@ -366,6 +367,35 @@ case "$(cat "$work/tools-redirect.log")" in
     *"untrusted download URL"*) ok "the resolver rejects an off-host release asset" ;;
     *) bad "the resolver does not name the untrusted release asset" ;;
 esac
+
+if command -v jq >/dev/null 2>&1; then
+    order_output="$work/tools-order.out"
+    order_releases='[
+      {"tag_name":"v0.2.60","prerelease":true,"draft":false,"assets":[]},
+      {"tag_name":"v0.2.51","prerelease":false,"draft":false,"assets":[
+        {"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-amd64"},
+        {"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.51/supercronic-linux-arm64"}
+      ]},
+      {"tag_name":"v0.2.52","prerelease":false,"draft":false,"assets":[
+        {"name":"supercronic-linux-amd64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.52/supercronic-linux-amd64"},
+        {"name":"supercronic-linux-arm64","browser_download_url":"https://github.com/aptible/supercronic/releases/download/v0.2.52/supercronic-linux-arm64"}
+      ]}
+    ]'
+    write_tools_stub "$order_releases"
+    order_log="$work/tools-order.log"
+    tools_order_status=0
+    GITHUB_OUTPUT="$order_output" PATH="$gh_stub:$PATH" \
+        "$REPO_ROOT/scripts/deps.sh" tools >"$order_log" 2>&1 || tools_order_status=$?
+    if [ "$tools_order_status" -ne 0 ]; then
+        cat "$order_log" >&2
+    fi
+    same "a reordered release feed still selects the highest stable Supercronic version" 0 \
+        "$tools_order_status"
+    same "the highest stable Supercronic version is selected" "supercronic_version=v0.2.52" \
+        "$(grep '^supercronic_version=' "$order_output" 2>/dev/null || true)"
+else
+    bad "jq is required to test Supercronic version ordering"
+fi
 
 # Docker Hub can answer with an empty page (rate limit or malformed response).
 # Paginating 20 times through the retry wrapper would burn the whole job.
