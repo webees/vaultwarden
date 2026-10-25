@@ -72,7 +72,8 @@ is_regular_file() {
 # Read at most one byte beyond the limit, with a non-newline sentinel so command
 # substitution cannot hide trailing newlines, then reject the file as a whole.
 read_status_body() {
-    local snapshot
+    # LC_ALL=C makes Bash count the captured bytes, not locale-dependent characters.
+    local snapshot LC_ALL=C
     is_regular_file "$STATUS_FILE" || return 4
     snapshot="$( { head -c "$((MAX_STATUS_BYTES + 1))" "$STATUS_FILE" 2>/dev/null \
         && printf '\001'; } )" || return 1

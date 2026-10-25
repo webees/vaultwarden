@@ -38,7 +38,7 @@ apply_pending_restore() {
     # The old sidecars must be removable without following links. Reject
     # directories, FIFOs, sockets and devices before replacing the database so
     # a malformed sidecar cannot turn the post-swap cleanup into a failed boot.
-    for sidecar in /data/db.sqlite3-wal /data/db.sqlite3-shm; do
+    for sidecar in /data/db.sqlite3-journal /data/db.sqlite3-wal /data/db.sqlite3-shm; do
         if [ ! -L "$sidecar" ] && [ ! -f "$sidecar" ] && [ -e "$sidecar" ]; then
             echo "restore-pending is set but ${sidecar} is not a regular file; leaving the database alone" >&2
             return 0
@@ -78,12 +78,13 @@ apply_pending_restore() {
         rm -f "$new"
         return 0
     fi
-    # The old write-ahead log belongs to the database that was just replaced and
-    # must not be replayed on top of the new one. The preflight above allows only
-    # regular files, symlinks or missing paths here, so rm removes a link itself
-    # and never follows it. Nothing opens the database between the rename and
-    # this line, and a crash in between leaves the marker set for a retry.
-    rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm
+    # Every old SQLite sidecar belongs to the database that was just replaced.
+    # A rollback journal or WAL left beside the restored file can replay stale
+    # pages into it. The preflight above allows only regular files, symlinks or
+    # missing paths here, so rm removes a link itself and never follows it.
+    # Nothing opens the database between the rename and this line, and a crash
+    # in between leaves the marker set for a retry.
+    rm -f /data/db.sqlite3-journal /data/db.sqlite3-wal /data/db.sqlite3-shm
     rm -f /data/restore-pending
     echo "Applied the pending restore: /data/backup.bak is now the live database" >&2
 }

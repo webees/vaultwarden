@@ -7,7 +7,7 @@
 17 * * * * /restic.sh backup
 
 # Alert when no backup has succeeded for BACKUP_MAX_AGE (default two hours).
-# This is the only channel that fires when the backup itself stops working.
+# This is the in-container channel that fires when the backup itself stops working.
 45 * * * * /restic.sh check-freshness
 
 # Alert before the data volume fills. Attachments, the icon cache and the
