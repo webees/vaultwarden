@@ -265,27 +265,33 @@ jobs:
           gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --auto
           # Fail loudly if the required check never registers, instead of leaving
           # the PR parked with nothing to explain why.
+          api_error=false
           for _ in $(seq 1 18); do
-            # `2>/dev/null || echo 0` read an API failure as "no checks
-            # registered", so the final message blamed the wrong thing.
             registered=""
             if ! registered="$(gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
                 --json statusCheckRollup --jq '.statusCheckRollup | length')"; then
-              registered=""
-            fi
-            case "$registered" in
+              api_error=true
+              echo "::warning::could not read the status checks for ${BRANCH}; retrying"
+            else
+              case "$registered" in
                 ''|*[!0-9]*)
-                    echo "::warning::could not read the status checks for ${BRANCH}; retrying"
-                    ;;
+                  api_error=true
+                  echo "::warning::could not read the status checks for ${BRANCH}; retrying"
+                  ;;
                 0) ;;
                 *)
-                    echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
-                    exit 0
-                    ;;
-            esac
+                  echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
+                  exit 0
+                  ;;
+              esac
+            fi
             sleep 10
           done
-          echo "no status check registered on ${BRANCH} within 180s; the merge is still gated" >&2
+          if [ "$api_error" = true ]; then
+            echo "could not read the status checks for ${BRANCH} within 180s" >&2
+          else
+            echo "no status check registered on ${BRANCH} within 180s; the merge is still gated" >&2
+          fi
           exit 1
 
       # Auto-merge merges with GITHUB_TOKEN, and a GITHUB_TOKEN push does not
@@ -385,20 +391,33 @@ jobs:
 
           # A required check that never registers would leave auto-merge parked
           # forever. Fail the automation job while leaving the PR protected.
+          api_error=false
           for _ in $(seq 1 18); do
-            registered="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
-              --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || true)"
-            case "$registered" in
-              ''|*[!0-9]*) ;;
-              0) ;;
-              *)
-                echo "auto-merge armed; ${registered} status check(s) registered"
-                exit 0
-                ;;
-            esac
+            registered=""
+            if ! registered="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+                --json statusCheckRollup --jq '.statusCheckRollup | length')"; then
+              api_error=true
+              echo "::warning::could not read the status checks for pull request ${PR_NUMBER}; retrying"
+            else
+              case "$registered" in
+                ''|*[!0-9]*)
+                  api_error=true
+                  echo "::warning::could not read the status checks for pull request ${PR_NUMBER}; retrying"
+                  ;;
+                0) ;;
+                *)
+                  echo "auto-merge armed; ${registered} status check(s) registered"
+                  exit 0
+                  ;;
+              esac
+            fi
             sleep 10
           done
-          echo "no status check registered on Dependabot PR within 180s" >&2
+          if [ "$api_error" = true ]; then
+            echo "could not read the status checks for pull request ${PR_NUMBER} within 180s" >&2
+          else
+            echo "no status check registered on Dependabot PR within 180s" >&2
+          fi
           exit 1
 
   production_operation:

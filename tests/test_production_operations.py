@@ -105,6 +105,25 @@ def operation_body(workflow: dict[str, object]) -> str:
     return step["run"]
 
 
+def auto_merge_body(workflow: dict[str, object]) -> str:
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        raise AssertionError("workflow jobs are missing")
+    job = jobs.get("check")
+    if not isinstance(job, dict):
+        raise AssertionError("check job is missing")
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise AssertionError("check steps are missing")
+    step = next(
+        (item for item in steps if isinstance(item, dict) and item.get("id") == "arm"),
+        None,
+    )
+    if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+        raise AssertionError("auto-merge step is missing")
+    return step["run"]
+
+
 def watchdog_body(workflow: dict[str, object]) -> str:
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
@@ -444,6 +463,121 @@ class ProductionOperationTest(unittest.TestCase):
         self.assertIn("--auto", body)
         self.assertIn("/pulls/${PR_NUMBER}/files", body)
         self.assertIn("refusing auto-merge for unexpected path", body)
+
+    def test_dependabot_auto_merge_distinguishes_api_errors_from_missing_checks(
+        self,
+    ) -> None:
+        jobs = self.workflow.get("jobs")
+        self.assertIsInstance(jobs, dict)
+        auto = jobs.get("dependabot_automerge")
+        self.assertIsInstance(auto, dict)
+        steps = auto.get("steps")
+        self.assertIsInstance(steps, list)
+        self.assertEqual(len(steps), 1)
+        body = steps[0].get("run")
+        self.assertIsInstance(body, str)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "dependabot_automerge.sh"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            script.write_text(body, encoding="utf-8")
+
+            write_executable(
+                bin_dir / "timeout",
+                """#!/bin/sh
+shift
+exec "$@"
+""",
+            )
+            write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                bin_dir / "gh",
+                """#!/bin/sh
+case "$*" in
+  *"api --paginate"*) printf '%s\n' '.github/actions/expire_tags/action.yml' ;;
+  *"pr merge"*) exit 0 ;;
+  *"pr view"*) exit 1 ;;
+  *) exit 2 ;;
+esac
+""",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "GH_TOKEN": "test-token-must-not-leak",
+                    "PATH": f"{bin_dir}:{environment['PATH']}",
+                    "PR_NUMBER": "42",
+                    "REPOSITORY": "example/repo",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(script)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+        output = result.stderr + result.stdout
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not read the status checks", output)
+        self.assertNotIn("test-token-must-not-leak", output)
+        self.assertNotIn("no status check registered", output)
+
+    def test_auto_merge_distinguishes_api_errors_from_missing_checks(self) -> None:
+        body = auto_merge_body(self.workflow)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "auto_merge.sh"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            script.write_text(body, encoding="utf-8")
+
+            write_executable(
+                bin_dir / "sleep",
+                """#!/bin/sh
+exit 0
+""",
+            )
+            write_executable(
+                bin_dir / "gh",
+                """#!/bin/sh
+case "$*" in
+  *"pr merge"*) exit 0 ;;
+  *"pr view"*) exit 1 ;;
+  *) exit 2 ;;
+esac
+""",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "BRANCH": "deps/upstream",
+                    "GH_TOKEN": "test-token-must-not-leak",
+                    "GITHUB_REPOSITORY": "example/repo",
+                    "PATH": f"{bin_dir}:{environment['PATH']}",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(script)],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+        output = result.stderr + result.stdout
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not read the status checks", output)
+        self.assertNotIn("test-token-must-not-leak", output)
+        self.assertNotIn("no status check registered", output)
 
     def test_operation_uses_the_canonical_restic_command_only(self) -> None:
         self.assertNotIn("eval", self.body)

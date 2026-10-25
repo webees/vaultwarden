@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import unittest
 
-import smtp_sink
+from tests import smtp_sink
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
