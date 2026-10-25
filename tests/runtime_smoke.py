@@ -341,6 +341,30 @@ printf '%s\n' "$output" | grep -Fq 'Production audit passed'
 [ "$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)" = "$status_meta_before" ]
 [ "$(find /data/restic-logs -maxdepth 1 -type f -print | sort)" = "$files_before" ]
 
+# A stale `running` marker without a lock holder is a killed backup, not a
+# healthy in-flight run. The active-lock case must remain a pass.
+now="$(date -u +%s)"
+printf 'state=running\nupdated_at=%s\nlast_success=%s\nmessage=Backup started\n' \
+    "$now" "$now" > /data/backup-status.txt
+: > /data/restic-logs/backup.lock
+chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs/backup.lock
+chmod 600 /data/backup-status.txt /data/restic-logs/backup.lock
+rc=0
+output="$(/restic.sh audit 2>&1)" || rc=$?
+[ "$rc" -eq 2 ]
+printf '%s\n' "$output" | grep -Fq 'running without a lock holder'
+
+exec 9>/data/restic-logs/backup.lock
+if ! flock -n 9; then
+    exit 1
+fi
+rc=0
+output="$(/restic.sh audit 2>&1)" || rc=$?
+exec 9>&-
+[ "$rc" -eq 0 ]
+printf '%s\n' "$output" | grep -Fq 'running (lock held)'
+rm -f /data/restic-logs/backup.lock
+
 chown root:root /data/backup-status.txt
 chmod 644 /data/backup-status.txt
 status_before="$(cksum /data/backup-status.txt)"
