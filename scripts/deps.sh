@@ -137,9 +137,24 @@ base() {
 }
 
 tools() {
-    local arch sc_tag sc_release sc_url urls
-    sc_release="$(gh_api "${GH_API}/aptible/supercronic/releases?per_page=20" \
-        --jq '[.[] | select((.prerelease | not) and (.draft | not))] | first')"
+    local arch sc_tag sc_release sc_releases sc_url urls
+    sc_releases="$(gh_api "${GH_API}/aptible/supercronic/releases?per_page=100" \
+        --jq '[.[] | {tag_name, prerelease, draft, assets}]')"
+    # GitHub orders releases by publication time, not semantic version. Select
+    # the highest recent stable tag so a later-published maintenance release
+    # cannot make the dependency workflow downgrade Supercronic.
+    sc_release="$(jq -c '
+        def version:
+            .tag_name[1:] | split(".") as $parts
+            | [($parts[0] | tonumber), ($parts[1] | tonumber),
+               (($parts[2] // "0") | tonumber)];
+        [.[]
+         | select((.prerelease | not) and (.draft | not))
+         | select((.tag_name | type) == "string"
+                  and (.tag_name | test("^v[0-9]+(\\.[0-9]+){1,2}$")))]
+        | sort_by(version)
+        | last // empty
+    ' <<< "$sc_releases")"
     if ! jq -e '
         type == "object"
         and (.tag_name | type == "string" and test("^v[0-9]+(\\.[0-9]+){1,2}$"))
