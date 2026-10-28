@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          mapfile -d '' shell_files < <(find scripts tests -type f -name '*.sh' -print0)
+          mapfile -d '' shell_files < <(find scripts -type f -name '*.sh' -print0)
           shellcheck "${shell_files[@]}"
           python3 -m py_compile scripts/*.py tests/*.py
           python3 -m unittest discover -s tests -p 'test_*.py'

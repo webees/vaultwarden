@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 import ipaddress
 import os
 from pathlib import Path
@@ -48,8 +48,8 @@ def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ..
     networks: list[Network] = []
     seen: set[Network] = set()
     minimum = MIN_IPV4_PREFIX if version == 4 else MIN_IPV6_PREFIX
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        value = raw_line.strip()
+    for line_number, raw in enumerate(text.splitlines(), 1):
+        value = raw.strip()
         if not value:
             continue
         try:
@@ -78,13 +78,12 @@ def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ..
 def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
     lines = path.read_text(encoding="utf-8").splitlines()
     try:
-        first_rule = next(i for i, line in enumerate(lines) if line.startswith("client_ip "))
+        start = next(i for i, line in enumerate(lines) if line.startswith("client_ip "))
     except StopIteration as exc:
         raise ValueError(f"{path}: no client_ip entries found") from exc
-    header = lines[:first_rule]
     current: list[Network] = []
     seen: set[Network] = set()
-    for line_number, line in enumerate(lines[first_rule:], start=first_rule + 1):
+    for line_number, line in enumerate(lines[start:], start + 1):
         if not line.strip():
             continue
         if not line.startswith("client_ip "):
@@ -99,13 +98,7 @@ def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
         current.append(network)
     if not current:
         raise ValueError(f"{path}: no client_ip entries found")
-    return header, tuple(current)
-
-
-def _render_ranges_file(header: Sequence[str], networks: Sequence[Network]) -> str:
-    prefix = "\n".join(header).rstrip()
-    rules = "\n".join(f"client_ip {network}" for network in networks)
-    return f"{prefix}\n\n{rules}\n"
+    return lines[:start], tuple(current)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -137,15 +130,11 @@ def sync_ranges(path: Path, ipv4_text: str, ipv6_text: str, *, write: bool = Tru
     current_set, official_set = set(current), set(official)
     changed = current_set != official_set
     if changed and write:
-        _atomic_write(path, _render_ranges_file(header, official))
-    return SyncResult(
-        changed=changed,
-        range_count=len(official),
-        ipv4_count=len(ipv4),
-        ipv6_count=len(ipv6),
-        added_count=len(official_set - current_set),
-        removed_count=len(current_set - official_set),
-    )
+        prefix = "\n".join(header).rstrip()
+        rules = "\n".join(f"client_ip {network}" for network in official)
+        _atomic_write(path, f"{prefix}\n\n{rules}\n")
+    return SyncResult(changed, len(official), len(ipv4), len(ipv6),
+                      len(official_set - current_set), len(current_set - official_set))
 
 
 def _fetch_once(url: str) -> str:
@@ -169,21 +158,14 @@ def _fetch_text(url: str) -> str:
         except OSError:
             if attempt == FETCH_ATTEMPTS:
                 raise
-        time.sleep(FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
+        time.sleep(FETCH_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
     raise AssertionError("unreachable fetch retry state")
 
 
 def _write_outputs(result: SyncResult, handle: TextIO) -> None:
-    values = {
-        "changed": str(result.changed).lower(),
-        "range_count": result.range_count,
-        "ipv4_count": result.ipv4_count,
-        "ipv6_count": result.ipv6_count,
-        "added_count": result.added_count,
-        "removed_count": result.removed_count,
-    }
-    for key, value in values.items():
-        print(f"{key}={value}", file=handle)
+    fields = ("changed", "range_count", "ipv4_count", "ipv6_count", "added_count", "removed_count")
+    for key, value in zip(fields, astuple(result), strict=True):
+        print(f"{key}={str(value).lower()}", file=handle)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -200,8 +182,6 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command != "sync":
-            raise ValueError(f"unsupported command: {args.command}")
         result = sync_ranges(args.file, _fetch_text(args.ipv4_url), _fetch_text(args.ipv6_url))
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"cloudflare ranges: {exc}", file=sys.stderr)

@@ -282,7 +282,8 @@ class RepositoryHygieneTest(unittest.TestCase):
         budgets = {
             "README.md": 154,
             ".env.example": 48,
-            "scripts/restic.sh": 936,
+            "scripts/restic.sh": 520,
+            "scripts/cloudflare_ranges.py": 200,
             ".github/workflows/dependency_updates.yml": 450,
             ".github/workflows/build_and_deploy.yml": 300,
         }
@@ -292,8 +293,9 @@ class RepositoryHygieneTest(unittest.TestCase):
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 5800, f"tests grew to {test_lines} lines")
-        self.assertFalse((ROOT / "tests/selftest.sh").exists())
+        self.assertLessEqual(test_lines, 4200, f"tests grew to {test_lines} lines")
+        for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"):
+            self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:
         caddy = (ROOT / "config/Caddyfile").read_text(encoding="utf-8")

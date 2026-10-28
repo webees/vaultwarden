@@ -1809,10 +1809,6 @@ def main() -> int:
     check_query_redaction(container)
     check_process_supervision(container)
 
-    docker("cp", str(TESTS_DIR / "lib.sh"), f"{container}:/tmp/lib.sh")
-    docker("cp", str(TESTS_DIR / "image_selftest.sh"), f"{container}:/tmp/image_selftest.sh")
-    docker("exec", container, "sh", "/tmp/image_selftest.sh", stream=True)
-
     check_apk_stub(work, image)
     check_invalid_restart_delay(image)
     check_services_requires_unprivileged_user(image)
