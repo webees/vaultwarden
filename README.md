@@ -139,7 +139,7 @@ python3 tests/runtime_smoke.py vaultwarden:local
 ```
 
 `tests/runtime_smoke.py` boots the image and validates process supervision, proxy boundaries, backup
-paths, SMTP delivery, log limits, SQLite integrity, isolated restore, and size budgets.
+paths, SMTP delivery, log limits, SQLite integrity, and isolated restore.
 
 ## License
 
