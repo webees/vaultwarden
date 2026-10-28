@@ -31,6 +31,8 @@ RECURRING_GOAL_GATE_CLAUSES = (
     "classify it as never fixed, regressed after simplification, or partially fixed",
     "identify the one authoritative implementation",
     "restore that invariant in the round's first patch",
+    "Check every execution path that reaches the invariant",
+    "State explicitly whether the same invariant was previously fixed and later removed",
     "positive, boundary, negative, and mutation-control tests",
     "The mutation control must fail when the authoritative guard is removed",
     "No score or completion claim is valid",
@@ -366,6 +368,13 @@ class RepositoryHygieneTest(unittest.TestCase):
         weakened = decisions.replace(
             "scan every recorded failure class below",
             "scan only the failure class currently being changed",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_recurring_goal_gate(self, weakened)
+        weakened = decisions.replace(
+            "Check every execution path that reaches the invariant",
+            "Check only the execution path currently being changed",
             1,
         )
         with self.assertRaises(AssertionError):
