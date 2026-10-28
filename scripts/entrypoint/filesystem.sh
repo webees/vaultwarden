@@ -35,5 +35,4 @@ prepare_filesystem() {
     chmod 0700 /data /app
     find /data -xdev -type d -exec chmod 0700 {} +
     find /data -xdev -type f -exec chmod 0600 {} +
-    chmod 0600 "$status_file"
 }

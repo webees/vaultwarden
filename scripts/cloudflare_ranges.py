@@ -16,7 +16,6 @@ from typing import Optional, Sequence, TextIO, Union
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RANGES_FILE = REPO_ROOT / "config/cloudflare_ips.caddy"
 DEFAULT_IPV4_URL = "https://www.cloudflare.com/ips-v4"
@@ -32,7 +31,6 @@ HTTP_TIMEOUT_SECONDS = 30
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_DELAY_SECONDS = 2
 RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
-
 Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 
@@ -49,7 +47,7 @@ class SyncResult:
 def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ...]:
     networks: list[Network] = []
     seen: set[Network] = set()
-    min_prefix = MIN_IPV4_PREFIX if version == 4 else MIN_IPV6_PREFIX
+    minimum = MIN_IPV4_PREFIX if version == 4 else MIN_IPV6_PREFIX
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         value = raw_line.strip()
         if not value:
@@ -59,18 +57,14 @@ def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ..
         except ValueError as exc:
             raise ValueError(f"{source}:{line_number}: invalid CIDR") from exc
         if network.version != version:
-            raise ValueError(
-                f"{source}:{line_number}: expected IPv{version}, got IPv{network.version}"
-            )
-        if network.prefixlen < min_prefix:
-            raise ValueError(
-                f"{source}:{line_number}: prefix is wider than /{min_prefix}"
-            )
+            raise ValueError(f"{source}:{line_number}: expected IPv{version}, got IPv{network.version}")
+        if network.prefixlen < minimum:
+            raise ValueError(f"{source}:{line_number}: prefix is wider than /{minimum}")
         if not network.is_global:
             raise ValueError(f"{source}:{line_number}: range is not globally routable")
         if network in seen:
             raise ValueError(f"{source}:{line_number}: duplicate range")
-        if any(network.overlaps(existing) for existing in networks):
+        if any(network.overlaps(other) for other in networks):
             raise ValueError(f"{source}:{line_number}: range overlaps another range")
         if len(networks) >= MAX_RANGES_PER_FAMILY:
             raise ValueError(f"{source}: more than {MAX_RANGES_PER_FAMILY} ranges")
@@ -82,15 +76,11 @@ def _parse_range_list(text: str, version: int, source: str) -> tuple[Network, ..
 
 
 def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     try:
-        first_rule = next(
-            index for index, line in enumerate(lines) if line.startswith("client_ip ")
-        )
+        first_rule = next(i for i, line in enumerate(lines) if line.startswith("client_ip "))
     except StopIteration as exc:
         raise ValueError(f"{path}: no client_ip entries found") from exc
-
     header = lines[:first_rule]
     current: list[Network] = []
     seen: set[Network] = set()
@@ -99,9 +89,8 @@ def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
             continue
         if not line.startswith("client_ip "):
             raise ValueError(f"{path}:{line_number}: unexpected content after ranges")
-        value = line.removeprefix("client_ip ").strip()
         try:
-            network = ipaddress.ip_network(value, strict=True)
+            network = ipaddress.ip_network(line.removeprefix("client_ip ").strip(), strict=True)
         except ValueError as exc:
             raise ValueError(f"{path}:{line_number}: invalid CIDR") from exc
         if network in seen:
@@ -116,17 +105,15 @@ def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
 def _render_ranges_file(header: Sequence[str], networks: Sequence[Network]) -> str:
     prefix = "\n".join(header).rstrip()
     rules = "\n".join(f"client_ip {network}" for network in networks)
-    return f"{prefix}\n{rules}\n"
+    return f"{prefix}\n\n{rules}\n"
 
 
 def _atomic_write(path: Path, text: str) -> None:
     mode = stat.S_IMODE(path.stat().st_mode)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -136,32 +123,21 @@ def _atomic_write(path: Path, text: str) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def sync_ranges(
-    path: Path, ipv4_text: str, ipv6_text: str, *, write: bool = True
-) -> SyncResult:
+def sync_ranges(path: Path, ipv4_text: str, ipv6_text: str, *, write: bool = True) -> SyncResult:
     ipv4 = _parse_range_list(ipv4_text, 4, "Cloudflare IPv4")
     ipv6 = _parse_range_list(ipv6_text, 6, "Cloudflare IPv6")
     if len(ipv4) < MIN_IPV4_RANGES:
-        raise ValueError(
-            f"Cloudflare IPv4: {len(ipv4)} ranges is below minimum {MIN_IPV4_RANGES}"
-        )
+        raise ValueError(f"Cloudflare IPv4: {len(ipv4)} ranges is below minimum {MIN_IPV4_RANGES}")
     if len(ipv6) < MIN_IPV6_RANGES:
-        raise ValueError(
-            f"Cloudflare IPv6: {len(ipv6)} ranges is below minimum {MIN_IPV6_RANGES}"
-        )
+        raise ValueError(f"Cloudflare IPv6: {len(ipv6)} ranges is below minimum {MIN_IPV6_RANGES}")
     if len(ipv4) + len(ipv6) < MIN_TOTAL_RANGES:
-        raise ValueError(
-            f"Cloudflare: {len(ipv4) + len(ipv6)} ranges is below minimum {MIN_TOTAL_RANGES}"
-        )
+        raise ValueError(f"Cloudflare: {len(ipv4) + len(ipv6)} ranges is below minimum {MIN_TOTAL_RANGES}")
     official = ipv4 + ipv6
     header, current = _read_ranges_file(path)
-
-    current_set = set(current)
-    official_set = set(official)
+    current_set, official_set = set(current), set(official)
     changed = current_set != official_set
     if changed and write:
         _atomic_write(path, _render_ranges_file(header, official))
-
     return SyncResult(
         changed=changed,
         range_count=len(official),
@@ -193,8 +169,7 @@ def _fetch_text(url: str) -> str:
         except OSError:
             if attempt == FETCH_ATTEMPTS:
                 raise
-        if attempt < FETCH_ATTEMPTS:
-            time.sleep(FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
+        time.sleep(FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
     raise AssertionError("unreachable fetch retry state")
 
 
@@ -216,12 +191,8 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     sync = subparsers.add_parser("sync", help="fetch, validate and synchronize ranges")
     sync.add_argument("--file", type=Path, default=DEFAULT_RANGES_FILE)
-    sync.add_argument(
-        "--ipv4-url", default=os.environ.get("CF_IPV4_URL", DEFAULT_IPV4_URL)
-    )
-    sync.add_argument(
-        "--ipv6-url", default=os.environ.get("CF_IPV6_URL", DEFAULT_IPV6_URL)
-    )
+    sync.add_argument("--ipv4-url", default=os.environ.get("CF_IPV4_URL", DEFAULT_IPV4_URL))
+    sync.add_argument("--ipv6-url", default=os.environ.get("CF_IPV6_URL", DEFAULT_IPV6_URL))
     sync.add_argument("--github-output", type=Path)
     return parser
 
@@ -231,13 +202,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         if args.command != "sync":
             raise ValueError(f"unsupported command: {args.command}")
-        result = sync_ranges(
-            args.file, _fetch_text(args.ipv4_url), _fetch_text(args.ipv6_url)
-        )
+        result = sync_ranges(args.file, _fetch_text(args.ipv4_url), _fetch_text(args.ipv6_url))
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"cloudflare ranges: {exc}", file=sys.stderr)
         return 1
-
     if args.github_output:
         with args.github_output.open("a", encoding="utf-8") as handle:
             _write_outputs(result, handle)

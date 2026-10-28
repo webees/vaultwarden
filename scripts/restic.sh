@@ -4,9 +4,7 @@ set -uo pipefail
 
 COMMAND="${1:-}"
 READ_ONLY_AUDIT=false
-if [ "$COMMAND" = "audit" ]; then
-    READ_ONLY_AUDIT=true
-fi
+[ "$COMMAND" = "audit" ] && READ_ONLY_AUDIT=true
 
 # `fly ssh console` starts as root; keep every artifact owned by the service.
 if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1; then
@@ -94,19 +92,7 @@ if [ -e "$STATUS_FILE" ]; then
 fi
 CURRENT_STEP=""
 
-# Redact credentials and private infrastructure values from persistent output.
 SENSITIVE_VALUES=()
-add_sensitive_value() {
-    local value="${1:-}" existing
-    [ -n "$value" ] || return 0
-    if [ "${#SENSITIVE_VALUES[@]}" -gt 0 ]; then
-        for existing in "${SENSITIVE_VALUES[@]}"; do
-            [ "$existing" = "$value" ] && return 0
-        done
-    fi
-    SENSITIVE_VALUES+=("$value")
-}
-# NUL delimiting preserves newlines inside a configured value.
 while IFS= read -r -d '' record; do
     case "$record" in
         *=*) ;;
@@ -120,7 +106,7 @@ while IFS= read -r -d '' record; do
         RESTIC_REPOSITORY|SMTP_HOST|SMTP_USERNAME|SMTP_FROM|SMTP_TO|\
         ORG_CREATION_USERS|TELEGRAM_CHAT_ID|HEALTHCHECK_URL|CADDY_DOMAINS|\
         DOMAIN|FLY_APP_NAME)
-            add_sensitive_value "$value"
+            [ -n "$value" ] && SENSITIVE_VALUES+=("$value")
             ;;
     esac
 done < <(env -0)
@@ -129,11 +115,9 @@ R="\x1b[31;01m" G="\x1b[32;01m" Y="\x1b[33;01m" B="\x1b[34;01m" X="\x1b[0m"
 
 redact_raw() {
     local body="$1" value
-    if [ "${#SENSITIVE_VALUES[@]}" -gt 0 ]; then
-        for value in "${SENSITIVE_VALUES[@]}"; do
-            body="${body//"$value"/<redacted>}"
-        done
-    fi
+    for value in "${SENSITIVE_VALUES[@]}"; do
+        body="${body//"$value"/<redacted>}"
+    done
     # Keep eight-character snapshot IDs; hide longer Fly machine host IDs.
     printf '%s' "$body" | sed -E \
         '/^[[:space:]]*[0-9a-fA-F]{8}[[:space:]]/ s/([[:space:]])[0-9a-fA-F]{12,}([[:space:]]|$)/\1[redacted-fly-machine-host]\2/g'
@@ -157,13 +141,6 @@ log() {
         fi
     fi
     return 0
-}
-
-log_result() {
-    local status="${1:-0}"
-    shift
-    log "$@"
-    return "$status"
 }
 
 write_status() {
@@ -210,6 +187,22 @@ heartbeat() {
 }
 
 die() { log echo -e "${R}$1${X}"; exit 2; }
+
+alert_failure() {
+    send_telegram "$1" || :
+    heartbeat fail
+    exit 2
+}
+
+guard_failure() {
+    local status_message="$1" telegram_message="$2" preserve_running="${3:-true}"
+    if [ "$preserve_running" = true ]; then
+        write_guard_status failed "$status_message"
+    else
+        write_status failed "$status_message"
+    fi
+    alert_failure "$telegram_message"
+}
 
 # Accept only canonical bounded decimal integers.
 require_bounded_int() {
@@ -438,6 +431,62 @@ cleanup_restore_tmp() {
     return 0
 }
 
+allocate_restore_workspace() {
+    local tmp_parent="${TMPDIR:-/tmp}"
+    [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
+    RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")" \
+        || die "Unable to create restore scratch directory"
+    RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")" \
+        || die "Unable to create restore scratch file"
+    RESTORE_BOOT_PIPE="$RESTORE_TMP_DIR/restore-boot.fifo"
+    mkfifo "$RESTORE_BOOT_PIPE" || die "Unable to create restore boot-log pipe"
+    # Bound crash output so a failed boot cannot fill /tmp.
+    tail -c "$MAX_LOG_BYTES" < "$RESTORE_BOOT_PIPE" > "$RESTORE_BOOT_LOG" &
+    RESTORE_BOOT_READER=$!
+}
+
+require_restore_space() {
+    local snapshot="$1" tmp_parent="${TMPDIR:-/tmp}"
+    local stats_json needed_bytes free_kb free_bytes
+    [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
+
+    clear_stale_locks
+    # A failed or partial size response must stop the drill.
+    if ! stats_json="$(
+        timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1 \
+            | tail -c "$MAX_LOG_BYTES"
+    )"; then
+        log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
+        [ -n "$stats_json" ] && log redact_raw "$stats_json"
+        exit 2
+    fi
+    needed_bytes="$(printf '%s\n' "$stats_json" \
+        | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+    [[ "$needed_bytes" =~ ^[0-9]+$ ]] || {
+        log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
+        [ -n "$stats_json" ] && log redact_raw "$stats_json"
+        exit 2
+    }
+    if [[ ! "$needed_bytes" =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#needed_bytes}" -gt 16 ]; then
+        log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
+        exit 2
+    fi
+    # A failed df is unknown, not a full disk.
+    if ! free_kb="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4}')"; then
+        log echo -e "${R}Unable to read free space for the restore drill${X}"
+        exit 2
+    fi
+    [[ "$free_kb" =~ ^[0-9]{1,15}$ ]] \
+        || die "Unable to read free space for the restore drill"
+    free_bytes=$((free_kb * 1024))
+    needed_bytes=$((needed_bytes + needed_bytes / 5 + 67108864))
+    if [ "$free_bytes" -lt "$needed_bytes" ]; then
+        log echo -e "${R}Not enough free space for the restore drill${X}"
+        log echo "available=${free_bytes} required=${needed_bytes}"
+        exit 2
+    fi
+}
+
 # Capture only a bounded tail and always pass it through redaction.
 run_command() {
     local show_success="$1" label="$2" timeout_seconds="$3" out_file raw_file rc
@@ -465,7 +514,7 @@ run_command() {
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}✓${X}"
         if [ "$show_success" = true ] && [ -s "$out_file" ]; then
-            log_result 0 cat "$out_file"
+            log cat "$out_file"
         fi
         rm -f "$out_file" || log echo -e "${Y}Warning: cannot remove temporary command output${X}"
         return 0
@@ -501,7 +550,7 @@ log_dir_size() {
 }
 
 trim_logs() {
-    local file size tmp total failed=0
+    local file size tmp total oldest failed=0
     if ! find "$LOG_DIR" -maxdepth 1 -type f \
         \( -name '*.log' -o -name '*.log.tmp.*' \) \
         -mmin +600 ! -path "$LOG" -delete; then
@@ -535,26 +584,22 @@ trim_logs() {
         return 1
     fi
     if [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; then
-        while IFS= read -r file; do
-            [ -e "$file" ] || continue
-            [ "$file" = "$LOG" ] && continue
-            if ! size="$(stat -c '%s' "$file")"; then
-                echo "Warning: cannot size log ${file} while trimming ${LOG_DIR}" >&2
+        while [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; do
+            oldest="$(find "$LOG_DIR" -maxdepth 1 -type f \
+                \( -name '*.log' -o -name '*.log.tmp.*' \) ! -path "$LOG" \
+                -exec stat -c '%Y %n' {} + 2>/dev/null \
+                | sort -n | head -n 1 | cut -d' ' -f2-)"
+            if [ -z "$oldest" ] || ! rm -f "$oldest"; then
+                echo "Warning: cannot trim ${LOG_DIR} to its byte cap" >&2
                 failed=1
-                continue
+                break
             fi
-            if rm -f "$file"; then
-                total=$(( total - size ))
-                [ "$total" -le "$MAX_LOG_DIR_BYTES" ] && break
-            else
-                echo "Warning: cannot remove log ${file} while trimming ${LOG_DIR}" >&2
+            if ! total="$(log_dir_size)"; then
+                echo "Warning: cannot re-read ${LOG_DIR} while trimming" >&2
                 failed=1
+                break
             fi
-        # Include interrupted rewrites, but never remove unrelated files.
-        done < <(find "$LOG_DIR" -maxdepth 1 -type f \
-            \( -name '*.log' -o -name '*.log.tmp.*' \) ! -path "$LOG" \
-            -exec stat -c '%Y %n' {} + 2>/dev/null \
-            | sort -n | cut -d' ' -f2-)
+        done
     fi
     if [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; then
         echo "Warning: log directory holds ${total} bytes, above the ${MAX_LOG_DIR_BYTES} byte cap and could not be trimmed" >&2
@@ -660,9 +705,7 @@ restore() {
 }
 
 restore_test() {
-    local snapshot="${1:-latest}" tmp_parent free_bytes free_kb needed_bytes table stats_json
-    tmp_parent="${TMPDIR:-/tmp}"
-    [ -n "$tmp_parent" ] && [ -d "$tmp_parent" ] || tmp_parent=/tmp
+    local snapshot="${1:-latest}" target boot_log table
     # Cleanup and every failure signal share one trap.
     trap 'rc=$?
         cleanup_restore_tmp
@@ -673,71 +716,10 @@ restore_test() {
         fi' EXIT
 
     # The trap is armed before either scratch path is created.
-    RESTORE_TMP_DIR="$(mktemp -d "$tmp_parent/restic-restore.XXXXXX")" \
-        || die "Unable to create restore scratch directory"
-    RESTORE_BOOT_LOG="$(mktemp "$tmp_parent/restic-boot.XXXXXX")" \
-        || die "Unable to create restore scratch file"
-    RESTORE_BOOT_PIPE="$RESTORE_TMP_DIR/restore-boot.fifo"
-    if ! mkfifo "$RESTORE_BOOT_PIPE"; then
-        die "Unable to create restore boot-log pipe"
-    fi
-    # Bound crash output so a failed boot cannot fill /tmp.
-    tail -c "$MAX_LOG_BYTES" < "$RESTORE_BOOT_PIPE" > "$RESTORE_BOOT_LOG" &
-    RESTORE_BOOT_READER=$!
-    local target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
-
-    clear_stale_locks
-    # A failed or partial size response must stop the drill.
-    if ! stats_json="$(
-        timed "$QUICK_TIMEOUT" restic stats --json -- "$snapshot" 2>&1 \
-            | tail -c "$MAX_LOG_BYTES"
-    )"; then
-        log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
-        [ -n "$stats_json" ] && log redact_raw "$stats_json"
-        exit 2
-    fi
-    needed_bytes="$(printf '%s\n' "$stats_json" \
-        | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
-    case "$needed_bytes" in
-        ''|*[!0-9]*)
-            log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
-            [ -n "$stats_json" ] && log redact_raw "$stats_json"
-            exit 2
-            ;;
-    esac
-    case "$needed_bytes" in
-        0|[1-9]|[1-9][0-9]*) ;;
-        *)
-            log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
-            exit 2
-            ;;
-    esac
-    if [ "${#needed_bytes}" -gt 16 ]; then
-        log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
-        exit 2
-    fi
-    # A failed df is unknown, not a full disk.
-    if ! free_kb="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4}')"; then
-        log echo -e "${R}Unable to read free space for the restore drill${X}"
-        exit 2
-    fi
-    case "$free_kb" in
-        ''|*[!0-9]*)
-            log echo -e "${R}Unable to read free space for the restore drill${X}"
-            exit 2
-            ;;
-    esac
-    if [ "${#free_kb}" -gt 15 ]; then
-        log echo -e "${R}Unable to read free space for the restore drill${X}"
-        exit 2
-    fi
-    free_bytes=$((free_kb * 1024))
-    needed_bytes=$((needed_bytes + needed_bytes / 5 + 67108864))
-    if [ "$free_bytes" -lt "$needed_bytes" ]; then
-        log echo -e "${R}Not enough free space for the restore drill${X}"
-        log echo "available=${free_bytes} required=${needed_bytes}"
-        exit 2
-    fi
+    allocate_restore_workspace
+    target="$RESTORE_TMP_DIR"
+    boot_log="$RESTORE_BOOT_LOG"
+    require_restore_space "$snapshot"
 
     run "Restore drill" "$LONG_TIMEOUT" restic restore --target "$target" -- "$snapshot"
     if [ ! -f "$target/data/backup.bak" ] || [ ! -f "$target/data/rsa_key.pem" ]; then
@@ -831,6 +813,7 @@ verify() {
 
 check_freshness() {
     local limit="${BACKUP_MAX_AGE:-7200}" now age uptime_s lock_state active_backup=false
+    local marker_detail marker_alert
     now="$(date -u +%s)"
 
     # A free, inspectable lock proves a running marker is stale; unknown fails closed.
@@ -840,52 +823,43 @@ check_freshness() {
         case "$lock_state" in
             0) active_backup=true ;;
             1) log echo -e "${R}The last backup started but never finished${X}"
-               write_status failed "Backup did not finish"
-               send_telegram "Backup did not finish"
-               heartbeat fail
-               exit 2 ;;
+               guard_failure "Backup did not finish" "Backup did not finish" false ;;
             2)
                 log echo -e "${R}Cannot inspect the backup lock; backup freshness is unknown${X}"
                 # Preserve state=running as evidence while reporting the guard failure.
-                write_guard_status failed "Cannot inspect the backup lock"
-                send_telegram "Cannot inspect the backup lock"
-                heartbeat fail
-                exit 2
+                guard_failure "Cannot inspect the backup lock" "Cannot inspect the backup lock"
                 ;;
         esac
     fi
 
-    # An unreadable marker is unknown, not a fresh volume.
-    if [ "$STATUS_MARKER_ERROR" = "unreadable" ]; then
-        log echo -e "${R}Cannot read ${STATUS_FILE}; backup freshness is unknown${X}"
-        send_telegram "Backup marker is unreadable"
-        heartbeat fail
-        exit 2
-    fi
-    if [ "$STATUS_MARKER_ERROR" = "missing" ]; then
-        log echo -e "${R}${STATUS_FILE} does not contain last_success${X}"
-        send_telegram "Backup marker is missing last_success"
-        heartbeat fail
-        exit 2
-    fi
-    if [ "$STATUS_MARKER_ERROR" = "oversized" ]; then
-        log echo -e "${R}${STATUS_FILE} exceeds ${MAX_STATUS_BYTES} bytes; backup freshness is unknown${X}"
-        send_telegram "Backup marker is oversized"
-        heartbeat fail
-        exit 2
-    fi
-    if [ "$STATUS_MARKER_ERROR" = "not_regular" ]; then
-        log echo -e "${R}${STATUS_FILE} is not a regular file; backup freshness is unknown${X}"
-        send_telegram "Backup marker is not a regular file"
-        heartbeat fail
-        exit 2
+    marker_detail=""
+    marker_alert=""
+    case "$STATUS_MARKER_ERROR" in
+        unreadable)
+            marker_detail="Cannot read ${STATUS_FILE}; backup freshness is unknown"
+            marker_alert="Backup marker is unreadable"
+            ;;
+        missing)
+            marker_detail="${STATUS_FILE} does not contain last_success"
+            marker_alert="Backup marker is missing last_success"
+            ;;
+        oversized)
+            marker_detail="${STATUS_FILE} exceeds ${MAX_STATUS_BYTES} bytes; backup freshness is unknown"
+            marker_alert="Backup marker is oversized"
+            ;;
+        not_regular)
+            marker_detail="${STATUS_FILE} is not a regular file; backup freshness is unknown"
+            marker_alert="Backup marker is not a regular file"
+            ;;
+    esac
+    if [ -n "$marker_detail" ]; then
+        log echo -e "${R}${marker_detail}${X}"
+        alert_failure "$marker_alert"
     fi
     if [ "$STATUS_MARKER_ERROR" = "invalid" ]; then
         log echo -e "${R}${STATUS_FILE} has an unusable last_success value${X}"
-        write_guard_status failed "last_success in ${STATUS_FILE} is not a number"
-        send_telegram "Backup marker is unusable"
-        heartbeat fail
-        exit 2
+        guard_failure \
+            "last_success in ${STATUS_FILE} is not a number" "Backup marker is unusable"
     fi
 
     # A prior success cannot mask a current failure; only a new volume may be unknown.
@@ -893,23 +867,17 @@ check_freshness() {
         ok|running) ;;
         failed)
             log echo -e "${R}${STATUS_FILE} records state=failed; the latest operation failed and last_success is not sufficient evidence${X}"
-            send_telegram "Backup state is failed"
-            heartbeat fail
-            exit 2
+            alert_failure "Backup state is failed"
             ;;
         unknown)
             if [ "$LAST_SUCCESS" != "0" ]; then
                 log echo -e "${R}${STATUS_FILE} has an unknown state but a recorded success${X}"
-                send_telegram "Backup marker state is inconsistent"
-                heartbeat fail
-                exit 2
+                alert_failure "Backup marker state is inconsistent"
             fi
             ;;
         *)
             log echo -e "${R}${STATUS_FILE} has an unusable recorded state${X}"
-            send_telegram "Backup marker state is unusable"
-            heartbeat fail
-            exit 2
+            alert_failure "Backup marker state is unusable"
             ;;
     esac
 
@@ -927,10 +895,7 @@ check_freshness() {
         case "$uptime_s" in
             ''|*[!0-9]*)
                 log echo -e "${R}Cannot determine the instance age${X}"
-                write_guard_status failed "Cannot determine the instance age"
-                send_telegram "Cannot determine the instance age"
-                heartbeat fail
-                exit 2
+                guard_failure "Cannot determine the instance age" "Cannot determine the instance age"
                 ;;
         esac
         if [ "$uptime_s" -lt "$limit" ]; then
@@ -942,20 +907,14 @@ check_freshness() {
     # A future timestamp indicates clock or marker corruption, never freshness.
     if [ "$age" -lt 0 ]; then
         log echo -e "${R}Last successful backup is stamped in the future (${age}s); the clock or ${STATUS_FILE} cannot be trusted${X}"
-        write_guard_status failed "last_success is in the future (${age}s)"
-        send_telegram "Backup marker is in the future"
-        heartbeat fail
-        exit 2
+        guard_failure "last_success is in the future (${age}s)" "Backup marker is in the future"
     fi
     if [ "$age" -le "$limit" ]; then
         log echo -e "${G}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
         return 0
     fi
     log echo -e "${R}Last successful backup was ${age}s ago (limit ${limit}s)${X}"
-    write_status failed "No successful backup for ${age}s"
-    send_telegram "Backup stale"
-    heartbeat fail
-    exit 2
+    guard_failure "No successful backup for ${age}s" "Backup stale" false
 }
 
 check_disk() {
@@ -965,10 +924,7 @@ check_disk() {
     case "$used_percent" in
         ''|*[!0-9]*)
             log echo -e "${R}Cannot read the usage of ${DATA}${X}"
-            write_guard_status failed "Cannot read the usage of ${DATA}"
-            send_telegram "Cannot read the usage of ${DATA}"
-            heartbeat fail
-            exit 2
+            guard_failure "Cannot read the usage of ${DATA}" "Cannot read the usage of ${DATA}"
             ;;
     esac
     if [ "$used_percent" -lt "$limit" ]; then
@@ -976,10 +932,7 @@ check_disk() {
         return 0
     fi
     log echo -e "${R}${DATA} is ${used_percent}% full (limit ${limit}%)${X}"
-    write_guard_status failed "Data volume is ${used_percent}% full"
-    send_telegram "Data volume is ${used_percent}% full"
-    heartbeat fail
-    exit 2
+    guard_failure "Data volume is ${used_percent}% full" "Data volume is ${used_percent}% full"
 }
 
 audit() {
@@ -1000,22 +953,16 @@ audit() {
         record_audit 1 "log directory" "not a real directory"
     else
         if dir_meta="$(stat -c '%U %a' "$LOG_DIR" 2>/dev/null)"; then
-            if [ "$dir_meta" = "vaultwarden 700" ]; then
-                check_status=0
-            else
-                check_status=1
-            fi
+            check_status=0
+            [ "$dir_meta" = "vaultwarden 700" ] || check_status=1
             record_audit "$check_status" "log directory" "owner/mode=${dir_meta}"
         else
             record_audit 1 "log directory" "metadata unreadable"
         fi
 
         if log_bytes="$(log_dir_size)"; then
-            if [ "$log_bytes" -le "$MAX_LOG_DIR_BYTES" ]; then
-                check_status=0
-            else
-                check_status=1
-            fi
+            check_status=0
+            [ "$log_bytes" -le "$MAX_LOG_DIR_BYTES" ] || check_status=1
             record_audit "$check_status" "log bytes" "${log_bytes}/${MAX_LOG_DIR_BYTES}"
         else
             record_audit 1 "log bytes" "unreadable"
@@ -1030,11 +977,8 @@ audit() {
         if bad_files="$(find "$LOG_DIR" -maxdepth 1 -type f \
             -exec stat -c '%U %a' {} + 2>/dev/null \
             | awk '$1 != "vaultwarden" || $2 != "600" {count++} END {print count + 0}')"; then
-            if [ "$bad_files" -eq 0 ]; then
-                check_status=0
-            else
-                check_status=1
-            fi
+            check_status=0
+            [ "$bad_files" -eq 0 ] || check_status=1
             record_audit "$check_status" "log ownership" "noncompliant=${bad_files}"
         else
             record_audit 1 "log ownership" "metadata unreadable"
@@ -1050,11 +994,8 @@ audit() {
     if ! is_regular_file "$STATUS_FILE"; then
         record_audit 1 "status marker" "not a regular file"
     elif status_meta="$(stat -c '%U %a' "$STATUS_FILE" 2>/dev/null)"; then
-        if [ "$status_meta" = "vaultwarden 600" ]; then
-            check_status=0
-        else
-            check_status=1
-        fi
+        check_status=0
+        [ "$status_meta" = "vaultwarden 600" ] || check_status=1
         record_audit "$check_status" "status marker" "owner/mode=${status_meta}"
     else
         record_audit 1 "status marker" "metadata unreadable"
@@ -1087,11 +1028,8 @@ audit() {
         if [ "$age" -lt 0 ]; then
             record_audit 1 "backup age" "timestamp is in the future"
         else
-            if [ "$age" -le "${BACKUP_MAX_AGE:-7200}" ]; then
-                check_status=0
-            else
-                check_status=1
-            fi
+            check_status=0
+            [ "$age" -le "${BACKUP_MAX_AGE:-7200}" ] || check_status=1
             record_audit "$check_status" "backup age" "${age}s/${BACKUP_MAX_AGE:-7200}s"
         fi
     fi
@@ -1102,11 +1040,8 @@ audit() {
         case "${used_percent}${available_kb}" in
             ''|*[!0-9]*) record_audit 1 "volume space" "unreadable" ;;
             *)
-                if [ "$used_percent" -lt "${BACKUP_MAX_USAGE_PERCENT:-85}" ]; then
-                    check_status=0
-                else
-                    check_status=1
-                fi
+                check_status=0
+                [ "$used_percent" -lt "${BACKUP_MAX_USAGE_PERCENT:-85}" ] || check_status=1
                 record_audit "$check_status" "volume space" \
                     "used=${used_percent}% available=${available_kb}KiB"
                 ;;
@@ -1144,20 +1079,14 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
         echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2
         exit 2
     fi
-    case "$TELEGRAM_BOT_TOKEN" in
-        [0-9]*:[A-Za-z0-9_-]*) ;;
-        *)
-            echo "Error: TELEGRAM_BOT_TOKEN has an invalid format" >&2
-            exit 2
-            ;;
-    esac
-    case "$TELEGRAM_CHAT_ID" in
-        -[0-9]*|[0-9]*|@[A-Za-z0-9_]*) ;;
-        *)
-            echo "Error: TELEGRAM_CHAT_ID has an invalid format" >&2
-            exit 2
-            ;;
-    esac
+    [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || {
+        echo "Error: TELEGRAM_BOT_TOKEN has an invalid format" >&2
+        exit 2
+    }
+    [[ "$TELEGRAM_CHAT_ID" =~ ^(@[A-Za-z0-9_]+|-?[0-9]+)$ ]] || {
+        echo "Error: TELEGRAM_CHAT_ID has an invalid format" >&2
+        exit 2
+    }
 fi
 
 if [ "$READ_ONLY_AUDIT" != true ]; then

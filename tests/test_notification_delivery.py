@@ -156,6 +156,19 @@ class NotificationDeliveryTest(unittest.TestCase):
         self.assertIn("must both be configured", result.stderr + result.stdout)
         self.assertEqual(leftovers, ())
 
+    def test_malformed_telegram_credentials_fail_before_delivery(self) -> None:
+        for token, chat_id in (("123456:", "@valid_channel"), ("123456:token", "@invalid-id")):
+            with self.subTest(token=token, chat_id=chat_id):
+                result, mail_args, curl_args, leftovers = run_notify_test(
+                    telegram_token=token, telegram_chat_id=chat_id
+                )
+                output = result.stderr + result.stdout
+                self.assertEqual(result.returncode, 2, output)
+                self.assertEqual(mail_args, ())
+                self.assertEqual(curl_args, "")
+                self.assertIn("invalid format", output)
+                self.assertEqual(leftovers, ())
+
     def test_mail_failure_fails_the_command_and_redacts_secrets(self) -> None:
         result, mail_args, curl_args, leftovers = run_notify_test(
             mail_exit=47,

@@ -1,401 +1,208 @@
-# 🔐 Vaultwarden (Fly.io Edition)
+# Vaultwarden on Fly.io
 
-[![Fly.io](https://img.shields.io/badge/Fly.io-Deploy-purple?style=for-the-badge&logo=flydotio)](https://fly.io)
-[![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue?style=for-the-badge&logo=docker)](https://ghcr.io/webees/vaultwarden)
-[![Vaultwarden](https://img.shields.io/badge/Vaultwarden-Latest-green?style=for-the-badge)](https://github.com/dani-garcia/vaultwarden)
-[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+Vaultwarden packaged for Fly.io with a Caddy reverse proxy, static process supervision,
+and encrypted Restic backups to S3-compatible storage such as Cloudflare R2.
 
-> Production-ready Vaultwarden on Fly.io with Caddy reverse proxy, static process supervision, and automated Restic backups to Cloudflare R2.
+## Architecture
 
-## ✨ Features
-
-| Component | Description |
-| :--- | :--- |
-| **Vaultwarden** | Self-hosted Bitwarden compatible server |
-| **Caddy** | Reverse proxy with security headers and IP forwarding |
-| **Process supervision** | The entrypoint runs Vaultwarden, Caddy and Supercronic as an unprivileged three-process table |
-| **Supercronic** | Cron daemon for automated tasks |
-| **Restic** | Encrypted incremental backups to S3/R2 |
-| **msmtp** | Email notifications for system alerts |
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              Fly.io Edge (TLS termination)              │
-└───────────────────────────┬─────────────────────────────┘
-                            │ :443
-┌───────────────────────────▼─────────────────────────────┐
-│                        Caddy                            │
-│          (reverse proxy, security headers)              │
-└───────────────────────────┬─────────────────────────────┘
-                            │ :8080
-┌───────────────────────────▼─────────────────────────────┐
-│                     Vaultwarden                         │
-│                  (SQLite + Rocket)                      │
-└─────────────────────────────────────────────────────────┘
-         │
-         │ Hourly backup
-         ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Restic → Cloudflare R2                 │
-│          (7 daily, 4 weekly, 3 monthly, 3 yearly)       │
-└─────────────────────────────────────────────────────────┘
+```text
+Fly proxy :443 -> Caddy :8080 -> Vaultwarden :8081
+                              |-> Supercronic
+                              `-> Restic -> S3/R2
 ```
 
-## 🚀 Quick Start
+The entrypoint prepares `/data`, drops privileges, and starts one process table. Caddy and
+Supercronic restart after a crash; Vaultwarden exit stops the container so Fly can replace it.
+The app name is not committed and must be supplied by the repository secret `FLY_APP` or with
+`fly --app <name>`.
 
-### 1. Initialize Application
+## Prerequisites
+
+- Fly CLI and an authenticated account
+- Docker for local validation
+- A persistent Fly volume mounted at `/data`
+- An S3-compatible Restic repository and credentials
+
+## Setup
 
 ```bash
-# Login to Fly.io
-fly auth login
+fly apps create <app-name>
+export FLY_APP=<app-name>
+fly volumes create app_data --region sin --size 1 --app "$FLY_APP"
 
-# Create application
-fly apps create vaultwarden
-
-# fly.toml deliberately omits the app name (it is personal data), so point
-# flyctl at your app once. Every `fly ...` command in this README relies on it.
-export FLY_APP=vaultwarden
-
-# Create the local secret file from the template, then fill in every value
 cp .env.example .env
-fly secrets import < .env
+# Fill .env without committing it.
+fly secrets import --app "$FLY_APP" < .env
 
-# Create storage volume
-fly volumes create app_data --region sin --size 1   # must match primary_region in fly.toml
+fly secrets set --app "$FLY_APP" \
+  CADDY_DOMAINS="vault.example.com" \
+  DOMAIN="https://vault.example.com" \
+  RESTIC_PASSWORD="<repository-password>" \
+  RESTIC_REPOSITORY="s3:<endpoint>/<bucket>" \
+  AWS_ACCESS_KEY_ID="<access-key>" \
+  AWS_SECRET_ACCESS_KEY="<secret-key>"
 ```
 
-> `.env` is git ignored on purpose; only the placeholder template `.env.example` is committed. Real
-> values belong in Fly secrets, so a working tree stays clean after `cp .env.example .env`.
+`CADDY_DOMAINS` is a space-separated allowlist. Requests with any other `Host` receive `403`;
+`/alive` remains reachable for Fly checks. `SIGNUPS_ALLOWED=false` is the safe default.
 
-### 2. Required Secrets Configuration
+### Optional alerts
 
 ```bash
-# Domain configuration (Multiple domains: "a.com b.com")
-fly secrets set CADDY_DOMAINS="vault.example.com"
-fly secrets set DOMAIN="https://vault.example.com"
+fly secrets set --app "$FLY_APP" \
+  TELEGRAM_BOT_TOKEN="<bot-token>" \
+  TELEGRAM_CHAT_ID="<chat-id>"
 
-# Restic / S3 backup settings
-fly secrets set RESTIC_PASSWORD="your-secure-password"
-fly secrets set RESTIC_REPOSITORY="s3:your-account-id.r2.cloudflarestorage.com/vaultwarden"
-fly secrets set AWS_ACCESS_KEY_ID="your-r2-id"
-fly secrets set AWS_SECRET_ACCESS_KEY="your-r2-key"
-
-# SMTP notification settings
-fly secrets set SMTP_HOST="smtp.example.com"
-fly secrets set SMTP_PORT="587"
-fly secrets set SMTP_FROM="sender@example.com"
-fly secrets set SMTP_TO="admin@example.com"
-fly secrets set SMTP_USERNAME="sender@example.com"
-fly secrets set SMTP_PASSWORD="app-specific-password"
-
-# SMTP_FROM defaults to SMTP_TO when it is left unset, so the app still boots
-# when only SMTP_HOST and SMTP_TO are set for the monthly alert email.
-
-# Optional hardening. Registration is closed unless SIGNUPS_ALLOWED is "true",
-# and the admin panel stays disabled while ADMIN_TOKEN is unset.
-fly secrets set SIGNUPS_ALLOWED="false"
-fly secrets set SHOW_PASSWORD_HINT="false"
-# fly secrets set ADMIN_TOKEN="..."   # only when /admin has to be reachable
-
-# Anything saved through the /admin panel is written to /data/config.json, and
-# that file outranks the environment. `admin_token`, the `smtp_*` keys and
-# `signups_allowed` are the ones that usually drift: `fly secrets set` changes
-# nothing while the key sits in /data/config.json. The entrypoint keeps that
-# file at 0600 and logs which secret keys it found, without printing their
-# values, so the override is visible in `fly logs`; either change the setting in
-# /admin as well, or drop the key from /data/config.json and restart.
-
-# Optional dead-man's-switch, pinged after every backup run (e.g. healthchecks.io)
-fly secrets set HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
-
-# Optional: notify after every successful backup. Telegram only, like every
-# other hourly alert, so the mailbox stays reserved for the monthly check.
-fly secrets set BACKUP_NOTIFY_ON_SUCCESS="true"
-
-# Optional Telegram notifications. The bot must be able to post to the target.
-# A channel or group accepts its @username; a private chat only accepts the
-# numeric chat id (send /start to the bot, then read it from
-# https://api.telegram.org/bot<token>/getUpdates).
-fly secrets set TELEGRAM_BOT_TOKEN="123456:replace-me"
-fly secrets set TELEGRAM_CHAT_ID="-1001234567890"   # or "@your_channel"
-
-# Optional tuning (defaults shown; invalid or unsafe limits fail before work)
-fly secrets set SMTP_TIMEOUT="15"        # seconds msmtp may wait for the relay
-fly secrets set VERIFY_SUBSET="10%"      # data slice read back by the monthly verify
-fly secrets set VERIFY_RETRY_LOCK="10m"  # how long the monthly verify waits for a running backup's lock
-fly secrets set SUPERVISE_RESTART_DELAY="5"  # seconds before a crashed caddy/scheduler restarts
-fly secrets set RESTIC_QUICK_TIMEOUT="60"    # seconds for init/check/cat operations
-fly secrets set RESTIC_LONG_TIMEOUT="1800"   # seconds for backup/restore/prune
-fly secrets set RESTIC_LOG_DIR="/data/restic-logs"  # persistent backup logs
-fly secrets set RESTIC_LOG_MAX_BYTES="262144"       # cap each log file at 256 KiB
-fly secrets set BACKUP_MAX_USAGE_PERCENT="85"       # alert when /data is this full
-fly secrets set RESTIC_LOG_DIR_MAX_BYTES="10485760" # cap the log directory at 10 MiB
+fly secrets set --app "$FLY_APP" \
+  SMTP_HOST="smtp.example.com" \
+  SMTP_PORT="587" \
+  SMTP_TIMEOUT="15" \
+  SMTP_FROM="sender@example.com" \
+  SMTP_TO="admin@example.com" \
+  SMTP_USERNAME="sender@example.com" \
+  SMTP_PASSWORD="<app-password>"
 ```
 
-### 3. Deploy
+Hourly backup, freshness, and disk alerts use Telegram. Monthly verification and restore drills
+also use email when SMTP is configured. `HEALTHCHECK_URL` is optional; successful runs ping the
+base URL and failures ping the same URL with `/fail`. Successful hourly backups are quiet unless
+`BACKUP_NOTIFY_ON_SUCCESS=true`.
+
+### Admin panel
+
+The panel is available at `/admin`, but the origin accepts it only from a Cloudflare network with
+`Cf-Access-Jwt-Assertion`. Configure Cloudflare Access for the exact `/admin` and `/admin/*` paths.
+Keep `ADMIN_TOKEN` as a second factor; it should be long, random, and stored only as a secret.
+
+## Deploy
+
+Commits touching the image, `fly.toml`, or referenced build files trigger a multi-architecture
+GHCR build. The workflow publishes a timestamp tag in `Asia/Shanghai`, such as
+`202610180615`, and passes the exact image digest to Fly with `fly deploy --image`:
 
 ```bash
-fly deploy
+fly releases --app "$FLY_APP"
+fly status --app "$FLY_APP"
+fly releases rollback <release> --app "$FLY_APP"
 ```
 
-## 🔢 Versions & Upgrades
+Deployment succeeds only when the newest release is complete, every machine runs the expected
+digest, and all Fly health checks pass. Tag cleanup removes timestamp tags older than 30 days and
+also runs from the build workflow when the nightly schedule is stale.
 
-Every upstream dependency is pinned in the `Dockerfile`: `VAULTWARDEN_VERSION` + `VAULTWARDEN_DIGEST` and
-`SUPERCRONIC_VERSION` + checksums. The `dependency_updates` workflow
-runs every two hours, resolves each one from Docker Hub and the GitHub Releases API, opens a PR that lists the pin
-changes plus any pending Alpine package upgrades, builds the patched image, and validates the Caddyfile.
-The same job synchronizes `config/cloudflare_ips.caddy` from Cloudflare's official IPv4 and IPv6
-endpoints. Transient fetch failures are retried with a bound, while empty, malformed, duplicate,
-wrong-family, non-global, overlapping, overly broad or implausibly truncated responses fail the
-job; a valid change follows the
-same protected PR, auto-merge, image build and deployment path as the other dependency updates.
-When only Alpine packages inside the pinned base image have newer builds, no pin changes, so the workflow
-dispatches the image build directly instead of opening an empty PR.
-The same workflow then publishes a timestamped image and rolls that digest out to Fly by passing `--image`
-explicitly. `fly.toml` deliberately carries no image pin: a second copy of "what is
-running" is exactly what went stale before. Running `fly deploy` by hand builds this repository's pinned
-`Dockerfile` instead. After deployment, the workflow polls Fly until the newest release is complete on the
-exact digest, every machine is started on that digest, and every configured health check is passing. A
-timeout or mismatch fails the workflow instead of reporting a successful deploy.
+Dependabot keeps immutable Actions pins current. The dependency workflow runs every two hours,
+checks Vaultwarden, Supercronic, Alpine packages, Cloudflare ranges, and Actions, then opens or
+updates one protected pull request. Auto-merge waits for the required `validate` check. A merged
+update is rebuilt and deployed by the same delivery path.
 
-`main` requires the `validate` check, so the dependency workflow arms auto-merge rather than merging
-directly: the bump lands only after shellcheck, the workflow lint, the self tests, the image build and the
-runtime smoke test all pass.
+### Tuning
 
-Dependabot keeps the immutable GitHub Actions pins current. A target-context job in the same dependency
-workflow arms auto-merge only for Dependabot PRs whose complete diff stays under `.github`; it never checks
-out or executes the pull request tree, and the protected `validate` check remains mandatory.
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `BACKUP_MAX_AGE` | `7200` | Maximum seconds since a successful backup |
+| `BACKUP_MAX_USAGE_PERCENT` | `85` | Volume usage alarm threshold |
+| `RESTIC_LOG_DIR` | `/data/restic-logs` | Bounded operational log directory |
+| `RESTIC_LOG_MAX_BYTES` | `262144` | Maximum size of one log file |
+| `RESTIC_LOG_DIR_MAX_BYTES` | `10485760` | Maximum total log-directory size |
+| `RESTIC_QUICK_TIMEOUT` | `60` | Timeout for short Restic commands |
+| `RESTIC_LONG_TIMEOUT` | `1800` | Timeout for backup and restore commands |
+| `VERIFY_SUBSET` | `10%` | Data percentage read by repository verification |
+| `VERIFY_RETRY_LOCK` | `10m` | Lock wait for scheduled verification |
+| `SUPERVISE_RESTART_DELAY` | `5` | Delay before restarting Caddy or the scheduler |
 
-Every published build also receives a timestamp tag in `Asia/Shanghai`, for example `202610180615`.
-The build workflow is serialized globally, so two runs never publish the same timestamp concurrently.
-Only commits that can change the image rebuild it: `.gitignore`, `README.md`, `LICENSE`, `.github/**` and
-`tests/**` are skipped, while `fly.toml` and everything the `Dockerfile` copies always rebuild and redeploy.
-Timestamp tags older than 30 days are removed by the nightly `ghcr_cleanup` workflow. GitHub stops
-scheduled workflows silently, so the build expires them as well whenever that schedule has not run for a
-week; the run log says which path did the work.
-
-```bash
-# Inspect the newest published image. The build workflow already rolled this
-# digest out with `fly deploy --image`; fly.toml itself keeps no image pin.
-docker buildx imagetools inspect ghcr.io/webees/vaultwarden:latest
-
-# Bump VAULTWARDEN_VERSION, then build and roll out this Dockerfile by hand
-fly deploy
-fly releases            # list previous releases
-fly releases rollback   # roll back to the previous image
-```
-
-## 💾 Backup & Recovery
+## Backup and restore
 
 | Item | Behaviour |
 | :--- | :--- |
-| Schedule | Hourly backup at `:17`, plus a monthly integrity check and a monthly restore drill, defined in `config/crontab` |
-| Data | `/data` volume, excluding the live `db.sqlite3` and its SQLite sidecars, the rebuildable `icon_cache`, `backup-status.txt`, and whichever directory `RESTIC_LOG_DIR` points to under `/data` |
-| Consistency | `sqlite3 .backup` hot copy to `/data/backup.bak` plus `PRAGMA integrity_check` before upload |
-| Retention | `--keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune` |
-| Alerts | Every hourly alert (backup, staleness, volume) goes to Telegram; the monthly integrity check and the monthly restore drill also email, because they cannot repeat 24 times a day. A success notification is opt-in with `BACKUP_NOTIFY_ON_SUCCESS=true`, and an optional `HEALTHCHECK_URL` ping covers the backup, verify and restore-drill runs, using the `/fail` URL when the run fails. The dependency workflow also runs `/restic.sh check-freshness` against the live app on its schedule and after every build. If that workflow fails, a bounded notification job reuses the app's Telegram credentials and sends the workflow, commit, failed jobs and run URL; GitHub email remains the fallback when the app cannot be reached |
+| Schedule | Backup hourly at `:17`; freshness at `:45`; disk check at `:35`; monthly verify and restore drill |
+| Consistency | `sqlite3 .backup` creates `/data/backup.bak`, followed by `PRAGMA integrity_check` |
+| Contents | Keys, attachments and the consistent database copy; live SQLite files, `icon_cache`, status state and the configured log directory are excluded |
+| Retention | 24 hourly, 7 daily, 4 weekly, 3 monthly and 3 yearly snapshots, then prune |
+| Limits | Commands have bounded timeouts; each run log is capped at 256 KiB and the log directory at 10 MiB |
 
 ```bash
-fly ssh console -C "/restic.sh audit"          # read-only recovery-control audit
-fly ssh console -C "/restic.sh backup"         # manual backup
-fly ssh console -C "/restic.sh snapshots"      # list snapshots
-fly ssh console -C "/restic.sh verify"         # read back a data slice from the repository
-fly ssh console -C "/restic.sh restore-test"   # restore latest snapshot to /tmp and validate it
-fly ssh console -C "/restic.sh notify-test"    # send one test to both configured alert channels
-fly ssh console -C "/restic.sh check-disk"     # how full the data volume is
-fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # overwrite the live /data
+fly ssh console --app "$FLY_APP" -C "/restic.sh audit"
+fly ssh console --app "$FLY_APP" -C "/restic.sh backup"
+fly ssh console --app "$FLY_APP" -C "/restic.sh snapshots"
+fly ssh console --app "$FLY_APP" -C "/restic.sh verify"
+fly ssh console --app "$FLY_APP" -C "/restic.sh restore-test"
+fly ssh console --app "$FLY_APP" -C "/restic.sh check-freshness"
+fly ssh console --app "$FLY_APP" -C "/restic.sh check-disk"
 ```
 
-The dependency workflow also exposes a fixed production-operation menu: `audit`,
-`check-freshness`, `notify-test`, `snapshots`, `verify`, `restore-test` and `backup`. It accepts no
-arbitrary command or arguments. Only `audit` is strictly read-only: it does not
-create logs, change the status file, acquire a repository lock or require
-`RESTIC_PASSWORD`. The other choices may read the repository, update the status
-file, take a lock or send an alert. The destructive `restore` operation is
-deliberately absent and remains a manually confirmed SSH operation.
+`audit` is read-only. `restore-test` checks free space, restores into an isolated temporary
+directory, validates SQLite, and cold-boots Vaultwarden against the restored database. It never
+changes the production database.
 
-`notify-test` sends one generic message through both the configured mail relay and
-Telegram channel. It exits successfully only when both providers accept the
-message; a missing setting, mailer failure, transport failure or non-200 Telegram
-response fails the operation. It neither changes backup status nor touches the
-repository, and its diagnostic output redacts configured addresses and credentials.
+### In-place recovery
 
-`/restic.sh check-freshness` runs at `:45` every hour and alerts over Telegram when no backup has succeeded for
-`BACKUP_MAX_AGE` seconds (default two hours). It catches a backup that silently stops working while the
-scheduler is still alive. An unreadable, non-regular, symlinked or larger-than-4-KiB marker, a missing
-`last_success` field, a non-numeric or overflowing timestamp, a timestamp from the future, or a recorded
-`state=failed`/unusable state is reported instead of being read as a fresh backup. The malformed file is left in place for diagnosis. A scheduler that has stopped firing
-entirely is caught by the external watchdog in
-`.github/workflows/dependency_updates.yml`: it runs the same check against the live app every two hours and
-after every build. A failure fails that workflow, so GitHub emails the repository owner even when Telegram
-is the channel that broke. `HEALTHCHECK_URL` remains an optional third channel for a dedicated
-dead-man's-switch service.
-
-`/restic.sh check-disk` runs at `:35` every hour and alerts over Telegram when `/data` is at least
-`BACKUP_MAX_USAGE_PERCENT` full (default 85). Attachments, the icon cache and the database all live on
-that volume and it is grown by migrating the data rather than in place, so this is the warning that leaves
-time to do that deliberately. A reading that never arrives is reported as a failure rather than a healthy
-volume. The guard and the monthly `verify` are not backup runs, so neither clears the `state=running`
-marker a live backup leaves in `/data/backup-status.txt`: that marker is what the `:45` freshness check
-reads to tell a backup that started but never finished, and the guard runs before it.
-
-> `restore` writes straight over the running instance's `/data`. When you only want to verify a snapshot,
-> run `restore-test` instead: it checks free space, restores into a temporary directory, verifies
-> `backup.bak` and `rsa_key.pem`, runs SQLite `PRAGMA integrity_check`, and cold-boots Vaultwarden against
-> the restored database on loopback with a temporary config that forces registration off, without touching
-> the live volume. The in-place restore refuses to run unless
-> `RESTORE_CONFIRM=yes` is set, because Vaultwarden keeps `db.sqlite3` open while it runs.
->
-> Losing `RESTIC_PASSWORD` makes every snapshot permanently unreadable. Keep a copy outside Fly as well.
->
-> To rotate it, add the new password as an extra key first (`restic key add`), then update the secret.
-> Replacing the secret without adding a key first locks you out of every existing snapshot.
-
-### Recovering in place
-
-A snapshot never contains the live `db.sqlite3` files: the consistent database travels as `/data/backup.bak`.
-`restore` puts the keys, the attachments and that hot copy back, but swapping the database under a
-running process is not safe, so the swap is armed with a marker and applied by the entrypoint before
-Vaultwarden opens the database:
+The live `db.sqlite3` is intentionally absent from snapshots. The consistent copy is
+`/data/backup.bak`, which the entrypoint swaps in before Vaultwarden starts:
 
 ```bash
-fly ssh console -C "RESTORE_CONFIRM=yes /restic.sh restore <id>"  # keys, attachments, backup.bak
-fly ssh console -C "touch /data/restore-pending"                  # arm the database swap
-fly apps restart                                                  # entrypoint swaps, then starts
+fly ssh console --app "$FLY_APP" -C "RESTORE_CONFIRM=yes /restic.sh restore <snapshot-id>"
+fly ssh console --app "$FLY_APP" -C "touch /data/restore-pending"
+fly apps restart "$FLY_APP"
 ```
 
-The swap is refused, and the marker kept, when `/data/backup.bak` is a symlink, is missing or is not
-a readable database. It is also refused when `/data/db.sqlite3` is a symlink or an existing
-non-regular file, or when an old `db.sqlite3-journal`, `db.sqlite3-wal` or `db.sqlite3-shm` path is
-not a regular file, symlink or missing path. The machine keeps running on the database it already
-has, and the reason is in `fly logs`. Fix the path and restart to retry, instead of following a link
-outside the volume or booting on a database Vaultwarden cannot open. The reserved
-`/data/db.sqlite3.new` scratch path is cleared before copying, so a stale directory or link left in
-the writable volume cannot crash-loop the entrypoint.
+The swap fails closed if `backup.bak`, `db.sqlite3`, their sidecars, or the reserved scratch path
+are symlinks, non-regular files where a file is required, or an unreadable database. The live
+database is left in place and the reason appears in `fly logs`. Remove the unsafe path and retry.
 
-`/restic.sh restore-test` runs the same restore inside a temporary directory, puts `backup.bak` where
-Vaultwarden looks and boots against it, so the drill fails when the database or the swap is wrong. The boot
-process must remain alive after answering `/alive`; an unrelated listener on the fixed drill port cannot turn
-a failed boot into a false pass. It runs monthly, an hour after the integrity check, and a failure emails the
-operator, notifies Telegram and records `state=failed` in `/data/backup-status.txt`, so a snapshot that stops
-being restorable is not discovered for the first time during a real recovery.
+Keep an offline copy of `RESTIC_PASSWORD`: losing it makes every snapshot unreadable. To rotate the
+password, add the new key with `restic key add` before changing the secret.
 
-## 🧯 Troubleshooting
+### Operate from Actions
 
-| Symptom | Cause / fix |
+The dependency workflow exposes a fixed production-operation menu: `audit`, `check-freshness`,
+`notify-test`, `snapshots`, `verify`, `restore-test` and `backup`. It accepts no arbitrary command
+or arguments. `restore` is deliberately unavailable there and remains an SSH operation guarded by
+`RESTORE_CONFIRM=yes`.
+
+## Security
+
+Caddy adds HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, a restrictive
+`Referrer-Policy`, `Permissions-Policy`, and `X-Robots-Tag`; it removes `Server`,
+`X-Powered-By`, and `Last-Modified`. The access log strips `Authorization`, `Cookie`,
+`Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `Cf-Access-Jwt-Assertion`,
+`X-Forwarded-For`, `X-Real-Ip`, and `Fly-Client-Ip`. Query strings are replaced with
+`?redacted`.
+
+Cloudflare addresses are validated and synchronized from the official IPv4 and IPv6 lists; direct
+Fly traffic still receives the trusted `Fly-Client-IP`. The root entrypoint never follows symlinks
+for reserved paths, and the runtime processes run as the unprivileged `vaultwarden` user.
+
+Settings saved through the admin panel are stored in `/data/config.json`, which overrides matching
+environment variables. The entrypoint reports when `admin_token`, `signups_allowed`, or any
+`smtp_*` key in that file overrides a Fly secret. Prefer Fly secrets and remove those keys from
+`config.json` before restarting.
+
+## Troubleshooting
+
+| Symptom | Check |
 | :--- | :--- |
-| Cron job logs `exit status 127`, no backup ever runs | `/restic.sh` starts with `#!/bin/bash`; the image must keep the `bash` package |
-| Log line `Another backup is already running` | A manual run overlapped the hourly run; the newer run exits 3 on purpose |
-| Log line `[crontab] exited with status` | The scheduler crashed and was restarted by the static process table in `/services.sh`; check the lines above it |
-| Client IPs look like Cloudflare edge addresses | Caddy trusts `CF-Connecting-IP` only when the edge-controlled `Fly-Client-IP` is in `config/cloudflare_ips.caddy`; the dependency workflow refreshes both official lists every two hours and reports malformed or unreachable feeds as failures |
-| A changed secret has no effect | Vaultwarden logs `The following environment variables are being overridden by the config.json file` and lists them. `/data/config.json` was written by the admin panel and outranks the environment; `admin_token`, the `smtp_*` keys and `signups_allowed` are the usual offenders. The entrypoint also logs `WARNING: /data/config.json overrides these environment variables` with the secret key names and keeps the file at 0600. Change that setting in `/admin`, or drop the key from `/data/config.json` and restart so the secret applies |
-| No alert arrived after an hourly job failed | The hourly jobs (`backup`, `check-freshness`, `check-disk`) report through Telegram, not email. The run log in `/data/restic-logs` records `Telegram notification failed (HTTP N)` or `(curl exit N)` followed by the API's own explanation with the token and chat id replaced by `<redacted>`, so a wrong `TELEGRAM_CHAT_ID` reads differently from an unreachable API. Email is sent only by the monthly `verify`, which records `Alert email sent` or `Alert email failed (exit N)`; mail is skipped entirely when `SMTP_TO` is unset |
-| Container exits with `SMTP values must not contain newlines` | One of the `SMTP_*` secrets contains a line break; `msmtprc` is line-based, so a newline would inject extra directives. Remove the break and redeploy |
-| Backup logs disappear after a redeploy | Set `RESTIC_LOG_DIR=/data/restic-logs`; the default is now on the persistent volume |
-| Backup log grows unexpectedly | Logs are capped at `RESTIC_LOG_MAX_BYTES` (default 256 KiB, maximum 8 MiB), the directory is capped at `RESTIC_LOG_DIR_MAX_BYTES` (default 10 MiB, maximum 64 MiB), and files older than 10 hours are removed. The per-file cap cannot exceed the directory cap. Repository, mailer and restore cold-boot output is bounded before it reaches either the run log or container stdout, and configured credentials, addresses and private endpoints are replaced with `<redacted>`. A failed per-file rotation or final bounded-output read is reported as a failure instead of a false success |
-| Backup log directory cannot be trimmed | The run logs `Warning: log directory holds … could not be trimmed`, records `log trim failed` in `/data/backup-status.txt`, sends a Telegram warning even when routine success notices are disabled, and sends a failure heartbeat when `HEALTHCHECK_URL` is set; free space or fix ownership under `/data/restic-logs` |
-| `check-freshness` reports `Cannot inspect the backup lock` | `/data/restic-logs/backup.lock` is missing, cannot be opened, or is not a symlink-free regular file. FIFOs, directories, devices and symlinks are rejected before opening so they cannot block the hourly guard. It keeps `state=running` as evidence but exits 2, sends a Telegram alert and pings the failure URL; restore read access and replace the path with a regular file, then verify the interrupted backup before clearing its marker |
-| `check-freshness` reports `state is failed` while `last_success` looks recent | The latest backup, verification or restore drill failed; the previous success timestamp is not accepted as evidence for the latest run. Read the preserved `message=` value and the matching run log, then fix the failure and let the next backup record `state=ok` |
-| Backup exits with `Cannot record backup start state` or `Cannot record backup completion state` | `/data/backup-status.txt` is not a writable regular file. The backup job fails with exit 2 and sends its normal failure alert instead of reporting a false success; repair the path type and owner under `/data` before retrying |
-| Container exits with `… must be between 1 and …` | One of the numeric limits is zero, has leading zeros, is not a number, or exceeds its allowed ceiling. Current ceilings are 8 MiB per log, 64 MiB per log directory, one hour for the quick timeout, 24 hours for the long timeout, one year for `BACKUP_MAX_AGE` and 100 for `BACKUP_MAX_USAGE_PERCENT`. The per-file log cap also cannot exceed the directory cap |
-| Repository command exits with `RESTIC_PASSWORD not set` | `backup`, `snapshots`, `restore`, `restore-test` and `verify` require the secret. `audit`, `check-freshness` and `check-disk` deliberately continue without it: the read-only audit and local guards must keep working when the repository credential is unavailable |
-| Run log says `/data is …% full` | The volume is past `BACKUP_MAX_USAGE_PERCENT` (default 85). Move `icon_cache` aside, trim attachments, or migrate to a larger Fly volume with `fly volumes create` + `fly machine update`; the hourly backup keeps working until the volume is actually full |
-| Caddy exited and the proxy stopped responding | The static process table in `/services.sh` restarts Caddy in place; if the whole container exits, Fly's `on-failure` restart policy brings the machine back (10 retries), while a failing `/alive` check takes it out of service |
+| Machine repeatedly restarts | `fly logs`; a Vaultwarden exit intentionally stops the stack |
+| Fly health check fails | `fly status`; `/alive` must pass through Caddy |
+| New settings have no effect | Remove matching keys from `/data/config.json`, then restart |
+| Backup is stale or lock is stuck | Run `audit`, then inspect `fly logs` and `/data/backup-status.txt` |
+| Restore did not apply | Check for `restore-pending`, then inspect entrypoint diagnostics |
+| Alert did not arrive | Run `notify-test`; the bounded run log records the transport result |
 
-## 🛠️ Management & Operations
-
-### Deployment CLI
+## Verification
 
 ```bash
-fly status                     # Check application status
-fly logs                       # View real-time logs
-fly ssh console                # Access container shell
-fly apps restart               # Restart all instances
+shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh
+python3 -m py_compile scripts/*.py tests/*.py
+python3 -m unittest discover -s tests -p 'test_*.py'
+docker build --tag vaultwarden:local .
+python3 tests/runtime_smoke.py vaultwarden:local
 ```
 
-### Backup Operations (via SSH)
+`tests/test_repository_contracts.py` covers helper and workflow contracts. `tests/runtime_smoke.py`
+boots the built image and validates the process stack, proxy boundaries, backup paths, SMTP
+delivery, log limits, SQLite integrity, and isolated restore flow. CI also enforces fixed
+no-regression line budgets for the largest scripts, workflows, and documentation.
 
-```bash
-/restic.sh audit               # Read-only recovery-control audit
-/restic.sh backup              # Run manual backup
-/restic.sh snapshots           # List all snapshots
-/restic.sh restore-test        # Restore latest snapshot into /tmp and validate
-/restic.sh restore <id>        # Restore from specific snapshot
-```
+## License
 
-### Log Inspection
-
-```bash
-cat /data/restic-logs/*.log     # Check persisted backup logs
-fly logs                        # Container output, including mailer errors
-```
-
-### Verification
-
-The host-side suites are `tests/selftest.sh` (the helper scripts; no network, no restic repository and no
-production access), `tests/test_deploy_verification.py` (the real deploy verifier against controlled Fly
-responses), `tests/test_notification_delivery.py` (both alert transports, failure propagation, redaction
-and scratch-file cleanup through local stubs), `tests/test_production_operations.py` (the fixed production
-dispatch, command map and failure alert path) and
-`tests/runtime_smoke.py` (boots the image). The image ships no Python on purpose, so
-`tests/image_selftest.sh` stays shell; the snippets a Python test hands to `sh` in a container are single
-commands.
-
-```bash
-shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh # Static analysis for every helper and test script
-python3 -m py_compile scripts/*.py tests/*.py  # Compile check for host-side Python
-python3 -m unittest discover -s tests -p 'test_*.py' # Every host-side Python suite
-tests/selftest.sh                 # static process model, dependency resolver and workflow failure paths
-python3 -m unittest tests.test_cloudflare_ranges -v    # official range validation, atomic update and workflow wiring
-python3 -m unittest tests.test_notification_delivery -v # both alert channels, failures, redaction and temp-file cleanup
-python3 -m unittest tests.test_production_operations -v # production dispatch, command allowlist and failure alert path
-tests/runtime_smoke.py <image>    # Boot the image: /alive, the non-root stack, the backup paths and a real SMTP delivery
-scripts/deps.sh base             # Resolve the upstream Vaultwarden version + digest
-scripts/deps.sh tools            # Resolve supercronic and recompute checksums
-scripts/deps.sh compare ...      # Compare resolved values against the Dockerfile pins
-scripts/deps.sh apk <image>      # List Alpine packages with a pending upgrade
-docker build -t vaultwarden:local .
-docker run --rm --entrypoint caddy vaultwarden:local validate --config /Caddyfile --adapter caddyfile
-```
-
-## 🔐 Security Headers
-
-The Caddy configuration automatically applies the following security posture:
-- **HSTS**: `Strict-Transport-Security` (1 year)
-- **Clickjacking**: `X-Frame-Options DENY`
-- **MIME Sniffing**: `X-Content-Type-Options nosniff`
-- **XSS Protection**: `X-XSS-Protection 1; mode=block`
-- **Privacy**: `Referrer-Policy strict-origin-when-cross-origin`
-- **Indexing**: `X-Robots-Tag noindex, nofollow`
-- **Permissions**: `Permissions-Policy` (camera, microphone, geolocation, payment disabled)
-- **Fingerprinting**: `Server`, `X-Powered-By` and `Last-Modified` are stripped
-
-Hosts are denied by default: only the domains listed in `CADDY_DOMAINS` are served (`/alive` stays open for
-Fly health checks). `/admin` and `/admin/*` additionally require a request from a Cloudflare origin range
-with a `Cf-Access-Jwt-Assertion` header, so a direct request to the Fly hostname cannot bypass Cloudflare
-Access. The admin panel also remains protected by `ADMIN_TOKEN`, so treat that token as a high-value secret.
-Caddy access logs strip `Authorization`,
-`Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `CF-Access-Jwt-Assertion`,
-`X-Forwarded-For`, `X-Real-IP`, and `Fly-Client-IP` before writing to stdout. Query strings are
-replaced with `?redacted`, because one-time credentials and addresses do not belong in request logs;
-the path remains visible for diagnosis.
-
-The container runs as the unprivileged `vaultwarden` user. `/entrypoint.sh` orchestrates four small modules
-for filesystem setup, `config.json` hardening, pending restores and SMTP configuration, then drops
-privileges with `su-exec` before starting `/services.sh`, which owns the static three-process table.
-Because Vaultwarden can write under
-`/data`, the root entrypoint never follows links for its reserved status or log paths: it replaces unsafe
-links with private files/directories and refuses to chmod or chown a symlinked `config.json`. On every boot
-it uses non-following `find` operations to set directories under `/data` to 0700 and regular files to 0600,
-covering the live database, attachments, backup hot copy, logs and RSA private key without changing a
-symlink target outside the volume. The same root-owned restore path refuses a symlinked hot copy
-before copying it over the live database.
-
-## 📝 License
-
-Distributed under the [MIT License](LICENSE).
-
----
-🚀 Optimized for Fly.io by **[WeBees](https://github.com/webees)**
+MIT. See [LICENSE](LICENSE).
