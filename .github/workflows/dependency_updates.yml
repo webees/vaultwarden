@@ -1,18 +1,12 @@
 name: Dependency Updates
 
 on:
-  # GitHub's schedule is best-effort: it can be delayed for tens of minutes and
-  # is disabled for an inactive repository. A completed build is a real event
-  # that proves the repository is active, so use it as a fallback trigger. The
-  # check is a no-op when the pins already match, and the concurrency group
-  # keeps it from overlapping the schedule.
+  # A completed build is an activity-backed fallback for unreliable scheduling.
   workflow_run:
     workflows: ["Build and Deploy"]
     types: [completed]
     branches: [main]
-  # Dependabot keeps the immutable action SHAs current. Arm auto-merge from a
-  # target-context workflow without checking out or executing the PR tree; the
-  # protected `validate` check still decides whether the update may land.
+  # Read Dependabot metadata without executing its PR tree.
   pull_request_target:
     types: [opened, reopened, synchronize]
     branches: [main]
@@ -36,9 +30,7 @@ on:
           - restore-test
           - backup
   schedule:
-    # Every two hours: a Vaultwarden release should not wait a full day to be
-    # noticed. Minute 41 keeps the run out of the top-of-the-hour queue spike,
-    # and a run whose pins already match is a no-op that opens no PR.
+    # Check every two hours; minute 41 avoids the hourly scheduler spike.
     - cron: '41 */2 * * *'
 
 permissions:
@@ -69,28 +61,25 @@ jobs:
       github.event_name == 'workflow_run' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.operation == 'none')
     runs-on: ubuntu-24.04
-    # The post-merge step alone waits up to ten minutes for the pull request to
-    # land, so bound the whole job rather than the six-hour default.
+    # Bound the post-merge wait well below GitHub's default.
     timeout-minutes: 40
-    # One decision for "this run merges the dependency PR": the schedule always
-    # merges, a manual dispatch only when asked to. The merge and the dispatch
-    # that follows it both read this value, so the two cannot disagree.
+    # Scheduled updates merge automatically; manual runs opt in.
     env:
       AUTO_MERGE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_run' || inputs.auto_merge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: 🔎 Resolve the Vaultwarden base image
+      - name: Resolve the Vaultwarden base image
         id: base
         run: scripts/deps.sh base
 
-      - name: 🧰 Resolve supercronic
+      - name: Resolve supercronic
         id: tools
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/deps.sh tools
 
-      - name: 📌 Compare the Dockerfile pins
+      - name: Compare the Dockerfile pins
         id: compare
         run: |
           scripts/deps.sh compare \
@@ -100,13 +89,12 @@ jobs:
             SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
             SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
 
-      - name: 🌐 Synchronize the Cloudflare IP ranges
+      - name: Synchronize the Cloudflare IP ranges
         id: cloudflare
         run: python3 scripts/cloudflare_ranges.py sync --github-output "$GITHUB_OUTPUT"
 
-      # Keep one decision for every update path. A malformed or missing upstream
-      # output must fail instead of looking like "nothing changed".
-      - name: 🧭 Decide whether dependency files changed
+      # Reject missing or malformed upstream results.
+      - name: Decide whether dependency files changed
         id: changed
         run: |
           set -euo pipefail
@@ -120,14 +108,12 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 📦 Compare the pinned base packages
+      - name: Compare the pinned base packages
         id: apk
         run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
 
-      # The pinned base keeps listing an upgrade after our build has applied it.
-      # Probe the image that is actually deployed before dispatching another
-      # build, otherwise every two-hour schedule repeats the same rebuild.
-      - name: 📦 Compare packages in the published image
+      # The pinned base still lists an upgrade after our image applies it.
+      - name: Compare packages in the published image
         id: published-apk
         if: >-
           success() &&
@@ -137,7 +123,7 @@ jobs:
         continue-on-error: true
         run: scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
 
-      - name: 🔧 Update the pins and validate the build
+      - name: Update the pins and validate the build
         if: steps.changed.outputs.changed == 'true'
         run: |
           if [ '${{ steps.compare.outputs.changed }}' = true ]; then
@@ -152,7 +138,7 @@ jobs:
           docker run --rm --entrypoint caddy dependency-check:local \
             validate --config /Caddyfile --adapter caddyfile
 
-      - name: 📬 Open the dependency PR
+      - name: Open the dependency PR
         id: pr
         if: steps.changed.outputs.changed == 'true'
         env:
@@ -168,9 +154,7 @@ jobs:
           APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
           set -euo pipefail
-          # Keep one automation branch: a version-named branch leaves the old
-          # PR open with auto-merge armed when the version moves, so the stale
-          # pins can merge after the newer update.
+          # One stable branch prevents stale dependency PRs from remaining armed.
           branch="deps/upstream"
           title="chore(deps): update upstream dependencies"
           body_file="${RUNNER_TEMP:-/tmp}/pr-body.md"
@@ -206,10 +190,7 @@ jobs:
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          # Swallowing this failure reported every auth or API error as an
-          # existing PR, and the auto-merge step then failed with a misleading
-          # cause. Ask for open PRs explicitly, and refresh their metadata
-          # instead of leaving a body that describes an older pin set.
+          # Refresh an existing PR instead of misreading API errors as absence.
           open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
             --state open --json number --jq 'length')"
           if [ "$open_pr" -gt 0 ]; then
@@ -224,16 +205,9 @@ jobs:
           echo "number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
             --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
 
-      # main now requires the `validate` check, so the merge is armed instead of
-      # performed: GitHub merges only once that check passes. Without --auto the
-      # merge is refused outright, which is what used to hide the missing gate.
-      #
-      # A pull request opened with GITHUB_TOKEN has its `pull_request` runs held
-      # with the conclusion `action_required`, so `validate` never starts and the
-      # required check never reports: the armed merge then waits forever. A
-      # workflow_dispatch run does not help, because its check suite is not
-      # attached to the pull request. Release the held run instead.
-      - name: ✅ Release the held validate run
+      # GITHUB_TOKEN-created PR checks start as action_required; release the run
+      # so the required validate check can register before auto-merge.
+      - name: Release the held validate run
         if: steps.changed.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -254,7 +228,7 @@ jobs:
           echo "no held pull_request run appeared for ${SHA}" >&2
           exit 1
 
-      - name: 🔀 Arm auto-merge on the dependency PR
+      - name: Arm auto-merge on the dependency PR
         id: arm
         if: steps.changed.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
         env:
@@ -263,8 +237,7 @@ jobs:
         run: |
           set -euo pipefail
           gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --auto
-          # Fail loudly if the required check never registers, instead of leaving
-          # the PR parked with nothing to explain why.
+          # Fail if the required check never registers.
           api_error=false
           for _ in $(seq 1 18); do
             registered=""
@@ -294,15 +267,9 @@ jobs:
           fi
           exit 1
 
-      # Auto-merge merges with GITHUB_TOKEN, and a GITHUB_TOKEN push does not
-      # trigger workflows either, so the build workflow never sees the merge
-      # commit: the new digest would never be built and Fly would keep running
-      # the old image. Dispatch the build ourselves once the merge lands.
-      #
-      # Only when this run is the one merging: with the merge left to a human
-      # (a manual dispatch with auto_merge off) that merge arrives as an ordinary
-      # push, and polling for ten minutes only failed a run that did its job.
-      - name: 🚀 Build and deploy after the merge
+      # A GITHUB_TOKEN merge does not trigger another workflow. Dispatch the build
+      # only when this run performed the automatic merge.
+      - name: Build and deploy after the merge
         if: >-
           always() &&
           steps.changed.outputs.changed == 'true' &&
@@ -327,11 +294,9 @@ jobs:
           echo "pull request ${NUMBER} did not merge within 10 minutes" >&2
           exit 1
 
-      # A package-only update never changes the Dockerfile, so no PR exists to
-      # merge. Rebuild only when the published image still has the upgrades the
-      # pinned base advertised; a clean published image means this work is done.
-      # The workflow_run fallback stays out to bound retries after a failed build.
-      - name: ♻️ Rebuild when only Alpine packages moved
+      # Package-only updates have no PR. Rebuild only while the published image
+      # still contains pending upgrades.
+      - name: Rebuild when only Alpine packages moved
         if: >-
           success() &&
           steps.changed.outputs.changed != 'true' &&
@@ -363,7 +328,7 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      - name: 🔀 Arm auto-merge for the Dependabot PR
+      - name: Arm auto-merge for the Dependabot PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -374,8 +339,7 @@ jobs:
             ''|*[!0-9]*) echo "invalid pull request number" >&2; exit 2 ;;
           esac
 
-          # This event has write access, so allow only workflow/action pin
-          # changes. Never check out the pull request tree in this job.
+          # This write-capable event accepts only workflow/action pin changes.
           files="$(timeout 90 gh api --paginate \
             "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
           [ -n "$files" ] || { echo "Dependabot PR has no changed files" >&2; exit 1; }
@@ -389,8 +353,7 @@ jobs:
           gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
             --squash --delete-branch --auto
 
-          # A required check that never registers would leave auto-merge parked
-          # forever. Fail the automation job while leaving the PR protected.
+          # Fail if the required check never registers.
           api_error=false
           for _ in $(seq 1 18); do
             registered=""
@@ -427,10 +390,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: 🚀 Set up Flyctl
+      - name: Set up Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
-      - name: 🔍 Run one fixed production operation
+      - name: Run one fixed production operation
         id: operation
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -456,21 +419,17 @@ jobs:
             2>&1 | sed -E "$FLY_LOG_REDACT"
 
   watchdog:
-    # The app's scheduler cannot report its own silence. This job runs on the
-    # same external triggers as the dependency check and asks the live app
-    # whether its last successful backup is still fresh. A failure fails this
-    # workflow, which is the second channel: GitHub emails the repository owner
-    # even when Telegram is the thing that broke.
+    # The app cannot report its own silence; this external job can.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_run'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - name: 🚀 Set up Flyctl
+      - name: Set up Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
-      - name: 💓 Check the production backup heartbeat
+      - name: Check the production backup heartbeat
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           FLY_APP: ${{ secrets.FLY_APP }}
@@ -481,9 +440,7 @@ jobs:
             2>&1 | sed -E "$FLY_LOG_REDACT"
 
   notify_failure:
-    # GitHub email is the last-resort channel if this job cannot reach Telegram.
-    # The notification job must wait for every possible work job, otherwise a
-    # failure could be reported before the job that actually failed has ended.
+    # Wait for every work job so the reported state is final.
     if: failure()
     needs:
       - check
@@ -497,10 +454,10 @@ jobs:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP: ${{ secrets.FLY_APP }}
     steps:
-      - name: 🚀 Set up Flyctl
+      - name: Set up Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
-      - name: 📣 Send the failure through Telegram
+      - name: Send the failure through Telegram
         env:
           WORKFLOW: ${{ github.workflow }}
           EVENT: ${{ github.event_name }}
@@ -515,8 +472,7 @@ jobs:
           : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
 
-          # The Telegram credentials already live in the application secret
-          # store. Keep them out of GitHub secrets and out of the step output.
+          # Reuse application secrets without copying them into GitHub.
           read_app_secret() {
             timeout 30 flyctl ssh console --quiet --app "$FLY_APP" \
               --command "printenv $1"

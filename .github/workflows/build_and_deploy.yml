@@ -1,5 +1,4 @@
-# Named for what it does, not for the registry it pushes to: this workflow
-# builds the multi-arch image, publishes it and rolls that digest out to Fly.
+# Build the multi-arch image and deploy its exact digest.
 name: Build and Deploy
 
 on:
@@ -8,15 +7,7 @@ on:
     branches:
       - main
     tags: [ '*' ]
-    # fly.toml is a production input: it carries the machine config that only
-    # `flyctl deploy` applies. Ignoring it here meant a config-only commit built
-    # nothing and deployed nothing, so the change silently never reached Fly.
-    #
-    # Everything else in this list cannot reach the image: `.dockerignore` keeps
-    # these paths out of the build context. Without them every `.github`-only or
-    # tests-only commit rebuilt both architectures and rolled production anyway.
-    # `.gitignore` counts too: it is excluded from the build context, yet the
-    # smoke-suite commit on 2026-10-19T04:23Z rebuilt and redeployed through it.
+    # fly.toml is a production input. Paths ignored here cannot affect the image.
     paths-ignore:
       - .gitignore
       - README.md
@@ -24,9 +15,7 @@ on:
       - .github/**
       - tests/**
   schedule:
-    # Weekly rebuild keeps Alpine package (caddy/restic/sqlite) security fixes
-    # flowing. Minute 23, not 0: GitHub queues scheduled runs behind the hourly
-    # load spike, so the top of the hour is the slowest slot to pick.
+    # Rebuild weekly so Alpine security fixes reach production. Avoid minute zero.
     - cron: '23 4 * * 1'
 
 env:
@@ -42,8 +31,7 @@ env:
     /^[[:space:]]*[0-9a-fA-F]{8}[[:space:]]/ s/([[:space:]])[0-9a-fA-F]{12,}([[:space:]]|$)/\1[redacted-fly-machine-host]\2/g
 
 concurrency:
-  # Shared with ghcr_cleanup.yml: both workflows mutate the same package, and a
-  # cleanup racing an in-flight multi-arch push can delete partial manifests.
+  # Share the package mutation lock with ghcr_cleanup.yml.
   group: ghcr-registry
   cancel-in-progress: false
 
@@ -59,44 +47,42 @@ jobs:
       packages: write
 
     steps:
-      - name: 📥 Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Nothing here pushes, so the workflow token does not belong in
-          # .git/config where a later step could reuse it.
+          # This workflow never pushes.
           persist-credentials: false
 
-      - name: 🧹 Invalidate package layer cache
+      - name: Invalidate package layer cache
         id: cache-bust
         run: |
-          # apk only pulls patched packages when this layer is rebuilt, so give
-          # every scheduled run a unique cache key for the dependency layer.
+          # Force the apk layer to refresh on every run.
           echo "cache-bust=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: ⚙️ Enable QEMU for cross-platform builds
+      - name: Enable QEMU for cross-platform builds
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
-      - name: 🛠️ Set up Docker Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver: docker-container
           use: true
 
-      - name: 🔐 Log into registry ${{ env.REGISTRY }}
+      - name: Log into registry ${{ env.REGISTRY }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🕒 Compute image timestamp
+      - name: Compute image timestamp
         id: timestamp
         run: |
           value="$(TZ=Asia/Shanghai date +%Y%m%d%H%M)"
           echo "value=${value}" >> "$GITHUB_OUTPUT"
           echo "Image timestamp: ${value}"
 
-      - name: 🏷️ Extract Docker metadata
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
@@ -108,7 +94,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
 
-      - name: ✅ Verify timestamp tag
+      - name: Verify timestamp tag
         env:
           TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
           METADATA_TAGS: ${{ steps.meta.outputs.tags }}
@@ -121,7 +107,7 @@ jobs:
           fi
           echo "Timestamp tag verified: ${expected}"
 
-      - name: 🚀 Build and push Docker image (Multi-Arch)
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -135,7 +121,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 🧾 Record the published amd64 digest
+      - name: Record the published amd64 digest
         id: digest
         env:
           TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
@@ -147,11 +133,8 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
 
-      # The two-hour dependency job only reports pending package upgrades. An image
-      # that is published (and then deployed) with an upgrade already available
-      # means the dependency layer is behind, so fail instead of shipping it;
-      # re-running the workflow rebuilds with the patched package.
-      - name: 🔍 Assert no pending package upgrades
+      # Never deploy an image with a newer package already available.
+      - name: Assert no pending package upgrades
         env:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
@@ -164,20 +147,14 @@ jobs:
             exit 1
           fi
 
-      # The digest above is what the deploy job rolls out, so boot it and
-      # run the in-container checks now: a failure here fails the build job, and
-      # the deploy job only runs after this job succeeds.
-      - name: 🚑 Runtime smoke test the published image
+      # The deploy job consumes only an image that passed these checks.
+      - name: Runtime smoke test the published image
         env:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: python3 tests/runtime_smoke.py "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
-      # GitHub stops scheduled workflows without saying so: this repository's
-      # nightly cleanup last ran on 2026-01-03, so the 30-day tag expiry the
-      # README promises had not been enforced for months. Expire the old
-      # timestamp tags here too whenever the schedule looks stale. Untagged and
-      # partial images stay with the nightly job.
-      - name: 🕵️ Check the nightly cleanup schedule
+      # GitHub can silently stop schedules; sweep here when nightly cleanup is stale.
+      - name: Check the nightly cleanup schedule
         id: cleanup-check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,13 +178,7 @@ jobs:
           fi
           echo "needed=${needed}" >> "$GITHUB_OUTPUT"
 
-          # Same failure mode, different victim: report the dependency check if
-          # it stops firing, without blocking the deploy. Count the workflow_run
-          # fallback as an automatic check too; otherwise a healthy fallback
-          # still prints "no scheduled dependency check has ever run". Query the
-          # two events separately and take the newest: a single windowed query
-          # could push the automatic run past the page limit once enough manual
-          # runs accumulate, and then misreport a healthy check as never run.
+          # Report stale dependency checks without blocking deployment.
           deps_last=""
           deps_read_ok=false
           for deps_event in schedule workflow_run; do
@@ -234,9 +205,8 @@ jobs:
             fi
           fi
 
-      # Best effort on purpose: a registry housekeeping failure must not hold
-      # back a security deployment, but it stays visible in this run.
-      - name: 🧹 Expire timestamp tags (nightly cleanup is behind)
+      # Housekeeping must not block a security deployment.
+      - name: Expire timestamp tags
         id: expiry
         if: steps.cleanup-check.outputs.needed == 'true'
         continue-on-error: true
@@ -245,18 +215,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           package: ${{ github.event.repository.name }}
 
-      # `continue-on-error` keeps the deploy alive, so the failed step is the
-      # only trace and the run still reports success. Say it out loud instead.
-      - name: ⚠️ Report the failed tag expiry
+      # Make a best-effort cleanup failure visible.
+      - name: Report the failed tag expiry
         if: steps.expiry.outcome == 'failure'
         run: echo "::warning::the old timestamp tags were not expired; the nightly cleanup will retry"
 
   deploy:
     needs: build
-    # workflow_run never fired for a workflow_dispatch build, so a manual
-    # rebuild used to publish an image that never reached Fly. The deploy lives
-    # here so every published digest, from a push or a manual rebuild, can be
-    # rolled out.
+    # Keep deployment in this workflow so manual rebuilds also reach Fly.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -264,17 +230,9 @@ jobs:
       actions: read
       contents: read
     steps:
-      # An `exit 0` only ends this step, so a superseded build used to keep
-      # going and overwrite the newer release. The guard publishes an output and
-      # the deploy steps below are skipped explicitly.
-      #
-      # The guard stands down only when a newer run of this workflow exists for
-      # main. Comparing the tip of main instead cancelled the deploy whenever a
-      # doc-only commit landed mid-build: paths-ignore means that commit never
-      # starts a run, so nothing was left to publish the code being built. If
-      # GitHub cannot answer, fail closed: deploying an unverified older build
-      # could overwrite a newer release.
-      - name: 🚦 Check whether a newer build has taken over
+      # Never let an older build overwrite a newer workflow run. Comparison uses
+      # workflow runs, not main's tip, because doc-only commits start no build.
+      - name: Check whether a newer build has taken over
         id: guard
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -297,17 +255,16 @@ jobs:
           fi
           echo "skip=${skip}" >> "$GITHUB_OUTPUT"
 
-      - name: 🚀 Set up Flyctl
+      - name: Set up Flyctl
         if: steps.guard.outputs.skip != 'true'
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
-      - name: 🛫 Release
+      - name: Release
         id: release
         if: steps.guard.outputs.skip != 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          # Passed through a secret so flyctl's own output (which prints the app
-          # name) is masked in this public repository's logs.
+          # Keep the app name masked in this public repository.
           FLY_APP: ${{ secrets.FLY_APP }}
         run: |
           set -euo pipefail
@@ -316,10 +273,8 @@ jobs:
             --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}" \
             --yes 2>&1 | sed -E "$FLY_LOG_REDACT"
 
-      # A zero exit from deploy only proves Fly accepted the operation. Close the
-      # loop by requiring the newest release to be this exact digest, every
-      # machine to run it, and every configured health check to be passing.
-      - name: 🩺 Verify deployment
+      # Deploy success is not readiness: verify release, digest, machines and checks.
+      - name: Verify deployment
         id: verify
         if: steps.guard.outputs.skip != 'true'
         env:

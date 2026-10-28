@@ -23,11 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Validation never pushes, so the workflow token does not belong in
-          # .git/config where a later step could reuse it.
+          # Validation never pushes.
           persist-credentials: false
 
-      - name: 🐚 Shell and Python scripts
+      - name: Shell and Python scripts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
@@ -36,21 +35,19 @@ jobs:
           python3 -m py_compile scripts/*.py tests/*.py
           python3 -m unittest discover -s tests -p 'test_*.py'
 
-      # Every YAML file under .github, not a list of names: the composite action
-      # that expires GHCR tags was never parsed, so a syntax error there would
-      # only surface when a run reached that step.
-      - name: 🧾 Workflow, action and fly.toml syntax
+      # Parse every workflow, composite action and fly.toml.
+      - name: Workflow, action and fly.toml syntax
         run: |
           set -euo pipefail
           files="$(find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)"
-          # An empty list means the search broke, not that there is nothing to check.
+          # An empty search result is a failure.
           test -n "$files"
           while IFS= read -r file; do
             ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "ok #{ARGV[0]}"' "$file"
           done <<< "$files"
           python3 -c 'import tomllib; tomllib.load(open("fly.toml", "rb")); print("ok fly.toml")'
 
-      - name: 🧭 Lint GitHub Actions workflows
+      - name: Lint GitHub Actions workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -66,21 +63,18 @@ jobs:
           tar -xzf "$tmp/$archive" -C "$tmp" actionlint
           "$tmp/actionlint" -no-color
 
-      - name: 🧪 Helper self tests
+      - name: Helper self tests
         run: tests/selftest.sh
 
-      # A push to main already builds the multi-arch image in the Docker workflow
-      # and deploys that exact digest. Rebuilding here would double the build
-      # work for every merge, so the image steps stay on the pre-merge events.
-      - name: 🐳 Build and validate the image
+      # main builds the image once; pre-merge events validate it here.
+      - name: Build and validate the image
         if: github.event_name != 'push'
         run: |
           docker build --tag validate:local .
           python3 tests/runtime_smoke.py validate:local
 
-      # entrypoint.sh has two branches: write /etc/msmtprc from SMTP_*, or leave
-      # it empty so alerts are skipped. Both are exercised here.
-      - name: 📧 SMTP config branches
+      # Exercise both SMTP configuration branches.
+      - name: SMTP config branches
         if: github.event_name != 'push'
         run: |
           docker run --rm validate:local /entrypoint.sh sh -c '

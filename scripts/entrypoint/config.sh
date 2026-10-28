@@ -1,10 +1,6 @@
 #!/bin/bash
 
-# The admin panel persists every non-default setting, secrets included, in
-# /data/config.json, and Vaultwarden gives that file priority over the
-# environment. Keep it owner-only and name the overriding secret keys in the
-# log so a Fly secret that "does nothing" has a visible cause. Values are never
-# printed: the log is shipped off-box.
+# /data/config.json outranks environment variables; never log its values.
 harden_config_json() {
     local config=/data/config.json key overriding=""
     if [ -L "$config" ]; then
@@ -23,8 +19,6 @@ harden_config_json() {
             overriding="${overriding}${overriding:+, }${key}"
         fi
     done
-    # Vaultwarden can add SMTP keys at any time. Match the prefix instead of
-    # maintaining a short list that silently misses host, port or future keys.
     while IFS= read -r key; do
         overriding="${overriding}${overriding:+, }${key}"
     done < <(

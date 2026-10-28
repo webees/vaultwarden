@@ -1,32 +1,6 @@
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║ Supercronic Crontab                                                       ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-
-# Run away from minute 0: a deployment can restart the machine at the top of
-# the hour and kill a backup that has just started.
+# Keep jobs away from minute zero, where deployments restart the machine.
 17 * * * * /restic.sh backup
-
-# Alert when no backup has succeeded for BACKUP_MAX_AGE (default two hours).
-# This is the in-container channel that fires when the backup itself stops working.
 45 * * * * /restic.sh check-freshness
-
-# Alert before the data volume fills. Attachments, the icon cache and the
-# database all live on it, and a Fly volume is grown by migrating the data
-# rather than in place, so the warning has to arrive while there is room.
 35 * * * * /restic.sh check-disk
-
-# Monthly integrity check that reads back a slice of the stored data. Kept off
-# the backup minute so it does not race the scheduled backup for the repository
-# lock (verify now also waits for the lock, this is the cheaper half).
-# Repository damage is the one thing only this job can find, so a failure emails
-# the operator and records the failed state in backup-status.txt.
 30 3 1 * * /restic.sh verify
-
-# Monthly restore drill: the only job that proves a snapshot still restores and
-# boots, rather than only that the repository is readable. Runs after verify and
-# away from the backup minute so the two never want the repository lock at the
-# same time; a failure emails the operator, notifies Telegram and records the
-# failed state in backup-status.txt. Measured on production: the cold boot left
-# 65 MiB of the 207 MiB the guest reports free, and the drill checks free space
-# before it unpacks anything.
 15 4 1 * * /restic.sh restore-test

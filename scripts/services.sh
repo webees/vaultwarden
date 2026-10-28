@@ -6,26 +6,15 @@ if [ "$(id -u)" = "0" ]; then
     exit 2
 fi
 
-# Keep the three long-running services in one static table. Caddy and the
-# scheduler restart after a crash; Vaultwarden exiting stops the container so
-# Fly's restart policy owns the recovery. `setsid` gives each child its own
-# process group, so a signal reaches helpers as well as the direct command.
+# Caddy and the scheduler restart; Vaultwarden exit stops the container.
 delay="${SUPERVISE_RESTART_DELAY:-5}"
 supervisors=()
 
-case "$delay" in
-    ''|*[!0-9.]*|.*|*.|*.*.*)
-        echo "SUPERVISE_RESTART_DELAY must be a positive number, got '${delay}'" >&2
-        exit 2
-        ;;
-esac
-case "$delay" in
-    *[1-9]*) ;;
-    *)
-        echo "SUPERVISE_RESTART_DELAY must be a positive number, got '${delay}'" >&2
-        exit 2
-        ;;
-esac
+if [[ ! "$delay" =~ ^(0|[1-9][0-9]*|0\.[0-9]*[1-9][0-9]*|[1-9][0-9]*\.[0-9]+)$ ]] \
+    || [ "$delay" = 0 ]; then
+    echo "SUPERVISE_RESTART_DELAY must be a positive number, got '${delay}'" >&2
+    exit 2
+fi
 
 supervise() {
     local name="$1" restart="$2" child status
