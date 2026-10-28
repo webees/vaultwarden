@@ -4,9 +4,15 @@ This file records defects that were fixed more than once, especially where a lat
 
 Review basis: all 243 commits reachable before this decision commit were inspected on 2026-10-28. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
 
-## Every-Round Recurrence Gate
+## Every-Round Goal Gate
 
-Every audit, optimization, or review round starts with a recurrence review of the failure class it changes. Trace that class through reachable history with `git log -S` and `git log -G`; classify it as never fixed, regressed after simplification, or partially fixed; and identify the one authoritative implementation. If a previous fix regressed, the round's first patch restores it before unrelated optimization. For a recurring class, add positive, boundary, negative, and mutation-control tests before declaring the issue closed. Do not combine a regression fix with a line-count reduction. A round cannot complete or receive a full score until the affected History, Final decision, and Regression gate here are current, and the PR or final report records the history evidence, authoritative guard, and mutation-control result without creating per-round files. An unverified residual remains open and must never count as passing.
+Before any other audit, optimization, scoring, or completion work in a round, scan every recorded failure class below against the current implementation and run its regression gate. For each class, trace reachable history with `git log -S` and `git log -G`, then classify it as never fixed, regressed after simplification, or partially fixed and identify the one authoritative implementation.
+
+- If history shows a regression or a weakened invariant, restore that invariant in the round's first patch before unrelated optimization. Do not combine that patch with line-count reduction.
+- Every changed class must have positive, boundary, negative, and mutation-control tests. The mutation control must fail when the authoritative guard is removed.
+- Update the affected History, Final decision, and Regression gate when evidence changes.
+- Record the history evidence, authoritative guard, and mutation-control result in the PR or final report without creating per-round files.
+- No score or completion claim is valid while any recorded gate is missing, failing, or unverified. An accepted residual must remain explicitly open and must never count as passing.
 
 ## Bounded Diagnostics
 

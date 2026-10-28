@@ -20,6 +20,17 @@ from tests.performance import Result, apply_baseline, build_database, parse_dock
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = "sha256:" + "a" * 64
+RECURRING_GOAL_GATE_CLAUSES = (
+    "Before any other audit, optimization, scoring, or completion work",
+    "scan every recorded failure class below",
+    "git log -S",
+    "git log -G",
+    "restore that invariant in the round's first patch",
+    "positive, boundary, negative, and mutation-control tests",
+    "The mutation control must fail when the authoritative guard is removed",
+    "No score or completion claim is valid",
+    "without creating per-round files",
+)
 
 
 def run(*args: str, cwd: Path = ROOT, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -36,6 +47,12 @@ def tracked_files() -> list[Path]:
     if result.returncode:
         raise AssertionError(result.stderr)
     return [ROOT / value for value in result.stdout.split("\0") if value and (ROOT / value).exists()]
+
+
+def assert_recurring_goal_gate(case: unittest.TestCase, text: str) -> None:
+    case.assertIn("Every-Round Goal Gate", text)
+    for clause in RECURRING_GOAL_GATE_CLAUSES:
+        case.assertIn(clause, text)
 
 
 class DependencyResolverTest(unittest.TestCase):
@@ -276,13 +293,14 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertNotIn('body="$("$@" 2>&1)"', block)
         self.assertNotIn("eval ", restic)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
-        self.assertIn("Every-Round Recurrence Gate", decisions)
-        self.assertIn("git log -S", decisions)
-        self.assertIn("git log -G", decisions)
-        self.assertIn("Every audit, optimization, or review round", decisions)
-        self.assertIn("the round's first patch restores it", decisions)
-        self.assertIn("A round cannot complete or receive a full score", decisions)
-        self.assertIn("without creating per-round files", decisions)
+        assert_recurring_goal_gate(self, decisions)
+        weakened = decisions.replace(
+            "scan every recorded failure class below",
+            "scan only the failure class currently being changed",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_recurring_goal_gate(self, weakened)
         self.assertIn("Bounded Diagnostics", decisions)
         self.assertIn("Outbound Network Bounds", decisions)
         self.assertIn("Absence of a supported timeout command fails closed", decisions)
