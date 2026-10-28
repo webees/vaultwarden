@@ -117,7 +117,6 @@ write_status() {
         return 0
     fi
     rm -f "$tmp" || echo "Warning: cannot remove ${tmp}" >&2
-    if printf '%s' "$body" > "$STATUS_FILE"; then return 0; fi
     echo "Error: cannot write ${STATUS_FILE}; backup state was not recorded" >&2
     return 1
 }
@@ -313,7 +312,7 @@ sqlite_integrity_check() {
 
 log_dir_size() {
     local sizes
-    sizes="$(find "$LOG_DIR" -maxdepth 1 -type f ! -name backup.lock -exec stat -c '%s' {} + 2>/dev/null)" || return 1
+    sizes="$(find "$LOG_DIR" -maxdepth 1 -type f ! -name backup.lock -exec wc -c {} + 2>/dev/null)" || return 1
     printf '%s\n' "$sizes" | awk '{total += $1} END {print total + 0}'
 }
 
@@ -332,7 +331,7 @@ trim_logs() {
     done
     if ! total="$(log_dir_size)"; then echo "Warning: cannot read ${LOG_DIR}; the log directory cap was not checked" >&2; return 1; fi
     while [ "$total" -gt "$MAX_LOG_DIR_BYTES" ]; do
-        oldest="$(find "$LOG_DIR" -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.tmp.*' \) ! -path "$LOG" -exec stat -c '%Y %n' {} + 2>/dev/null | sort -n | head -n 1 | cut -d' ' -f2-)"
+        oldest="$(find "$LOG_DIR" -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.tmp.*' \) ! -path "$LOG" -exec ls -1tr {} + 2>/dev/null | head -n 1)"
         if [ -z "$oldest" ] || ! rm -f "$oldest" || ! total="$(log_dir_size)"; then
             echo "Warning: cannot trim ${LOG_DIR} to its byte cap" >&2; failed=1; break
         fi
@@ -493,7 +492,7 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
 fi
 
 mkdir -p "$LOG_DIR" 2>/dev/null || :
-trim_logs
+trim_logs || { echo "Error: cannot enforce log limits; refusing to create a new log" >&2; write_status failed "Log directory limits cannot be enforced" || :; send_telegram "Log directory limits cannot be enforced" || :; heartbeat fail; exit 2; }
 if [ "$COMMAND" != backup ]; then
     ( : >> "$LOG" ) || { echo "Error: cannot create ${LOG}" >&2; exit 2; }
 fi

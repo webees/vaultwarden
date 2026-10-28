@@ -18,9 +18,9 @@ Before any other audit, optimization, scoring, or completion work in a round, sc
 
 History: `33ccfc2`, `b9187d4`, `f34550e`, `8154030`, `3874f9d`, and `9c06b0b` repeatedly tightened persistent logs, directory limits, timeouts, and captured command output. `5cd1219` then reduced `log()` back to unbounded command substitution while keeping only downstream file truncation.
 
-Final decision: bound output at capture time and again before persistence. Command output flows through `tail -c` before shell memory or a temporary file can grow without limit; the persistent log is replaced atomically within its byte cap and temporary files are removed on success and failure. Capture, redaction, or normal write failures abort the operation instead of producing a false success. Failure-notification logging is explicitly best-effort so an unwritable log cannot suppress the alert; the operation still exits nonzero. Per-file and directory limits remain independent safeguards.
+Final decision: bound output at capture time and again before persistence. Command output flows through `tail -c` before shell memory or a temporary file can grow without limit; the persistent log is replaced atomically within its byte cap and temporary files are removed on success and failure. Capture, redaction, or normal write failures abort the operation instead of producing a false success. Log maintenance is checked before a new run log is created; if either the file or directory cap cannot be enforced, the command fails before backend work, records the failure, and never continues with only a warning. Per-file and directory limits remain independent safeguards.
 
-Regression gate: oversized command output, failed `tail`, leftover log temporaries, unsafe limits, an uncappable existing log, and write failures must all fail closed in `tests/runtime_smoke.py`. `scripts/restic.sh` must never return to the unbounded `body="$("$@" 2>&1)"` capture removed in `5cd1219`.
+Regression gate: oversized command output, failed `tail`, leftover log temporaries, unsafe limits, an uncappable existing log, an unmaintainable directory, and write failures must all fail closed in `tests/runtime_smoke.py`. The unmaintainable-directory case must prove that the backend is never called. `scripts/restic.sh` must never return to the unbounded `body="$("$@" 2>&1)"` capture removed in `5cd1219`.
 
 ## Outbound Network Bounds
 
@@ -50,9 +50,9 @@ Regression gate: isolated restore, corrupt output, symlink, missing file, sideca
 
 History: stale locks, marker ambiguity, and service recovery were repeatedly repaired in `0ab38a6`, `5f289fc`, `ff5c7d9`, `c6a0a3c`, `8a4ab80`, and `d4cd093` through `9fda30f`.
 
-Final decision: missing, unreadable, oversized, non-regular, stale, and in-flight backup states are distinct. Only the process holding the backup lock may publish `running`. Caddy and Supercronic restart after failure; Vaultwarden exit stops the container so Fly owns machine recovery.
+Final decision: missing, unreadable, oversized, non-regular, stale, and in-flight backup states are distinct. Status writes are atomic or fail without truncating the previous marker. Only the process holding the backup lock may publish `running`. Caddy and Supercronic restart after failure; Vaultwarden exit stops the container so Fly owns machine recovery.
 
-Regression gate: lock creation failure, unknown state, stale running marker, status write failure, forced Caddy restart, forced scheduler restart, and Vaultwarden exit are executable runtime cases.
+Regression gate: lock creation failure, unknown state, stale running marker, status write failure without marker corruption, forced Caddy restart, forced scheduler restart, and Vaultwarden exit are executable runtime cases. A mutation that restores the in-place status-write fallback must fail the repository contract.
 
 ## Runtime Harness Lifecycle
 

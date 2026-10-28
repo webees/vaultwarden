@@ -347,9 +347,12 @@ class RepositoryHygieneTest(unittest.TestCase):
             assert_recurring_goal_gate(self, weakened)
         self.assertIn("Bounded Diagnostics", decisions)
         self.assertIn("Outbound Network Bounds", decisions)
+        self.assertIn("Status writes are atomic or fail without truncating", decisions)
         self.assertIn("Runtime Harness Lifecycle", decisions)
         self.assertIn("Absence of a supported timeout command fails closed", decisions)
         self.assertIn("Simplification Rule", decisions)
+        self.assertNotIn('printf \'%s\' "$body" > "$STATUS_FILE"', restic)
+        self.assertIn("refusing to create a new log", restic)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_security_randomness_uses_operating_system_entropy(self) -> None:

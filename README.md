@@ -72,7 +72,7 @@ Auto-merge waits for required `validate`; the merged commit follows the same bui
 Backup runs hourly at `:17`; freshness checks run at `:45`, disk checks at `:35`, and verification and restore drills run monthly. SQLite `.backup` creates
 `/data/backup.bak`, then `PRAGMA integrity_check` validates it. Snapshots keep keys, attachments, and that consistent database copy; live SQLite files, `icon_cache`, status state, and the configured log directory are excluded.
 Retention is 24 hourly, 7 daily, 4 weekly, 3 monthly, and 3 yearly snapshots before prune. Every
-command is time-bounded, each run log is capped at 256 KiB, and the directory at 10 MiB.
+command is time-bounded, each run log is capped at 256 KiB, and the directory at 10 MiB; an unmaintainable cap refuses new work.
 
 ```bash
 fly ssh console --app "$FLY_APP" -C "/restic.sh {backup|snapshots|verify|restore-test|check-freshness|check-disk}"
