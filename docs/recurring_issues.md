@@ -2,7 +2,7 @@
 
 This file records defects that were fixed more than once, especially where a later simplification removed the fix. These are permanent invariants: a change that weakens one needs a failing regression test and an explicit replacement design first.
 
-Review basis: all 252 commits reachable at the latest audit were scanned on 2026-10-28. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
+Baseline history audit: all 253 commits reachable through `cbcb78f` were scanned on 2026-10-28; each later round must scan every commit reachable at its start. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
 
 ## Target-Mode Prompt
 
