@@ -17,7 +17,6 @@ WORKFLOW = Path(".github/workflows/dependency_updates.yml")
 BUILD_WORKFLOW = Path(".github/workflows/build_and_deploy.yml")
 EXPECTED_OPTIONS = {
     "none",
-    "audit",
     "check-freshness",
     "notify-test",
     "snapshots",
@@ -28,11 +27,9 @@ EXPECTED_OPTIONS = {
 EXPECTED_ALERT_NEEDS = {
     "check",
     "dependabot_automerge",
-    "production_operation",
-    "watchdog",
+    "fly_operation",
 }
 EXPECTED_COMMANDS = {
-    "audit": "/restic.sh audit",
     "check-freshness": "/restic.sh check-freshness",
     "notify-test": "/restic.sh notify-test",
     "snapshots": "/restic.sh snapshots",
@@ -90,12 +87,12 @@ def operation_body(workflow: dict[str, object]) -> str:
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
         raise AssertionError("workflow jobs are missing")
-    job = jobs.get("production_operation")
+    job = jobs.get("fly_operation")
     if not isinstance(job, dict):
-        raise AssertionError("production_operation job is missing")
+        raise AssertionError("fly_operation job is missing")
     steps = job.get("steps")
     if not isinstance(steps, list):
-        raise AssertionError("production_operation steps are missing")
+        raise AssertionError("fly_operation steps are missing")
     step = next(
         (item for item in steps if isinstance(item, dict) and item.get("id") == "operation"),
         None,
@@ -121,30 +118,6 @@ def auto_merge_body(workflow: dict[str, object]) -> str:
     )
     if not isinstance(step, dict) or not isinstance(step.get("run"), str):
         raise AssertionError("auto-merge step is missing")
-    return step["run"]
-
-
-def watchdog_body(workflow: dict[str, object]) -> str:
-    jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict):
-        raise AssertionError("workflow jobs are missing")
-    job = jobs.get("watchdog")
-    if not isinstance(job, dict):
-        raise AssertionError("watchdog job is missing")
-    steps = job.get("steps")
-    if not isinstance(steps, list):
-        raise AssertionError("watchdog steps are missing")
-    step = next(
-        (
-            item
-            for item in steps
-            if isinstance(item, dict)
-            and "/restic.sh check-freshness" in str(item.get("run", ""))
-        ),
-        None,
-    )
-    if not isinstance(step, dict) or not isinstance(step.get("run"), str):
-        raise AssertionError("watchdog heartbeat step is missing")
     return step["run"]
 
 
@@ -285,18 +258,7 @@ esac
             bin_dir / "curl",
             """#!/bin/sh
 printf '%s\n' "$*" > "$CURL_ARGS_FILE"
-output=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --output)
-      shift
-      output="$1"
-      ;;
-  esac
-  shift
-done
-[ -z "$output" ] || printf '%s' "$CURL_BODY" > "$output"
-printf '%s' "$CURL_STATUS"
+printf '%s\nHTTP_STATUS=%s\n' "$CURL_BODY" "$CURL_STATUS"
 printf '%s' "$CURL_STDERR" >&2
 exit "$CURL_EXIT"
 """,
@@ -379,7 +341,6 @@ class ProductionOperationTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = load_workflow()
         cls.body = operation_body(cls.workflow)
-        cls.watchdog_body = watchdog_body(cls.workflow)
         cls.notify_body = notify_body(cls.workflow)
         cls.workflow_env = cls.workflow.get("env")
         if not isinstance(cls.workflow_env, dict):
@@ -524,9 +485,8 @@ esac
 
         output = result.stderr + result.stdout
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not read the status checks", output)
+        self.assertNotIn("auto-merge armed", output)
         self.assertNotIn("test-token-must-not-leak", output)
-        self.assertNotIn("no status check registered", output)
 
     def test_auto_merge_distinguishes_api_errors_from_missing_checks(self) -> None:
         body = auto_merge_body(self.workflow)
@@ -575,9 +535,8 @@ esac
 
         output = result.stderr + result.stdout
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not read the status checks", output)
+        self.assertNotIn("auto-merge armed", output)
         self.assertNotIn("test-token-must-not-leak", output)
-        self.assertNotIn("no status check registered", output)
 
     def test_operation_uses_the_canonical_restic_command_only(self) -> None:
         self.assertNotIn("eval", self.body)
@@ -607,7 +566,7 @@ esac
     def test_production_output_is_redacted_and_exit_status_is_preserved(self) -> None:
         result, _ = run_operation(
             self.body,
-            "audit",
+            "check-freshness",
             workflow_env=self.workflow_env,
             fly_stdout=SENSITIVE_FLY_OUTPUT,
             fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
@@ -617,22 +576,12 @@ esac
         self.assertEqual(result.returncode, 19)
         self.assert_fly_output_is_redacted(result)
 
-    def test_watchdog_output_is_redacted_and_exit_status_is_preserved(self) -> None:
-        result, args = run_operation(
-            self.watchdog_body,
-            "",
-            workflow_env=self.workflow_env,
-            fly_stdout=SENSITIVE_FLY_OUTPUT,
-            fly_stderr=SAFE_FLY_DIAGNOSTIC + "\n",
-            fly_exit=17,
-        )
-
-        self.assertEqual(result.returncode, 17)
-        self.assertIn(
-            "ssh console --app test-app --command /restic.sh check-freshness",
-            args,
-        )
-        self.assert_fly_output_is_redacted(result)
+    def test_scheduled_and_post_build_runs_check_freshness(self) -> None:
+        job = self.workflow["jobs"]["fly_operation"]
+        self.assertIn("github.event_name == 'schedule'", job["if"])
+        self.assertIn("github.event_name == 'workflow_run'", job["if"])
+        operation = next(step for step in job["steps"] if step.get("id") == "operation")
+        self.assertIn("|| 'check-freshness'", operation["env"]["OPERATION"])
 
     def test_failure_alert_waits_for_every_work_job_and_is_bounded(self) -> None:
         jobs = self.workflow.get("jobs")
@@ -691,7 +640,7 @@ esac
         self.assertIn("parse_mode=HTML", curl_args)
         self.assertIn("<b>工作流失败</b>", curl_args)
         self.assertIn("<code>dependabot_automerge</code>: skipped", curl_args)
-        self.assertIn("<code>production_operation</code>: skipped", curl_args)
+        self.assertIn("<code>fly_operation</code>: skipped", curl_args)
         self.assertIn("查看 Actions 运行详情", curl_args)
         output = visible_notifier_output(result)
         self.assertNotIn(token, output)

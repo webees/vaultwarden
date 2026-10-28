@@ -3,8 +3,6 @@
 set -uo pipefail
 
 COMMAND="${1:-}"
-READ_ONLY_AUDIT=false
-[ "$COMMAND" = "audit" ] && READ_ONLY_AUDIT=true
 
 # `fly ssh console` starts as root; keep every artifact owned by the service.
 if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1; then
@@ -27,7 +25,6 @@ LIMIT_LOG_DIR_BYTES=67108864
 LIMIT_QUICK_TIMEOUT=3600
 LIMIT_LONG_TIMEOUT=86400
 LIMIT_BACKUP_AGE=31536000
-NOTIFY_ON_SUCCESS="${BACKUP_NOTIFY_ON_SUCCESS:-false}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 # Require a top-level `"ok":true` response.
@@ -68,19 +65,14 @@ if [ -e "$STATUS_FILE" ]; then
     if status_body="$(read_status_body)"; then
         STATUS_STATE="$(printf '%s\n' "$status_body" | sed -n 's/^state=//p' | head -n 1)"
         LAST_SUCCESS="$(printf '%s\n' "$status_body" | sed -n 's/^last_success=//p' | head -n 1)"
-        case "${LAST_SUCCESS:-}" in
-            '') STATUS_MARKER_ERROR=missing; LAST_SUCCESS=0 ;;
-            *[!0-9]*) STATUS_MARKER_ERROR=invalid; LAST_SUCCESS=0 ;;
-            *)
-                # Reject overflow; force decimal parsing for leading zeroes.
-                if [ "${#LAST_SUCCESS}" -gt 18 ]; then
-                    STATUS_MARKER_ERROR=invalid
-                    LAST_SUCCESS=0
-                else
-                    LAST_SUCCESS=$((10#$LAST_SUCCESS))
-                fi
-                ;;
-        esac
+        if [ -z "$LAST_SUCCESS" ]; then
+            STATUS_MARKER_ERROR=missing
+        elif [[ ! "$LAST_SUCCESS" =~ ^[0-9]+$ ]] || [ "${#LAST_SUCCESS}" -gt 18 ]; then
+            STATUS_MARKER_ERROR=invalid
+            LAST_SUCCESS=0
+        else
+            LAST_SUCCESS=$((10#$LAST_SUCCESS))
+        fi
     else
         read_rc=$?
         case "$read_rc" in
@@ -124,9 +116,7 @@ redact_raw() {
 }
 
 redact_file() {
-    local body
-    body="$(cat "$1")" || return 2
-    redact_raw "$body"
+    redact_raw "$(< "$1")"
 }
 
 log() {
@@ -134,11 +124,7 @@ log() {
     body="$("$@" 2>&1)"
     redacted="$(redact_raw "$body")"
     if [ -n "$redacted" ]; then
-        if [ "$READ_ONLY_AUDIT" = true ]; then
-            printf '%s\n' "$redacted"
-        else
-            printf '%s\n' "$redacted" | tee -a "$LOG"
-        fi
+        printf '%s\n' "$redacted" | tee -a "$LOG"
     fi
     return 0
 }
@@ -267,32 +253,21 @@ backup_is_running() {
 
 send_mail() {
     [ -z "${SMTP_TO:-}" ] && return 0
-    local out_file rc
-    out_file="$(mktemp "${TMPDIR:-/tmp}/restic-mail.XXXXXX")"
-    if [ -z "$out_file" ]; then
-        log echo -e "${R}Alert email failed (cannot record transport output)${X}"
-        return 1
-    fi
-    # Keep relay output off the shell heap and retain only a bounded tail.
-    (
-        exec 9>&-
+    local out rc
+    # The pipe drains relay output while retaining only a bounded tail.
+    out="$(
+        set -o pipefail
         sed 's/\x1b\[[0-9;]*m//g' "$LOG" | timeout 45 mail \
             -a "Content-Type: text/plain; charset=UTF-8" \
             -s "[$APP_NAME] $1" "$SMTP_TO" 2>&1 \
-            | tail -c "$MAX_LOG_BYTES" > "$out_file"
-    )
+            | tail -c "$MAX_LOG_BYTES"
+    )"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}Alert email sent${X}"
     else
         log echo -e "${R}Alert email failed (exit ${rc})${X}"
-        if [ -s "$out_file" ]; then
-            log redact_file "$out_file"
-        fi
-    fi
-    if ! rm -f "$out_file"; then
-        log echo -e "${Y}Warning: cannot remove mailer output file${X}"
-        return 1
+        [ -n "$out" ] && log redact_raw "$out"
     fi
     [ "$rc" -eq 0 ] && return 0
     return 1
@@ -300,45 +275,25 @@ send_mail() {
 
 send_telegram() {
     [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && return 0
-    local text="$1" out rc status body status_file tail_rc
-    status_file="$(mktemp "${TMPDIR:-/tmp}/restic-telegram-status.XXXXXX")"
-    if [ -z "$status_file" ]; then
-        log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
-        return 1
-    fi
-    if ! exec 3>"$status_file"; then
-        rm -f "$status_file" \
-            || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
-        log echo -e "${R}Telegram notification failed (cannot record transport status)${X}"
-        return 1
-    fi
+    local text="$1" out rc status body
     # Read the API error body; --fail would discard it. Actual success is checked below.
-    out="$(
-        {
-            curl -sS -m 10 --retry 2 \
-                -w '\n%{http_code}' \
-                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-                --data-urlencode "text=[$APP_NAME] ${text}" \
-                --data-urlencode "disable_web_page_preview=true" \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1
-            printf '%s\n' "$?" >&3
-        } | tail -c "$MAX_LOG_BYTES"
-    )"
-    tail_rc=$?
-    exec 3>&-
-    if [ "$tail_rc" -ne 0 ] || ! rc="$(cat "$status_file")"; then
-        rm -f "$status_file" \
-            || log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
-        log echo -e "${R}Telegram notification failed (cannot record response)${X}"
-        return 1
-    fi
-    if ! rm -f "$status_file"; then
-        log echo -e "${Y}Warning: cannot remove Telegram status file${X}"
-        return 1
-    fi
-    # curl appends HTTP status after the body; keep it separate.
-    status="${out##*$'\n'}"
-    body="${out%$'\n'*}"
+    out="$({
+        curl -sS -m 10 --retry 2 -w '\nHTTP_STATUS=%{http_code}' \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=[$APP_NAME] ${text}" \
+            --data-urlencode "disable_web_page_preview=true" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 2>&1
+        printf '\nCURL_RC=%s\n' "$?"
+    } | tail -c "$MAX_LOG_BYTES")"
+    rc="${out##*CURL_RC=}"
+    rc="${rc%%$'\n'*}"
+    out="${out%$'\n'CURL_RC=*}"
+    out="${out%$'\n'}"
+    status="$(printf '%s\n' "$out" | sed -n 's/^HTTP_STATUS=//p' | tail -n 1)"
+    body="$(printf '%s\n' "$out" | sed '/^HTTP_STATUS=/d')"
+    # API and proxy errors can echo either credential.
+    body="${body//$TELEGRAM_BOT_TOKEN/<redacted>}"
+    [ -n "$TELEGRAM_CHAT_ID" ] && body="${body//$TELEGRAM_CHAT_ID/<redacted>}"
     if [ "$rc" -eq 0 ] && [ "$status" = "200" ] \
         && [[ "$body" =~ $TELEGRAM_OK_PREFIX ]]; then
         log echo -e "${G}Telegram notification sent${X}"
@@ -347,14 +302,11 @@ send_telegram() {
     # Distinguish transport failures from API rejections.
     if [ "$rc" -ne 0 ]; then
         log echo -e "${R}Telegram notification failed (curl exit ${rc})${X}"
-    elif [ -n "$status" ] && [ "$status" != "000" ]; then
+    elif [ -n "$status" ] && [ "$status" != "000" ] && [[ "$status" =~ ^[0-9]+$ ]]; then
         log echo -e "${R}Telegram notification failed (HTTP ${status})${X}"
     else
         log echo -e "${R}Telegram notification failed (no HTTP response)${X}"
     fi
-    # API and proxy errors can echo either credential.
-    body="${body//$TELEGRAM_BOT_TOKEN/<redacted>}"
-    [ -n "$TELEGRAM_CHAT_ID" ] && body="${body//$TELEGRAM_CHAT_ID/<redacted>}"
     [ -n "$body" ] && log printf '%s\n' "$body"
     return 1
 }
@@ -489,28 +441,18 @@ require_restore_space() {
 
 # Capture only a bounded tail and always pass it through redaction.
 run_command() {
-    local show_success="$1" label="$2" timeout_seconds="$3" out_file raw_file rc
+    local show_success="$1" label="$2" timeout_seconds="$3" out_file rc
     shift 3
     CURRENT_STEP="$label"
     out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" \
         || die "Unable to create temporary output file"
-    raw_file="$(mktemp "${TMPDIR:-/tmp}/restic-raw.XXXXXX")" \
-        || { rm -f "$out_file"; die "Unable to create temporary output file"; }
     printf '%s' "$(redact_raw "${B}${label}${X} ")" | tee -a "$LOG"
-    # Bound the pipe, not files written by the command: recovery must remain able
-    # to produce a database or attachment larger than the diagnostic cap.
-    local raw_limit=$((MAX_LOG_BYTES * 8))
     rc=0
     (
-        # Do not leak the backup lock into either side of the pipeline.
         exec 9>&-
-        timed "$timeout_seconds" "$@" 2>&1 | tail -c "$raw_limit" > "$raw_file"
+        set -o pipefail
+        timed "$timeout_seconds" "$@" 2>&1 | tail -c "$MAX_LOG_BYTES" > "$out_file"
     ) || rc=$?
-    if ! tail -c "$MAX_LOG_BYTES" "$raw_file" > "$out_file"; then
-        rm -f "$raw_file" "$out_file" || :
-        die "Unable to read the bounded command output"
-    fi
-    rm -f "$raw_file" || log echo -e "${Y}Warning: cannot remove temporary command output${X}"
     if [ "$rc" -eq 0 ]; then
         log echo -e "${G}✓${X}"
         if [ "$show_success" = true ] && [ -s "$out_file" ]; then
@@ -678,15 +620,12 @@ backup() {
         exit 2
     fi
     log echo -e "${G}Backup process complete ✨${X}"
-    # Keep hourly noise on Telegram; email is reserved for rare checks.
+    # Hourly success is silent; alerts are reserved for failures and warnings.
     if [ -n "$trim_message" ]; then
         heartbeat fail
         send_telegram "Backup succeeded with warnings" || :
     else
         heartbeat ok
-        if [ "$NOTIFY_ON_SUCCESS" = "true" ]; then
-            send_telegram "Backup succeeded" || :
-        fi
     fi
 }
 
@@ -935,128 +874,6 @@ check_disk() {
     guard_failure "Data volume is ${used_percent}% full" "Data volume is ${used_percent}% full"
 }
 
-audit() {
-    local failed=0 file_count log_bytes bad_files dir_meta status_meta check_status
-    local used_percent available_kb marker_state now age detail lock_state
-
-    record_audit() {
-        local result="$1" label="$2" detail="$3"
-        if [ "$result" -eq 0 ]; then
-            log echo -e "${G}✓ ${label}: ${detail}${X}"
-        else
-            failed=$((failed + 1))
-            log echo -e "${R}✗ ${label}: ${detail}${X}"
-        fi
-    }
-
-    if [ -L "$LOG_DIR" ] || [ ! -d "$LOG_DIR" ]; then
-        record_audit 1 "log directory" "not a real directory"
-    else
-        if dir_meta="$(stat -c '%U %a' "$LOG_DIR" 2>/dev/null)"; then
-            check_status=0
-            [ "$dir_meta" = "vaultwarden 700" ] || check_status=1
-            record_audit "$check_status" "log directory" "owner/mode=${dir_meta}"
-        else
-            record_audit 1 "log directory" "metadata unreadable"
-        fi
-
-        if log_bytes="$(log_dir_size)"; then
-            check_status=0
-            [ "$log_bytes" -le "$MAX_LOG_DIR_BYTES" ] || check_status=1
-            record_audit "$check_status" "log bytes" "${log_bytes}/${MAX_LOG_DIR_BYTES}"
-        else
-            record_audit 1 "log bytes" "unreadable"
-        fi
-
-        if file_count="$(find "$LOG_DIR" -maxdepth 1 -type f ! -name backup.lock -print | wc -l)"; then
-            record_audit 0 "log files" "$file_count"
-        else
-            record_audit 1 "log files" "unreadable"
-        fi
-
-        if bad_files="$(find "$LOG_DIR" -maxdepth 1 -type f \
-            -exec stat -c '%U %a' {} + 2>/dev/null \
-            | awk '$1 != "vaultwarden" || $2 != "600" {count++} END {print count + 0}')"; then
-            check_status=0
-            [ "$bad_files" -eq 0 ] || check_status=1
-            record_audit "$check_status" "log ownership" "noncompliant=${bad_files}"
-        else
-            record_audit 1 "log ownership" "metadata unreadable"
-        fi
-
-        if [ -e "$LOG_DIR/backup.lock" ] && ! is_regular_file "$LOG_DIR/backup.lock"; then
-            record_audit 1 "backup lock" "not a regular file"
-        else
-            record_audit 0 "backup lock" "regular-or-absent"
-        fi
-    fi
-
-    if ! is_regular_file "$STATUS_FILE"; then
-        record_audit 1 "status marker" "not a regular file"
-    elif status_meta="$(stat -c '%U %a' "$STATUS_FILE" 2>/dev/null)"; then
-        check_status=0
-        [ "$status_meta" = "vaultwarden 600" ] || check_status=1
-        record_audit "$check_status" "status marker" "owner/mode=${status_meta}"
-    else
-        record_audit 1 "status marker" "metadata unreadable"
-    fi
-
-    marker_state="$STATUS_STATE"
-    case "$STATUS_MARKER_ERROR:$marker_state" in
-        :ok) record_audit 0 "status state" "$marker_state" ;;
-        :running)
-            # A `running` marker is healthy only while its lock is held.
-            backup_is_running
-            lock_state=$?
-            case "$lock_state" in
-                0) record_audit 0 "status state" "running (lock held)" ;;
-                1) record_audit 1 "status state" "running without a lock holder" ;;
-                *) record_audit 1 "status state" "running with an uninspectable lock" ;;
-            esac
-            ;;
-        ':failed' ) record_audit 1 "status state" "failed" ;;
-        ':unknown' ) record_audit 1 "status state" "unknown" ;;
-        :*) record_audit 1 "status state" "unusable" ;;
-        *) record_audit 1 "status state" "unreadable" ;;
-    esac
-
-    now="$(date -u +%s)"
-    if [ "$STATUS_MARKER_ERROR" != "" ] || [ "$LAST_SUCCESS" -eq 0 ]; then
-        record_audit 1 "backup age" "no usable success timestamp"
-    else
-        age=$((now - LAST_SUCCESS))
-        if [ "$age" -lt 0 ]; then
-            record_audit 1 "backup age" "timestamp is in the future"
-        else
-            check_status=0
-            [ "$age" -le "${BACKUP_MAX_AGE:-7200}" ] || check_status=1
-            record_audit "$check_status" "backup age" "${age}s/${BACKUP_MAX_AGE:-7200}s"
-        fi
-    fi
-
-    if detail="$(df -Pk "$DATA" 2>/dev/null | awk 'NR == 2 {gsub(/%/, "", $5); print $5, $4}')"; then
-        used_percent="${detail%% *}"
-        available_kb="${detail#* }"
-        case "${used_percent}${available_kb}" in
-            ''|*[!0-9]*) record_audit 1 "volume space" "unreadable" ;;
-            *)
-                check_status=0
-                [ "$used_percent" -lt "${BACKUP_MAX_USAGE_PERCENT:-85}" ] || check_status=1
-                record_audit "$check_status" "volume space" \
-                    "used=${used_percent}% available=${available_kb}KiB"
-                ;;
-        esac
-    else
-        record_audit 1 "volume space" "unreadable"
-    fi
-
-    if [ "$failed" -ne 0 ]; then
-        log echo -e "${R}Production audit failed (${failed} checks)${X}"
-        exit 2
-    fi
-    log echo -e "${G}Production audit passed${X}"
-}
-
 require_bounded_int RESTIC_LOG_MAX_BYTES "$MAX_LOG_BYTES" "$LIMIT_LOG_BYTES"
 require_bounded_int RESTIC_LOG_DIR_MAX_BYTES "$MAX_LOG_DIR_BYTES" "$LIMIT_LOG_DIR_BYTES"
 require_bounded_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT" "$LIMIT_QUICK_TIMEOUT"
@@ -1067,13 +884,6 @@ if [ "$MAX_LOG_BYTES" -gt "$MAX_LOG_DIR_BYTES" ]; then
     echo "Error: RESTIC_LOG_MAX_BYTES must not exceed RESTIC_LOG_DIR_MAX_BYTES, got '${MAX_LOG_BYTES}' greater than '${MAX_LOG_DIR_BYTES}'" >&2
     exit 2
 fi
-case "$NOTIFY_ON_SUCCESS" in
-    true|false) ;;
-    *)
-        echo "Error: BACKUP_NOTIFY_ON_SUCCESS must be true or false, got '${NOTIFY_ON_SUCCESS}'" >&2
-        exit 2
-        ;;
-esac
 if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
         echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2
@@ -1089,15 +899,13 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
     }
 fi
 
-if [ "$READ_ONLY_AUDIT" != true ]; then
-    mkdir -p "$LOG_DIR" 2>/dev/null || true
-    trim_logs
-    check_audit_trail
-fi
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+trim_logs
+check_audit_trail
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
     case "$COMMAND" in
-        audit|check-freshness|check-disk|notify-test|'')
+        check-freshness|check-disk|notify-test|'')
             # Readiness guards do not need repository credentials.
             ;;
         backup)
@@ -1117,7 +925,6 @@ fi
 
 case "$COMMAND" in
     backup)          backup ;;
-    audit)           audit ;;
     check-freshness) check_freshness ;;
     check-disk)      check_disk ;;
     notify-test)     notify_test ;;
@@ -1125,5 +932,5 @@ case "$COMMAND" in
     restore-test)    restore_test "${2:-}" ;;
     snapshots)       clear_stale_locks; run_visible "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
     verify)          verify ;;
-    *)               echo "Usage: $0 {backup|audit|check-freshness|check-disk|notify-test|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
+    *)               echo "Usage: $0 {backup|check-freshness|check-disk|notify-test|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac

@@ -69,7 +69,7 @@ exit "$MAIL_EXIT"
             bin_dir / "curl",
             """#!/bin/sh
 printf '%s\n' "$*" > "$CURL_ARGS_FILE"
-printf '%s\n%s\n' "$CURL_BODY" "$CURL_STATUS"
+printf '%s\nHTTP_STATUS=%s\n' "$CURL_BODY" "$CURL_STATUS"
 exit "$CURL_EXIT"
 """,
         )
