@@ -1,18 +1,10 @@
 #!/bin/bash
 
-# Write the SMTP config as root, then hand it to the unprivileged user.
 configure_smtp() {
     umask 077
     if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ]; then
-        # Vaultwarden refuses to start when SMTP_HOST is set without SMTP_FROM,
-        # while the backup script's msmtp config already defaults the sender to
-        # SMTP_TO. Give the app the same default so enabling alerts (which only
-        # needs HOST and TO here) cannot take the service down.
         export SMTP_FROM="${SMTP_FROM:-$SMTP_TO}"
 
-        # Each value becomes one msmtprc line, so a newline would inject extra
-        # directives. Refuse before writing anything instead of producing a
-        # surprising config.
         for value in "$SMTP_HOST" "$SMTP_TO" "$SMTP_FROM" "${SMTP_USERNAME:-}" \
             "${SMTP_PASSWORD:-}" "${SMTP_PORT:-587}" "${SMTP_TIMEOUT:-15}"; do
             case "$value" in
@@ -37,8 +29,6 @@ configure_smtp() {
             fi
             printf 'tls on\n'
             printf 'tls_trust_file /etc/ssl/certs/ca-certificates.crt\n'
-            # msmtp's delivery log records recipient and relay details. The
-            # caller already records success or failure without those fields.
             printf 'timeout %s\n' "${SMTP_TIMEOUT:-15}"
             printf 'account default\n'
             printf 'host %s\n' "$SMTP_HOST"
