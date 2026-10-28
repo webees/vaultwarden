@@ -95,7 +95,6 @@ log() {
     body="$("$@" 2>&1)"
     redacted="$(redact "$body")"
     [ -z "$redacted" ] || printf '%s\n' "$redacted" | tee -a "$LOG"
-    return 0
 }
 
 write_status() {
@@ -184,8 +183,9 @@ send_mail() {
     local out rc
     out="$(set -o pipefail; timeout 45 mail -a "Content-Type: text/plain; charset=UTF-8" -s "[$APP_NAME] $1" "$SMTP_TO" < "$LOG" 2>&1 | tail -c "$MAX_LOG_BYTES")"
     rc=$?
-    if [ "$rc" -eq 0 ]; then log echo "Alert email sent"; else log echo "Alert email failed (exit ${rc})"; [ -z "$out" ] || log redact "$out"; fi
-    [ "$rc" -eq 0 ]
+    if [ "$rc" -eq 0 ]; then log echo "Alert email sent"; return 0; fi
+    log echo "Alert email failed (exit ${rc})"; [ -z "$out" ] || log redact "$out"
+    return 1
 }
 
 send_telegram() {
@@ -253,7 +253,6 @@ cleanup_restore_tmp() {
     finish_restore_boot_log
     [ -z "$RESTORE_TMP_DIR" ] || rm -rf "$RESTORE_TMP_DIR"
     [ -z "$RESTORE_BOOT_LOG" ] || rm -f "$RESTORE_BOOT_LOG"
-    [ -z "$RESTORE_BOOT_PIPE" ] || rm -f "$RESTORE_BOOT_PIPE"
     RESTORE_TMP_DIR="" RESTORE_BOOT_LOG="" RESTORE_BOOT_PIPE="" RESTORE_BOOT_READER=""
 }
 
@@ -305,7 +304,6 @@ run_command() {
 }
 
 run() { run_command false "$@"; }
-run_visible() { run_command true "$@"; }
 
 sqlite_integrity_check() {
     # shellcheck disable=SC2016
@@ -385,7 +383,10 @@ restore_test() {
     target="$RESTORE_TMP_DIR" boot_log="$RESTORE_BOOT_LOG"
     require_restore_space "$snapshot"
     run "Restore drill" "$LONG_TIMEOUT" restic restore --target "$target" -- "$snapshot"
-    [ -f "$target/data/backup.bak" ] && [ -f "$target/data/rsa_key.pem" ] || { log echo "Restore drill is missing expected files"; exit 2; }
+    if ! [ -f "$target/data/backup.bak" ] || ! [ -f "$target/data/rsa_key.pem" ]; then
+        log echo "Restore drill is missing expected files"
+        exit 2
+    fi
     sqlite_integrity_check "Restore SQLite check" "$target/data/backup.bak"
     sqlite3 "$target/data/backup.bak" .tables 2>/dev/null | grep -q . || { log echo "Restored database has no tables"; exit 2; }
     cp "$target/data/backup.bak" "$target/data/db.sqlite3"
@@ -481,7 +482,10 @@ require_bounded_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}" "$LIMIT_BACKUP_AGE"
 require_bounded_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}" 100
 [ "$MAX_LOG_BYTES" -le "$MAX_LOG_DIR_BYTES" ] || { echo "Error: RESTIC_LOG_MAX_BYTES must not exceed RESTIC_LOG_DIR_MAX_BYTES, got '${MAX_LOG_BYTES}' greater than '${MAX_LOG_DIR_BYTES}'" >&2; exit 2; }
 if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
-    [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || { echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2; exit 2; }
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+        echo "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set together" >&2
+        exit 2
+    fi
     [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || { echo "Error: TELEGRAM_BOT_TOKEN has an invalid format" >&2; exit 2; }
     [[ "$TELEGRAM_CHAT_ID" =~ ^(@[A-Za-z0-9_]+|-?[0-9]+)$ ]] || { echo "Error: TELEGRAM_CHAT_ID has an invalid format" >&2; exit 2; }
 fi
@@ -505,7 +509,7 @@ case "$COMMAND" in
     notify-test) notify_test ;;
     restore) restore "${2:-}" ;;
     restore-test) restore_test "${2:-}" ;;
-    snapshots) clear_stale_locks; run_visible "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
+    snapshots) clear_stale_locks; run_command true "Snapshot list" "$QUICK_TIMEOUT" restic snapshots ;;
     verify) verify ;;
     *) echo "Usage: $0 {backup|check-freshness|check-disk|notify-test|restore <id>|restore-test [id]|snapshots|verify}"; exit 1 ;;
 esac
