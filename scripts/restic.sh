@@ -462,11 +462,15 @@ require_restore_space() {
     fi
     needed_bytes="$(printf '%s\n' "$stats_json" \
         | sed -n 's/.*"total_size": *\([0-9][0-9]*\).*/\1/p' | head -n 1)"
-    [[ "$needed_bytes" =~ ^(0|[1-9][0-9]{0,15})$ ]] || {
+    [[ "$needed_bytes" =~ ^[0-9]+$ ]] || {
         log echo -e "${R}Unable to size snapshot ${snapshot}${X}"
         [ -n "$stats_json" ] && log redact_raw "$stats_json"
         exit 2
     }
+    if [[ ! "$needed_bytes" =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#needed_bytes}" -gt 16 ]; then
+        log echo -e "${R}Unable to use snapshot ${snapshot}: unusable snapshot size${X}"
+        exit 2
+    fi
     # A failed df is unknown, not a full disk.
     if ! free_kb="$(df -Pk "$tmp_parent" | awk 'NR == 2 {print $4}')"; then
         log echo -e "${R}Unable to read free space for the restore drill${X}"
