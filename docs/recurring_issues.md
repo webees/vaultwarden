@@ -18,7 +18,7 @@ Before any other audit, optimization, scoring, or completion work in a round, sc
 
 ## Bounded Diagnostics
 
-History: `33ccfc2`, `b9187d4`, `f34550e`, `8154030`, `3874f9d`, and `9c06b0b` repeatedly tightened persistent logs, directory limits, timeouts, and captured command output. `5cd1219` then reduced `log()` back to unbounded command substitution while keeping only downstream file truncation. `6751d9e` restored fail-closed trimming only before a backup; `655e499` found the post-backend path still downgraded the same failure to a warning and later recorded `state=ok`.
+History: `33ccfc2`, `b9187d4`, `f34550e`, `8154030`, `3874f9d`, and `9c06b0b` repeatedly tightened persistent logs, directory limits, timeouts, and captured command output. `5cd1219` then reduced `log()` back to unbounded command substitution while keeping only downstream file truncation. `6751d9e` restored fail-closed trimming only before a backup; `a604efe` found the post-backend path still downgraded the same failure to a warning and later recorded `state=ok`.
 
 Final decision: bound output at capture time and again before persistence. Command output flows through `tail -c` before shell memory or a temporary file can grow without limit; the persistent log is replaced atomically within its byte cap and temporary files are removed on success and failure. Capture, redaction, or normal write failures abort the operation instead of producing a false success. Log maintenance is enforced on every path that can create or append data: before a new run log is created and again after backend work. Failure at either point aborts, records a failed operation, alerts, and never continues with only a warning or `state=ok`. Per-file and directory limits remain independent safeguards.
 
@@ -34,7 +34,7 @@ Regression gate: success must prove the timeout wrapper is called; missing wrapp
 
 ## One Address Policy
 
-History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a034cf`; address validation was centralized in `f102ad2` and hardened in `ba7f452`. No earlier commit rejected numeric IPv4 forms and later removed that exact guard, but the pre-`f102ad2` design had no syntax validator and the new central validator still admitted dotted, decimal, and hexadecimal numeric forms. The recurrence is incomplete centralization and simplification, not a deleted numeric-IP patch.
+History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a034cf`; address validation was centralized in `0b62eb3` and hardened in `f425dd2`. No earlier commit rejected numeric IPv4 forms and later removed that exact guard, but the pre-`0b62eb3` design had no syntax validator and the new central validator still admitted dotted, decimal, and hexadecimal numeric forms. The recurrence is incomplete centralization and simplification, not a deleted numeric-IP patch.
 
 Final decision: `scripts/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Hosts are DNS-only: IPv4 literals and numeric IPv4-compatible forms are rejected alongside bracketed IPv6, while names such as `version.127.example` remain valid. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
 
