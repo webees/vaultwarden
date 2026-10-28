@@ -663,6 +663,66 @@ grep -Fq 'message=Log directory limits cannot be enforced' /data/backup-status.t
     )
 
 
+def check_post_backup_trim_failure(image: str) -> None:
+    """A log cap that becomes unmaintainable during backup must not pass."""
+    script = r"""
+set -eu
+rm -rf /data/* /tmp/stub /tmp/post-trim.log /tmp/heartbeat-calls
+mkdir -p /data/restic-logs /tmp/stub; chown vaultwarden:vaultwarden /data /data/restic-logs
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=seed\n' >/data/backup-status.txt; chown vaultwarden:vaultwarden /data/backup-status.txt
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in' \
+    '    *forget*--prune*) printf x >/data/restic-logs/unreadable.log; chmod 000 /data/restic-logs/unreadable.log ;;' \
+    'esac' \
+    'exit 0' >/tmp/stub/restic
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in *"PRAGMA integrity_check"*) printf "ok\n" ;; esac' \
+    'exit 0' >/tmp/stub/sqlite3
+printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$*" in' \
+    '    *api.telegram.org*) printf "%s\nHTTP_STATUS=200\n" "{\"ok\":true}" ;;' \
+    '    *health.invalid/*/fail*) printf failed >>/tmp/heartbeat-calls ;;' \
+    'esac' >/tmp/stub/curl
+chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1048576 \
+    TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' HEALTHCHECK_URL=https://health.invalid/ping \
+    /restic.sh backup >/tmp/post-trim.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fq 'cannot enforce the per-file log cap' /tmp/post-trim.log
+grep -Fq 'cannot enforce log limits after backup' /tmp/post-trim.log
+grep -Fq 'state=failed' /data/backup-status.txt
+grep -Fq 'message=Task failed: Log directory limits cannot be enforced after backup' /data/backup-status.txt
+! grep -Fq 'state=ok' /data/backup-status.txt
+grep -Fq 'last_success=0' /data/backup-status.txt
+[ "$(cat /tmp/heartbeat-calls)" = failed ]
+
+# Removing the authoritative post-backup guard must turn the same run into a
+# false success. This prevents the runtime check from passing for an unrelated
+# reason such as a preflight failure.
+sed 's/^    if ! trim_logs; then$/    if false; then/' /restic.sh >/tmp/restic-mutated.sh
+chmod +x /tmp/restic-mutated.sh
+rm -rf /data/*; mkdir -p /data/restic-logs; chown vaultwarden:vaultwarden /data /data/restic-logs
+printf 'state=unknown\nupdated_at=0\nlast_success=0\nmessage=seed\n' >/data/backup-status.txt; chown vaultwarden:vaultwarden /data/backup-status.txt
+rm -f /tmp/heartbeat-calls
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1048576 \
+    HEALTHCHECK_URL=https://health.invalid/ping \
+    /tmp/restic-mutated.sh backup >/tmp/post-trim-mutated.log 2>&1 || rc=$?
+[ "$rc" -eq 0 ]
+grep -Fq 'state=ok' /data/backup-status.txt
+"""
+    expect_shell(
+        image,
+        script,
+        "a post-backup log maintenance failure fails closed and its mutation is detected",
+        "a backup recorded success after post-backup log maintenance failed",
+    )
+
+
 def check_status_write_failure(image: str) -> None:
     """A backup must fail closed when its monitoring marker cannot be updated."""
     script = r"""
@@ -1911,6 +1971,7 @@ def main() -> int:
     check_sqlite_integrity_contract(image)
     check_restic_output_and_limit_failures(image)
     check_log_rotation_failure(image)
+    check_post_backup_trim_failure(image)
     check_status_write_failure(image)
     check_app_exit_stops_stack(image)
     check_required_tools(image)

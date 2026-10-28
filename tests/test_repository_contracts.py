@@ -345,11 +345,21 @@ class RepositoryHygieneTest(unittest.TestCase):
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
         start = restic.index("log() {")
         block = restic[start:restic.index("\n}\n", start) + 3]
+        post_trim_guard = (
+            "    if ! trim_logs; then\n"
+            '        CURRENT_STEP="Log directory limits cannot be enforced after backup"; echo "Error: cannot enforce log limits after backup" >&2\n'
+            "        exit 2\n"
+            "    fi"
+        )
 
         self.assertIn('tail -c "$MAX_LOG_BYTES"', block)
         self.assertIn("write_log_entry", block)
         self.assertNotIn('body="$("$@" 2>&1)"', block)
         self.assertNotIn("eval ", restic)
+        self.assertEqual(restic.count(post_trim_guard), 1)
+        self.assertNotIn('trim_logs || warning=" (log trim failed)"', restic)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurring_goal_gate(self, decisions)
         assert_recurring_class_contracts(self, decisions)
