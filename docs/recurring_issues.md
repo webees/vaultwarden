@@ -54,6 +54,14 @@ Final decision: missing, unreadable, oversized, non-regular, stale, and in-fligh
 
 Regression gate: lock creation failure, unknown state, stale running marker, status write failure, forced Caddy restart, forced scheduler restart, and Vaultwarden exit are executable runtime cases.
 
+## Runtime Harness Lifecycle
+
+History: Validate run `40674101240` reported a shell case failure with no container output while the same case passed repeatedly. Container-runtime startup failures can therefore be mistaken for product assertions when existence is judged only by the process exit code.
+
+Final decision: each isolated shell case emits start and end lifecycle markers. A missing end marker with a nonzero Docker exit is retried at most three times as infrastructure failure. An end marker with a nonzero status fails immediately as a product assertion, and a clean exit without both terminal markers fails closed as a harness error. Infrastructure retries may never convert an executed failed assertion into a pass.
+
+Regression gate: interrupted-attempt recovery, immediate assertion failure, exhausted retry failure, and clean-exit marker loss are covered deterministically in `tests/test_repository_contracts.py`, followed by repeated execution of the affected runtime case.
+
 ## Cloudflare Ranges
 
 History: ranges were hard-coded in `59ca5a6`, automated in `a911a74`, hardened in `748c7e8` and `93a1cb5`, and corrected for repository-relative execution in `f5738aa`.

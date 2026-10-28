@@ -95,14 +95,46 @@ def shell_in(
 
 
 def expect_shell(image: str, script: str, success: str, failure: str) -> None:
-    """Run one isolated image case and report a concise result."""
-    result = docker(
-        "run", "--rm", "--entrypoint", "sh", image, "-c", script, check=False
-    )
-    if result.returncode == 0:
-        suite.ok(success)
-        return
-    suite.bad(failure)
+    """Run one isolated image case, retrying only when an attempt never ends."""
+    started = "__runtime_smoke_started__"
+    ended = "__runtime_smoke_ended__="
+    passed = "__runtime_smoke_passed__"
+    attempts = 3
+    wrapped = "\n".join((
+        f"printf '%s\\n' '{started}'",
+        "status=0",
+        "(",
+        script,
+        ") || status=$?",
+        f"printf '%s%s\\n' '{ended}' \"$status\"",
+        f"[ \"$status\" -ne 0 ] || printf '%s\\n' '{passed}'",
+        "exit \"$status\"",
+        "",
+    ))
+    for _ in range(attempts):
+        result = docker(
+            "run", "--rm", "--entrypoint", "sh", image, "-c", wrapped, check=False
+        )
+        output = combined(result)
+        status_match = re.search(rf"^{re.escape(ended)}([0-9]+)$", output, re.MULTILINE)
+        passed_match = re.search(rf"^{re.escape(passed)}$", output, re.MULTILINE)
+        if (
+            status_match
+            and passed_match
+            and result.returncode == 0
+            and status_match.group(1) == "0"
+        ):
+            suite.ok(success)
+            return
+        if status_match:
+            suite.bad(failure)
+            print(output, file=sys.stderr)
+            return
+        if result.returncode == 0:
+            suite.bad(f"{failure}: shell case exited without lifecycle markers")
+            print(output, file=sys.stderr)
+            return
+    suite.bad(f"{failure}: shell case was interrupted after {attempts} attempts")
     print(combined(result), file=sys.stderr)
 
 
