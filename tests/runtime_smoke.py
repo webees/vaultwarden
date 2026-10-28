@@ -453,7 +453,7 @@ fi
 
 
 def check_snapshot_argument_boundaries(image: str) -> None:
-    """Snapshot references must never be parsed as restic options."""
+    """Snapshot references stay bounded, and the drill target stays isolated."""
     script = r"""
 set -eu
 chown -R vaultwarden:vaultwarden /data
@@ -488,12 +488,24 @@ if ! grep -Eq '^restore --target /tmp/restic-restore\..* -- --help$' /tmp/restic
     cat /tmp/restic-args /tmp/restore-test-arg.log >&2
     exit 1
 fi
+
+# Removing the isolated target must send the same restore into live data.
+sed 's|target="$RESTORE_TMP_DIR"|target=/data|' /restic.sh >/tmp/restic-live-target.sh
+grep -Fq 'target=/data boot_log=' /tmp/restic-live-target.sh
+chmod +x /tmp/restic-live-target.sh
+rm -f /tmp/restic-args
+rc=0
+RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    PATH="/tmp/stub:$PATH" /tmp/restic-live-target.sh restore-test --help \
+    >/tmp/restore-isolation-mutation.log 2>&1 || rc=$?
+[ "$rc" -eq 2 ]
+grep -Fxq 'restore --target /data -- --help' /tmp/restic-args
 """
     expect_shell(
         image,
         script,
-        "snapshot references stay behind the restic option boundary",
-        "a snapshot reference is parsed as a restic option",
+        "snapshot references stay bounded and the restore drill mutation reaches live data",
+        "a snapshot reference was parsed as an option or the restore target was not isolated",
     )
 
 
