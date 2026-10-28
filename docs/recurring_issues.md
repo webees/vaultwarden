@@ -72,10 +72,16 @@ Regression gate: network failure, malformed or truncated lists, family mismatch,
 
 ## Privacy And Public History
 
+History: credential and identifier leakage required repeated repairs in `0ab0f23`, `608c11d`, `80e930d`, `343cd3d`, `034f35f`, and `c690cac`. History rewriting removed previously reachable values instead of leaving them hidden only in current files.
+
 Final decision: never add deployment domains, personal addresses, credentials, tokens, bucket identifiers, private network addresses, or machine identifiers to source, tests, workflow data, commit messages, or artifacts. Synthetic test values must use reserved documentation ranges or dynamic construction.
 
 Regression gate: current tracked files are scanned automatically. Reachable history is scanned separately; public provider metadata, Cloudflare's public CIDRs, reserved documentation addresses, and explicit placeholders are classified rather than counted as secrets.
 
 ## Simplification Rule
 
-Line-count reduction is not evidence of quality. A simplification may remove duplication only after preserving: authority boundaries, fail-closed behavior, bounded resource use, atomic state transitions, rollback paths, and the negative control that proves each guard is active. This rule takes precedence over further compaction.
+History: `667d36c`, `97a0e8e`, `376f55f`, `5cd1219`, and `6751d9e` show that line-count reduction repeatedly weakened output bounds, timeout fallbacks, and log or status failure handling until the authoritative guards and their tests were restored.
+
+Final decision: line-count reduction is not evidence of quality. A simplification may remove duplication only after preserving authority boundaries, fail-closed behavior, bounded resource use, atomic state transitions, rollback paths, and the negative control that proves each guard is active. This rule takes precedence over further compaction.
+
+Regression gate: every recurring class must retain History, Final decision, and Regression gate sections, and repository tests must fail if a class or required field is removed. Simplification must also preserve every existing class gate and mutation control.

@@ -28,6 +28,8 @@ RECURRING_GOAL_GATE_CLAUSES = (
     "scan every recorded failure class below",
     "git log -S",
     "git log -G",
+    "classify it as never fixed, regressed after simplification, or partially fixed",
+    "identify the one authoritative implementation",
     "restore that invariant in the round's first patch",
     "positive, boundary, negative, and mutation-control tests",
     "The mutation control must fail when the authoritative guard is removed",
@@ -56,6 +58,18 @@ def assert_recurring_goal_gate(case: unittest.TestCase, text: str) -> None:
     case.assertIn("Every-Round Goal Gate", text)
     for clause in RECURRING_GOAL_GATE_CLAUSES:
         case.assertIn(clause, text)
+
+
+def assert_recurring_class_contracts(case: unittest.TestCase, text: str) -> None:
+    sections = re.split(r"^## (.+)$", text, flags=re.MULTILINE)
+    classes = 0
+    for title, body in zip(sections[1::2], sections[2::2]):
+        if title == "Every-Round Goal Gate":
+            continue
+        classes += 1
+        for required in ("History:", "Final decision:", "Regression gate:"):
+            case.assertIn(required, body, f"{title} is missing {required}")
+    case.assertGreater(classes, 0, "no recurring classes were documented")
 
 
 class DependencyResolverTest(unittest.TestCase):
@@ -338,6 +352,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertNotIn("eval ", restic)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurring_goal_gate(self, decisions)
+        assert_recurring_class_contracts(self, decisions)
         weakened = decisions.replace(
             "scan every recorded failure class below",
             "scan only the failure class currently being changed",
@@ -345,6 +360,13 @@ class RepositoryHygieneTest(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             assert_recurring_goal_gate(self, weakened)
+        weakened = decisions.replace(
+            "Regression gate: every recurring class must retain",
+            "Check: every recurring class must retain",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_recurring_class_contracts(self, weakened)
         self.assertIn("Bounded Diagnostics", decisions)
         self.assertIn("Outbound Network Bounds", decisions)
         self.assertIn("Status writes are atomic or fail without truncating", decisions)
