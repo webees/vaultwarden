@@ -110,11 +110,11 @@ Cloudflare ranges are validated and synchronized from the official IPv4 and IPv6
 traffic still trusts `Fly-Client-IP`. Reserved paths are checked without following symlinks, and all
 runtime processes run as unprivileged `vaultwarden`.
 
-Report vulnerabilities privately through GitHub Security Advisories. Do not open a public issue or include
-production credentials, domains, addresses, or logs in a report.
+Recurring defects and the guards that must not be simplified away are recorded in [docs/recurring_issues.md](docs/recurring_issues.md).
 
-Settings saved by the admin panel live in `/data/config.json` and override matching environment variables. The entrypoint reports when `admin_token`,
-`signups_allowed`, or any `smtp_*` key wins over a Fly secret. Prefer Fly secrets and remove those keys from `/data/config.json` before restart.
+Follow [SECURITY.md](SECURITY.md): report privately and never include credentials, production identifiers, or unredacted logs.
+
+Settings in `/data/config.json` override matching environment variables. The entrypoint reports when `admin_token`, `signups_allowed`, or any `smtp_*` key wins over a Fly secret; prefer Fly secrets and remove those keys before restart.
 
 ## Troubleshooting
 
@@ -137,10 +137,10 @@ python3 tests/runtime_smoke.py vaultwarden:local
 python3 tests/performance.py vaultwarden:local
 ```
 
-`tests/runtime_smoke.py` boots the image and validates process supervision, proxy boundaries, backup paths,
-SMTP delivery, log limits, SQLite integrity, and isolated restore. Use `tests/performance.py --write-baseline`
-and `--baseline` on the same host to enforce the separate median drift gate (10% with a 2 ms floor).
+`tests/runtime_smoke.py` validates supervision, proxy boundaries, backup paths, SMTP delivery, log limits, SQLite integrity, and isolated restore.
+Use `tests/performance.py --write-baseline` and `--baseline` on the same host to enforce the median drift gate.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+This repository is MIT licensed; see [LICENSE](LICENSE). Vaultwarden and packaged components retain their upstream licenses.
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.

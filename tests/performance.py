@@ -47,6 +47,7 @@ class Result:
         return (
             self.median_ms <= self.budget_ms
             and self.p95_ms <= self.budget_ms * 1.5
+            and self.peak_bytes > 0
             and self.peak_bytes <= self.peak_budget_bytes
             and self.baseline_within_tolerance
         )
@@ -183,6 +184,8 @@ def build_database(path: Path) -> None:
             "INSERT INTO audit(payload) VALUES (?)", ((payload,) for _ in range(4096))
         )
         connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.execute("PRAGMA journal_mode=DELETE")
     finally:
         connection.close()
 
@@ -249,17 +252,31 @@ def docker(*args: str, timeout: float = 30, check: bool = True) -> subprocess.Co
 MEMORY = re.compile(r"([0-9.]+)\s*(B|KiB|MiB|GiB)")
 
 
+class MemoryUnavailable(ValueError):
+    pass
+
+
+def parse_docker_memory(output: str) -> int:
+    match = MEMORY.search(output)
+    if not match:
+        raise ValueError("docker stats did not return a memory value")
+    scale = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}
+    value = int(float(match.group(1)) * scale[match.group(2)])
+    if value <= 0:
+        raise MemoryUnavailable("docker stats returned a non-positive memory value")
+    return value
+
+
 def docker_memory_bytes(container: str) -> int:
     result = docker("stats", "--no-stream", "--format", "{{.MemUsage}}", container, check=False)
-    match = MEMORY.search(result.stdout)
-    if not match:
-        return 0
-    scale = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}
-    return int(float(match.group(1)) * scale[match.group(2)])
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"cannot read memory for {container}")
+    return parse_docker_memory(result.stdout)
 
 
-def run_to_exit(container: str, timeout: float = 60) -> tuple[int, str, int]:
-    peak = 0
+def run_to_exit(container: str, timeout: float = 60, peak: int = 0) -> tuple[int, str, int]:
+    if peak <= 0:
+        peak = docker_memory_bytes(container)
     deadline = time.monotonic() + timeout
     while True:
         running = docker("inspect", "-f", "{{.State.Running}}", container, check=False)
@@ -270,7 +287,10 @@ def run_to_exit(container: str, timeout: float = 60) -> tuple[int, str, int]:
             docker("kill", container, check=False)
             output = f"{logs.stdout}{logs.stderr}".strip()
             raise AssertionError(f"container {container} exceeded {timeout:.0f}s: {output}")
-        peak = max(peak, docker_memory_bytes(container))
+        try:
+            peak = max(peak, docker_memory_bytes(container))
+        except MemoryUnavailable:
+            pass
         time.sleep(0.05)
     status = int(docker("wait", container, timeout=30).stdout.strip())
     logs = docker("logs", container, check=False)
@@ -328,15 +348,18 @@ set -eu
 mkdir -p /data/restic-logs
 chown -R vaultwarden:vaultwarden /data
 rm -f /tmp/audit-stop /tmp/audit-rss-peak
-printf '0\n' > /tmp/audit-rss-peak
+touch /tmp/audit-ready
+while [ ! -e /tmp/audit-start ]; do sleep 0.01; done
 (
     set +e
+    peak=0
     while [ ! -e /tmp/audit-stop ]; do
         rss=$(awk '/^VmRSS:/{sum += $2} END {print sum + 0}' /proc/[0-9]*/status 2>/dev/null)
-        [ "$rss" -le "$(cat /tmp/audit-rss-peak)" ] || printf '%s\n' "$rss" > /tmp/audit-rss-peak
+        rss=${rss:-0}
+        [ "$rss" -le "$peak" ] || peak=$rss
         sleep 0.02
     done
-    :
+    printf '%s\n' "$peak" > /tmp/audit-rss-peak
 ) & monitor=$!
 dd if=/dev/zero of=/data/restic-logs/audit.log bs=1024 count=600 2>/dev/null
 chown vaultwarden:vaultwarden /data/restic-logs/audit.log
@@ -350,19 +373,26 @@ printf 'max_log_bytes=%s rss_peak_bytes=%s\n' "$size" "$(( $(cat /tmp/audit-rss-
     samples_out: list[Sample] = []
     for _ in range(samples):
         name = f"vaultwarden-audit-{secrets.token_hex(6)}"
-        started = time.perf_counter_ns()
         try:
             docker(
                 "run", "--detach", "--name", name, "--memory", "256m",
                 image, "/bin/bash", "-c", script,
             )
-            status, output, peak = run_to_exit(name)
+            deadline = time.monotonic() + 10
+            while docker("exec", name, "test", "-e", "/tmp/audit-ready", check=False).returncode:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("log trim benchmark did not become ready")
+                time.sleep(0.02)
+            peak = docker_memory_bytes(name)
+            started = time.perf_counter_ns()
+            docker("exec", name, "touch", "/tmp/audit-start")
+            status, output, measured_peak = run_to_exit(name, peak=peak)
             if status != 0 or "max_log_bytes=" not in output:
                 raise AssertionError(f"log trim failed with status {status}: {output.strip()}")
             rss_match = re.search(r"rss_peak_bytes=(\d+)", output)
             if not rss_match:
                 raise AssertionError(f"log trim memory measurement is missing: {output.strip()}")
-            peak = max(peak, int(rss_match.group(1)))
+            peak = max(measured_peak, int(rss_match.group(1)))
             elapsed = (time.perf_counter_ns() - started) / 1_000_000
             samples_out.append(Sample(elapsed, peak))
         finally:

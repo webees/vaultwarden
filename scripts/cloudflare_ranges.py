@@ -102,18 +102,19 @@ def _read_ranges_file(path: Path) -> tuple[list[str], tuple[Network, ...]]:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    mode = stat.S_IMODE(path.stat().st_mode)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(directory)
+        finally: os.close(directory)
     finally:
-        temporary_path.unlink(missing_ok=True)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def sync_ranges(path: Path, ipv4_text: str, ipv6_text: str, *, write: bool = True) -> SyncResult:
@@ -164,8 +165,7 @@ def _fetch_text(url: str) -> str:
 
 def _write_outputs(result: SyncResult, handle: TextIO) -> None:
     fields = ("changed", "range_count", "ipv4_count", "ipv6_count", "added_count", "removed_count")
-    values = astuple(result)
-    for key, value in zip(fields, values):
+    for key, value in zip(fields, astuple(result)):
         print(f"{key}={str(value).lower()}", file=handle)
 
 

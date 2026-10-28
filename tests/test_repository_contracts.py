@@ -8,12 +8,13 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
 import unittest
 
-from tests.performance import Result, apply_baseline, require_temporary_path
+from tests.performance import Result, apply_baseline, build_database, parse_docker_memory, require_temporary_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +189,20 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertEqual(calls, bounded)
         self.assertIn("timeout \"$GH_TIMEOUT\" gh api", (ROOT / "scripts/deps.sh").read_text())
 
+    def test_recurring_log_regression_stays_fixed(self) -> None:
+        restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
+        start = restic.index("log() {")
+        block = restic[start:restic.index("\n}\n", start) + 3]
+
+        self.assertIn('tail -c "$MAX_LOG_BYTES"', block)
+        self.assertIn("write_log_entry", block)
+        self.assertNotIn('body="$("$@" 2>&1)"', block)
+        self.assertNotIn("eval ", restic)
+        decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
+        self.assertIn("Bounded Diagnostics", decisions)
+        self.assertIn("Simplification Rule", decisions)
+        self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
+
     def test_security_randomness_uses_operating_system_entropy(self) -> None:
         production = "\n".join(
             path.read_text(encoding="utf-8")
@@ -274,6 +289,37 @@ class PerformanceHarnessTest(unittest.TestCase):
         self.assertFalse(apply_baseline(self.result(10.01), {"scenario": 8}).passed)
         with self.assertRaisesRegex(ValueError, "missing scenario"):
             apply_baseline(self.result(1), {})
+
+    def test_missing_or_zero_memory_measurements_fail_closed(self) -> None:
+        self.assertEqual(parse_docker_memory("12.5MiB / 256MiB"), 13_107_200)
+        for output in ("", "0B / 1GiB", "not-a-measurement"):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(ValueError, "memory value"):
+                    parse_docker_memory(output)
+        result = self.result(1)
+        self.assertFalse(
+            Result(
+                name=result.name,
+                baseline_median_ms=None,
+                median_ms=result.median_ms,
+                p95_ms=result.p95_ms,
+                peak_bytes=0,
+                peak_budget_bytes=result.peak_budget_bytes,
+                budget_ms=result.budget_ms,
+                baseline_delta_percent=None,
+            ).passed
+        )
+
+    def test_sqlite_restore_fixture_is_self_contained(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")) as temporary:
+            source = Path(temporary) / "source.sqlite3"
+            restored = Path(temporary) / "restored.sqlite3"
+            build_database(source)
+            shutil.copyfile(source, restored)
+            self.assertFalse(Path(f"{source}-wal").exists())
+            with sqlite3.connect(f"file:{restored}?mode=ro", uri=True) as connection:
+                self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                self.assertEqual(connection.execute("SELECT count(*) FROM audit").fetchone(), (4096,))
 
     def test_baseline_files_are_confined_to_temporary_storage(self) -> None:
         with tempfile.NamedTemporaryFile(prefix="vaultwarden-audit-", suffix=".json") as temporary:

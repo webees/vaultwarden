@@ -44,12 +44,39 @@ def validate_caddy(domains: str | None, domain: str | None) -> subprocess.Comple
     return validate_caddy_script(CADDY_CONFIG, domains, domain)
 
 
+def audit_addresses(
+    domains: str = "example.com",
+    domain: str = "https://vault.example.com",
+    repository: str = "s3://s3.example.invalid/bucket",
+    healthcheck: str = "https://health.invalid/ping",
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ADDRESS_AUDIT_JSON": "1",
+            "CADDY_DOMAINS": domains,
+            "DOMAIN": domain,
+            "RESTIC_REPOSITORY": repository,
+            "HEALTHCHECK_URL": healthcheck,
+        }
+    )
+    return subprocess.run(
+        ["/bin/bash", "-c", '. "$1"; audit_addresses', "address-audit", str(CADDY_CONFIG)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 class CaddyAddressAuditTest(unittest.TestCase):
     def test_valid_hosts_are_unique_and_case_normalized(self) -> None:
-        result = validate_caddy("EXAMPLE.com   example.org", "https://vault.example.com:8443")
+        result = validate_caddy(
+            "EXAMPLE.com   xn--bcher-kva.example", "https://vault.example.com:8443"
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "CADDY_DOMAINS=example.com example.org\n")
+        self.assertEqual(result.stdout, "CADDY_DOMAINS=example.com xn--bcher-kva.example\n")
 
     def test_unset_or_empty_domain_is_allowed_but_hosts_are_required(self) -> None:
         self.assertEqual(validate_caddy(None, None).returncode, 0)
@@ -68,6 +95,7 @@ class CaddyAddressAuditTest(unittest.TestCase):
             "trailing hyphen": "example-.com",
             "underscore": "example_com",
             "wildcard": "*.example.com",
+            "raw unicode": "bücher.example",
             "oversized label": f"{'a' * 64}.example.com",
             "oversized name": ".".join(["a" * 63] * 4),
         }
@@ -94,6 +122,10 @@ class CaddyAddressAuditTest(unittest.TestCase):
             "text port": "https://example.com:https",
             "empty port": "https://example.com:",
             "encoded traversal": "https://example.com/%2e%2e/admin",
+            "raw unicode host": "https://bücher.example",
+            "bracketed IPv6": "https://[2001:db8::1]",
+            "unbracketed IPv6": "https://2001:db8::1",
+            "oversized origin": f"https://{'a' * 254}",
         }
         for label, value in cases.items():
             with self.subTest(label=label):
@@ -166,6 +198,7 @@ class BackupAddressAuditTest(unittest.TestCase):
         accepted = (
             f"{self.temporary.name}/repository",
             "s3://s3.example.invalid/bucket/path",
+            "s3://s3.example.invalid:9000/bucket",
         )
         for value in accepted:
             with self.subTest(value=value):
@@ -176,6 +209,8 @@ class BackupAddressAuditTest(unittest.TestCase):
         rejected = (
             "relative/path",
             "/tmp/../escape",
+            f"{self.temporary.name}/repository/../escape",
+            f"{self.temporary.name}/repository/..",
             "/tmp//double",
             "s3://user@example.invalid/bucket",
             "s3://example.invalid",
@@ -194,6 +229,7 @@ class BackupAddressAuditTest(unittest.TestCase):
         accepted = (
             "https://health.invalid",
             "https://health.invalid/ping",
+            "https://health.invalid/ping_2/deep-path",
             "https://health.invalid:65535/ping",
         )
         for value in accepted:
@@ -214,6 +250,11 @@ class BackupAddressAuditTest(unittest.TestCase):
             "https://health.invalid/ping//fail",
             "https://health.invalid:0/ping",
             "https://health.invalid:65536/ping",
+            "https://health.invalid/<script>",
+            "https://health.invalid/ping:token",
+            "https://health.invalid/ping@token",
+            "https://[2001:db8::1]/ping",
+            f"https://health.invalid/{'a' * 1025}",
         )
         for value in rejected:
             with self.subTest(value=value):
@@ -223,17 +264,38 @@ class BackupAddressAuditTest(unittest.TestCase):
 
     def test_negative_control_detects_disabled_healthcheck_path_guard(self) -> None:
         source = CADDY_CONFIG.read_text(encoding="utf-8")
-        marker = "*[#?@\\\\%]*"
+        marker = "*[!A-Za-z0-9._~/-]*"
         self.assertIn(marker, source)
         with tempfile.TemporaryDirectory(
             prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")
         ) as temporary:
             mutated = Path(temporary) / "config.sh"
-            mutated.write_text(source.replace(marker, "*[#?@\\\\]*", 1), encoding="utf-8")
+            mutated.write_text(source.replace(marker, "*[!A-Za-z0-9._~/%-]*", 1), encoding="utf-8")
             result = subprocess.run(
                 [
                     "/bin/bash", "-c",
                     '. "$1"; HEALTHCHECK_URL=https://health.invalid/%2e%2e/ping; validate_healthcheck_url',
+                    "address-audit", str(mutated),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_negative_control_detects_the_shared_hostname_guard(self) -> None:
+        source = CADDY_CONFIG.read_text(encoding="utf-8")
+        marker = 'valid_dns_name "$host"'
+        self.assertIn(marker, source)
+        with tempfile.TemporaryDirectory(
+            prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")
+        ) as temporary:
+            mutated = Path(temporary) / "config.sh"
+            mutated.write_text(source.replace(marker, "true", 1), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    "/bin/bash", "-c",
+                    '. "$1"; validate_https_url https://bad_host/ping true',
                     "address-audit", str(mutated),
                 ],
                 capture_output=True,
@@ -271,6 +333,24 @@ class BackupAddressAuditTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertEqual(list(log_dir.iterdir()), before)
+
+    def test_machine_readable_summary_is_stable_and_redacted(self) -> None:
+        result = audit_addresses()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            '{"status":"ok","caddy_hosts":1,"domain_configured":true,'
+            '"repository_kind":"s3","healthcheck_configured":true}\n',
+        )
+        for raw in ("example.com", "example.invalid", "/bucket", "/ping"):
+            self.assertNotIn(raw, result.stdout)
+
+    def test_machine_readable_summary_is_not_emitted_for_rejected_input(self) -> None:
+        result = audit_addresses(healthcheck="https://health.invalid/%2e%2e/ping")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

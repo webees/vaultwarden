@@ -278,7 +278,8 @@ def check_timeout_process_group_cleanup(image: str) -> None:
     """A helper that ignores TERM must not survive its command's process group."""
     script = r"""
 set -eu
-mkdir -p /tmp/stub
+mkdir -p /data/restic-logs /tmp/stub
+chown -R vaultwarden:vaultwarden /data
 printf '%s\n' \
     '#!/bin/sh' \
     '(trap "" TERM; sleep 300) &' \
@@ -528,6 +529,25 @@ PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
     /restic.sh snapshots >/tmp/restic-tail-failure.log 2>&1 || rc=$?
 [ "$rc" -eq 2 ]
 ! grep -Fq '✓' /tmp/restic-tail-failure.log
+
+rm -rf /data/restic-logs
+mkdir -p /data/restic-logs
+chown vaultwarden:vaultwarden /data/restic-logs
+printf '%s\n' \
+    '#!/bin/sh' \
+    'head -c 2097152 /dev/zero | tr "\\000" x' \
+    'exit 0' >/tmp/stub/restic
+chmod +x /tmp/stub/restic
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    RESTIC_LOG_MAX_BYTES=4096 RESTIC_LOG_DIR_MAX_BYTES=4096 \
+    /restic.sh snapshots >/tmp/restic-huge-output.log 2>&1 || rc=$?
+[ "$rc" -eq 0 ]
+log_file="$(find /data/restic-logs -maxdepth 1 -type f -name '*.log' | head -n 1)"
+[ -n "$log_file" ]
+[ "$(wc -c < "$log_file")" -le 4096 ]
+[ -z "$(find /data/restic-logs -maxdepth 1 -type f -name '*.tmp.*' -print -quit)" ]
+rm -f /tmp/restic-huge-output.log
 
 # Every bound is checked before the log directory is created, the status marker
 # changes, or a backend command starts.

@@ -102,6 +102,26 @@ class CloudflareRangeSyncTest(unittest.TestCase):
             self.assertIn(f"client_ip {value}\n", rendered)
         self.assertEqual(list(self.root.glob(".*.tmp")), [])
 
+    def test_atomic_replace_syncs_the_file_and_parent_directory(self) -> None:
+        self.path.write_text("original\n", encoding="utf-8")
+
+        with mock.patch.object(cloudflare_ranges.os, "fsync", wraps=cloudflare_ranges.os.fsync) as sync:
+            cloudflare_ranges._atomic_write(self.path, "replacement\n")
+
+        self.assertEqual(sync.call_count, 2)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "replacement\n")
+
+    def test_directory_sync_failure_is_not_silenced(self) -> None:
+        self.path.write_text("original\n", encoding="utf-8")
+
+        with mock.patch.object(
+            cloudflare_ranges.os, "fsync", side_effect=[None, OSError("directory sync failed")]
+        ):
+            with self.assertRaisesRegex(OSError, "directory sync failed"):
+                cloudflare_ranges._atomic_write(self.path, "replacement\n")
+
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "replacement\n")
+
     def test_removed_ranges_are_reported(self) -> None:
         write_ranges(self.path, [*self.ipv4_ranges, self.v4_b], self.ipv6_ranges)
 
