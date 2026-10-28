@@ -624,7 +624,7 @@ grep -Fq 'must not exceed RESTIC_LOG_DIR_MAX_BYTES' /tmp/restic-limit.log
 
 
 def check_log_rotation_failure(image: str) -> None:
-    """A log that cannot be capped must not leave a healthy backup marker."""
+    """An unmaintainable log directory must stop before backend work."""
     script = r"""
 set -eu
 rm -rf /data/restic-logs
@@ -633,7 +633,7 @@ chown vaultwarden:vaultwarden /data /data/restic-logs
 dd if=/dev/zero of=/data/restic-logs/unreadable.log bs=1024 count=64 2>/dev/null
 chown root:root /data/restic-logs/unreadable.log
 chmod 000 /data/restic-logs/unreadable.log
-printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/stub/restic
+printf '%s\n' '#!/bin/sh' 'touch /tmp/backend-called' 'exit 0' > /tmp/stub/restic
 printf '%s\n' \
     '#!/bin/sh' \
     'case "$*" in *"PRAGMA integrity_check"*) printf "ok\n" ;; esac' \
@@ -646,16 +646,20 @@ chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
 PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
     RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1048576 \
     HEALTHCHECK_URL=https://health.invalid/ping \
-    /restic.sh backup >/tmp/unreadable-backup.log 2>&1
+    /restic.sh backup >/tmp/unreadable-backup.log 2>&1 || rc=$?
+[ "${rc:-0}" -eq 2 ]
+[ ! -e /tmp/backend-called ]
 grep -Fq 'cannot enforce the per-file log cap' /tmp/unreadable-backup.log
-grep -Fq 'message=Backup complete (log trim failed)' /data/backup-status.txt
+grep -Fq 'refusing to create a new log' /tmp/unreadable-backup.log
+grep -Fq 'state=failed' /data/backup-status.txt
+grep -Fq 'message=Log directory limits cannot be enforced' /data/backup-status.txt
 [ "$(grep -c '^fail$' /tmp/heartbeat-calls)" -eq 1 ]
 """
     expect_shell(
         image,
         script,
-        "an uncappable log is recorded as a backup warning",
-        "an uncappable log leaves a healthy backup marker",
+        "an unmaintainable log directory stops before backend work",
+        "an unmaintainable log directory reached the backend or left a false success",
     )
 
 
