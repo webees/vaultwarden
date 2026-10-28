@@ -1,7 +1,6 @@
 name: Dependency Updates
 
 on:
-  # A completed build is an activity-backed fallback for unreliable scheduling.
   workflow_run:
     workflows: ["Build and Deploy"]
     types: [completed]
@@ -22,7 +21,6 @@ on:
         default: none
         options:
           - none
-          - audit
           - check-freshness
           - notify-test
           - snapshots
@@ -30,7 +28,6 @@ on:
           - restore-test
           - backup
   schedule:
-    # Check every two hours; minute 41 avoids the hourly scheduler spike.
     - cron: '41 */2 * * *'
 
 permissions:
@@ -61,7 +58,6 @@ jobs:
       github.event_name == 'workflow_run' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.operation == 'none')
     runs-on: ubuntu-24.04
-    # Bound the post-merge wait well below GitHub's default.
     timeout-minutes: 40
     # Scheduled updates merge automatically; manual runs opt in.
     env:
@@ -93,26 +89,22 @@ jobs:
         id: cloudflare
         run: python3 scripts/cloudflare_ranges.py sync --github-output "$GITHUB_OUTPUT"
 
-      # Reject missing or malformed upstream results.
       - name: Decide whether dependency files changed
         id: changed
         run: |
           set -euo pipefail
           compare='${{ steps.compare.outputs.changed }}'
           cloudflare='${{ steps.cloudflare.outputs.changed }}'
-          case "$compare" in true|false) ;; *) echo "invalid Dockerfile comparison result" >&2; exit 1 ;; esac
-          case "$cloudflare" in true|false) ;; *) echo "invalid Cloudflare comparison result" >&2; exit 1 ;; esac
-          if [ "$compare" = true ] || [ "$cloudflare" = true ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "$compare:$cloudflare" in
+            true:true|true:false|false:true) echo "changed=true" >> "$GITHUB_OUTPUT" ;;
+            false:false) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "invalid dependency comparison result" >&2; exit 1 ;;
+          esac
 
       - name: Compare the pinned base packages
         id: apk
         run: scripts/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
 
-      # The pinned base still lists an upgrade after our image applies it.
       - name: Compare packages in the published image
         id: published-apk
         if: >-
@@ -154,7 +146,6 @@ jobs:
           APK_ROWS: ${{ steps.apk.outputs.rows }}
         run: |
           set -euo pipefail
-          # One stable branch prevents stale dependency PRs from remaining armed.
           branch="deps/upstream"
           title="chore(deps): update upstream dependencies"
           body_file="${RUNNER_TEMP:-/tmp}/pr-body.md"
@@ -190,11 +181,10 @@ jobs:
           git commit -m "chore(deps): update pinned upstream dependencies"
           git push --force origin "$branch"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          # Refresh an existing PR instead of misreading API errors as absence.
           open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
-            --state open --json number --jq 'length')"
-          if [ "$open_pr" -gt 0 ]; then
-            gh pr edit "$branch" --repo "$GITHUB_REPOSITORY" \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$open_pr" ]; then
+            gh pr edit "$open_pr" --repo "$GITHUB_REPOSITORY" \
               --title "$title" --body-file "$body_file"
             echo "updated the existing open PR for ${branch}"
           else
@@ -205,8 +195,6 @@ jobs:
           echo "number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
             --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
 
-      # GITHUB_TOKEN-created PR checks start as action_required; release the run
-      # so the required validate check can register before auto-merge.
       - name: Release the held validate run
         if: steps.changed.outputs.changed == 'true'
         env:
@@ -214,7 +202,7 @@ jobs:
           SHA: ${{ steps.pr.outputs.sha }}
         run: |
           set -euo pipefail
-          for _ in $(seq 1 18); do
+          for _ in {1..18}; do
             id="$(timeout 30 gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${SHA}&per_page=20" \
               --jq '[.workflow_runs[] | select(.conclusion == "action_required")] | first | .id // empty')" || id=""
@@ -225,8 +213,7 @@ jobs:
             fi
             sleep 10
           done
-          echo "no held pull_request run appeared for ${SHA}" >&2
-          exit 1
+          echo "the held pull_request run did not appear" >&2; exit 1
 
       - name: Arm auto-merge on the dependency PR
         id: arm
@@ -237,38 +224,15 @@ jobs:
         run: |
           set -euo pipefail
           gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --auto
-          # Fail if the required check never registers.
-          api_error=false
-          for _ in $(seq 1 18); do
-            registered=""
-            if ! registered="$(gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
-                --json statusCheckRollup --jq '.statusCheckRollup | length')"; then
-              api_error=true
-              echo "::warning::could not read the status checks for ${BRANCH}; retrying"
-            else
-              case "$registered" in
-                ''|*[!0-9]*)
-                  api_error=true
-                  echo "::warning::could not read the status checks for ${BRANCH}; retrying"
-                  ;;
-                0) ;;
-                *)
-                  echo "auto-merge armed; ${registered} status check(s) registered on ${BRANCH}"
-                  exit 0
-                  ;;
-              esac
-            fi
+          for _ in {1..18}; do
+            count="$(timeout 30 gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+              --json statusCheckRollup --jq '.statusCheckRollup | length')"
+            [[ "$count" =~ ^[0-9]+$ ]] || { echo "invalid status-check count" >&2; exit 1; }
+            [ "$count" -eq 0 ] || { echo "auto-merge armed; ${count} status check(s) registered"; exit 0; }
             sleep 10
           done
-          if [ "$api_error" = true ]; then
-            echo "could not read the status checks for ${BRANCH} within 180s" >&2
-          else
-            echo "no status check registered on ${BRANCH} within 180s; the merge is still gated" >&2
-          fi
-          exit 1
+          echo "status checks did not register before the deadline" >&2; exit 1
 
-      # A GITHUB_TOKEN merge does not trigger another workflow. Dispatch the build
-      # only when this run performed the automatic merge.
       - name: Build and deploy after the merge
         if: >-
           always() &&
@@ -282,20 +246,16 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$NUMBER" ] || { echo "no dependency pull request number recorded" >&2; exit 1; }
-          for _ in $(seq 1 40); do
-            state="$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
-            if [ "$state" = "MERGED" ]; then
-              gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
-              echo "dispatched the build for the merged dependency update"
-              exit 0
-            fi
+          state=""
+          for _ in {1..40}; do
+            state="$(timeout 30 gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            [ "$state" = MERGED ] && break
             sleep 15
           done
-          echo "pull request ${NUMBER} did not merge within 10 minutes" >&2
-          exit 1
+          [ "$state" = MERGED ] || { echo "dependency pull request did not merge" >&2; exit 1; }
+          gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "dispatched the build for the merged dependency update"
 
-      # Package-only updates have no PR. Rebuild only while the published image
-      # still contains pending upgrades.
       - name: Rebuild when only Alpine packages moved
         if: >-
           success() &&
@@ -306,13 +266,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           PUBLISHED_APK_COUNT: ${{ steps.published-apk.outputs.count }}
-          PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}
         run: |
           set -euo pipefail
-          if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then
-            echo "::error::could not inspect packages in the latest published image" >&2
-            exit 1
-          fi
           if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
@@ -352,39 +307,20 @@ jobs:
 
           gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
             --squash --delete-branch --auto
-
-          # Fail if the required check never registers.
-          api_error=false
-          for _ in $(seq 1 18); do
-            registered=""
-            if ! registered="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
-                --json statusCheckRollup --jq '.statusCheckRollup | length')"; then
-              api_error=true
-              echo "::warning::could not read the status checks for pull request ${PR_NUMBER}; retrying"
-            else
-              case "$registered" in
-                ''|*[!0-9]*)
-                  api_error=true
-                  echo "::warning::could not read the status checks for pull request ${PR_NUMBER}; retrying"
-                  ;;
-                0) ;;
-                *)
-                  echo "auto-merge armed; ${registered} status check(s) registered"
-                  exit 0
-                  ;;
-              esac
-            fi
+          for _ in {1..18}; do
+            count="$(timeout 30 gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+              --json statusCheckRollup --jq '.statusCheckRollup | length')"
+            [[ "$count" =~ ^[0-9]+$ ]] || { echo "invalid status-check count" >&2; exit 1; }
+            [ "$count" -eq 0 ] || { echo "auto-merge armed; ${count} status check(s) registered"; exit 0; }
             sleep 10
           done
-          if [ "$api_error" = true ]; then
-            echo "could not read the status checks for pull request ${PR_NUMBER} within 180s" >&2
-          else
-            echo "no status check registered on Dependabot PR within 180s" >&2
-          fi
-          exit 1
+          echo "status checks did not register before the deadline" >&2; exit 1
 
-  production_operation:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none'
+  fly_operation:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none') ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_run'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -398,45 +334,16 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           FLY_APP: ${{ secrets.FLY_APP }}
-          OPERATION: ${{ github.event.inputs.operation }}
+          OPERATION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.operation || 'check-freshness' }}
         run: |
           set -euo pipefail
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
           case "$OPERATION" in
-            audit)           command="/restic.sh audit" ;;
-            check-freshness) command="/restic.sh check-freshness" ;;
-            notify-test)     command="/restic.sh notify-test" ;;
-            snapshots)       command="/restic.sh snapshots" ;;
-            verify)          command="/restic.sh verify" ;;
-            restore-test)    command="/restic.sh restore-test" ;;
-            backup)          command="/restic.sh backup" ;;
-            *)
-              echo "::error::unsupported production operation" >&2
-              exit 2
-              ;;
+            check-freshness|notify-test|snapshots|verify|restore-test|backup) command="/restic.sh ${OPERATION}" ;;
+            *) echo "::error::unsupported production operation" >&2; exit 2 ;;
           esac
+          set -o pipefail
           timeout 2400 flyctl ssh console --app "$FLY_APP" --command "$command" \
-            2>&1 | sed -E "$FLY_LOG_REDACT"
-
-  watchdog:
-    # The app cannot report its own silence; this external job can.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_run'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Set up Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
-
-      - name: Check the production backup heartbeat
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          FLY_APP: ${{ secrets.FLY_APP }}
-        run: |
-          set -euo pipefail
-          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
-          flyctl ssh console --app "$FLY_APP" --command "/restic.sh check-freshness" \
             2>&1 | sed -E "$FLY_LOG_REDACT"
 
   notify_failure:
@@ -445,8 +352,7 @@ jobs:
     needs:
       - check
       - dependabot_automerge
-      - production_operation
-      - watchdog
+      - fly_operation
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -465,8 +371,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CHECK_RESULT: ${{ needs.check.result }}
           DEPENDABOT_RESULT: ${{ needs.dependabot_automerge.result }}
-          OPERATION_RESULT: ${{ needs.production_operation.result }}
-          WATCHDOG_RESULT: ${{ needs.watchdog.result }}
+          OPERATION_RESULT: ${{ needs.fly_operation.result }}
         run: |
           set -euo pipefail
           : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
@@ -506,50 +411,39 @@ jobs:
           }
           workflow_name="$(html_escape "$WORKFLOW")"
           event_name="$(html_escape "$EVENT")"
-          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>production_operation</code>: %s\n<code>watchdog</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
-            "$workflow_name" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" "$WATCHDOG_RESULT" \
+          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>fly_operation</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
+            "$workflow_name" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" \
             "${SHA:0:12}" "$event_name" "$RUN_URL")"
-          response_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-response.XXXXXX")"
-          error_file="$(mktemp "${RUNNER_TEMP:-/tmp}/telegram-error.XXXXXX")"
-          cleanup() {
-            rm -f "$response_file" "$error_file"
-          }
-          trap cleanup EXIT
-
           set +e
-          status="$(curl --silent --show-error --max-time 15 \
-            --max-filesize 65536 \
-            --output "$response_file" --write-out '%{http_code}' \
-            --request POST \
-            --data-urlencode "chat_id=${chat_id}" \
-            --data-urlencode "parse_mode=HTML" \
-            --data-urlencode "text=${message}" \
-            --data-urlencode "disable_web_page_preview=true" \
-            "https://api.telegram.org/bot${token}/sendMessage" 2>"$error_file")"
-          rc=$?
+          out="$({
+            curl --silent --show-error --max-time 15 --write-out '\nHTTP_STATUS=%{http_code}' \
+              --request POST \
+              --data-urlencode "chat_id=${chat_id}" \
+              --data-urlencode "parse_mode=HTML" \
+              --data-urlencode "text=${message}" \
+              --data-urlencode "disable_web_page_preview=true" \
+              "https://api.telegram.org/bot${token}/sendMessage" 2>&1
+            printf '\nCURL_RC=%s\n' "$?"
+          } | tail -c 65536)"
           set -e
-
-          redact_file() {
-            local body
-            body="$(head -c 4096 "$1")"
-            body="${body//"$token"/<redacted>}"
-            body="${body//"$chat_id"/<redacted>}"
-            printf '%s' "$body"
-          }
-
+          rc="${out##*CURL_RC=}"
+          rc="${rc%%$'\n'*}"
+          out="${out%$'\n'CURL_RC=*}"
+          out="${out%$'\n'}"
+          status="$(printf '%s\n' "$out" | sed -n 's/^HTTP_STATUS=//p' | tail -n 1)"
+          body="$(printf '%s\n' "$out" | sed '/^HTTP_STATUS=/d')"
+          body="${body//"$token"/<redacted>}"
+          body="${body//"$chat_id"/<redacted>}"
           if [ "$rc" -ne 0 ]; then
-            detail="$(redact_file "$error_file")"
-            echo "::error::Telegram failure alert transport failed (curl exit ${rc}): ${detail:-no diagnostic}" >&2
+            echo "::error::Telegram failure alert transport failed (curl exit ${rc}): ${body:-no diagnostic}" >&2
             exit 1
           fi
           if [ "$status" != "200" ]; then
-            detail="$(redact_file "$response_file")"
-            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${detail:-no response body}" >&2
+            echo "::error::Telegram failure alert rejected (HTTP ${status:-unknown}): ${body:-no response body}" >&2
             exit 1
           fi
-          if ! python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(0 if isinstance(data, dict) and data.get("ok") is True else 1)' "$response_file"; then
-            detail="$(redact_file "$response_file")"
-            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${detail:-no success response}" >&2
+          if ! printf '%s' "$body" | python3 -c 'import json,sys; data=json.load(sys.stdin); raise SystemExit(0 if isinstance(data, dict) and data.get("ok") is True else 1)'; then
+            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${body:-no success response}" >&2
             exit 1
           fi
           echo "Telegram failure alert sent"

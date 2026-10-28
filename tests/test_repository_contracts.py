@@ -280,16 +280,19 @@ class RepositoryHygieneTest(unittest.TestCase):
 
     def test_quality_budgets_do_not_regress(self) -> None:
         budgets = {
-            "README.md": 225,
-            ".env.example": 60,
-            "scripts/restic.sh": 1140,
-            ".github/workflows/dependency_updates.yml": 570,
-            ".github/workflows/build_and_deploy.yml": 355,
+            "README.md": 154,
+            ".env.example": 48,
+            "scripts/restic.sh": 936,
+            ".github/workflows/dependency_updates.yml": 450,
+            ".github/workflows/build_and_deploy.yml": 300,
         }
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
+        test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
+        test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
+        self.assertLessEqual(test_lines, 5800, f"tests grew to {test_lines} lines")
         self.assertFalse((ROOT / "tests/selftest.sh").exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:

@@ -94,6 +94,18 @@ def shell_in(
     return exec_in(container, "sh", "-c", script, check=check, env=env)
 
 
+def expect_shell(image: str, script: str, success: str, failure: str) -> None:
+    """Run one isolated image case and report a concise result."""
+    result = docker(
+        "run", "--rm", "--entrypoint", "sh", image, "-c", script, check=False
+    )
+    if result.returncode == 0:
+        suite.ok(success)
+        return
+    suite.bad(failure)
+    print(combined(result), file=sys.stderr)
+
+
 def combined(result: subprocess.CompletedProcess[str]) -> str:
     """Both streams as one text, the way `docker logs 2>&1` reads."""
     return f"{result.stdout or ''}{result.stderr or ''}"
@@ -251,21 +263,12 @@ if [ -r "/proc/$helper/status" ]; then
     fi
 fi
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "a helper that ignores TERM does not survive its command",
+        "a helper that ignores TERM survived the command cleanup",
     )
-    if result.returncode == 0:
-        suite.ok("a helper that ignores TERM does not survive its command")
-    else:
-        suite.bad("a helper that ignores TERM survived the command cleanup")
-        print(combined(result), file=sys.stderr)
 
 
 def check_backup_lock_error(image: str) -> None:
@@ -277,7 +280,7 @@ chmod 500 /data/restic-logs
 printf '%s\n' \
     '#!/bin/sh' \
     'case "$*" in' \
-    '    *api.telegram.org*) printf "telegram\n" >> /tmp/curl-calls; printf "%s\n200\n" "{\"ok\":true}" ;;' \
+    '    *api.telegram.org*) printf "telegram\n" >> /tmp/curl-calls; printf "%s\nHTTP_STATUS=200\n" "{\"ok\":true}" ;;' \
     '    *health.invalid*) printf "heartbeat\n" >> /tmp/curl-calls ;;' \
     'esac' > /tmp/stub/curl
 chmod +x /tmp/stub/curl
@@ -297,98 +300,12 @@ fi
 [ "$(grep -c '^heartbeat$' /tmp/curl-calls)" -eq 1 ] || exit 1
 sed -n 's/^message=//p' /data/backup-status.txt | grep -Fq 'Cannot create backup lock' || exit 1
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "an unwritable backup lock fails as one operational alert",
+        "an unwritable backup lock is masked or alerts more than once",
     )
-    if result.returncode == 0:
-        suite.ok("an unwritable backup lock fails as one operational alert")
-    else:
-        suite.bad("an unwritable backup lock is masked or alerts more than once")
-        print(combined(result), file=sys.stderr)
-
-
-def check_read_only_audit(image: str) -> None:
-    """Production audit must report state without creating or changing files."""
-    container = scratch(image, f"audit-{os.getpid()}")
-    shell_in(
-        container,
-        r"""
-set -eu
-mkdir -p /data/restic-logs
-now="$(date -u +%s)"
-printf 'state=ok\nupdated_at=%s\nlast_success=%s\nmessage=selftest\n' \
-    "$now" "$now" > /data/backup-status.txt
-printf 'existing audit log\n' > /data/restic-logs/existing.log
-chown -R vaultwarden:vaultwarden /data
-chmod 700 /data/restic-logs
-chmod 600 /data/backup-status.txt /data/restic-logs/existing.log
-
-status_before="$(cksum /data/backup-status.txt)"
-status_meta_before="$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)"
-files_before="$(find /data/restic-logs -maxdepth 1 -type f -print | sort)"
-rc=0
-output="$(/restic.sh audit 2>&1)" || rc=$?
-[ "$rc" -eq 0 ]
-printf '%s\n' "$output" | grep -Fq 'Production audit passed'
-[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
-[ "$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)" = "$status_meta_before" ]
-[ "$(find /data/restic-logs -maxdepth 1 -type f -print | sort)" = "$files_before" ]
-
-# A stale `running` marker without a lock holder is a killed backup, not a
-# healthy in-flight run. The active-lock case must remain a pass.
-now="$(date -u +%s)"
-printf 'state=running\nupdated_at=%s\nlast_success=%s\nmessage=Backup started\n' \
-    "$now" "$now" > /data/backup-status.txt
-: > /data/restic-logs/backup.lock
-chown vaultwarden:vaultwarden /data/backup-status.txt /data/restic-logs/backup.lock
-chmod 600 /data/backup-status.txt /data/restic-logs/backup.lock
-rc=0
-output="$(/restic.sh audit 2>&1)" || rc=$?
-[ "$rc" -eq 2 ]
-printf '%s\n' "$output" | grep -Fq 'running without a lock holder'
-
-exec 9>/data/restic-logs/backup.lock
-if ! flock -n 9; then
-    exit 1
-fi
-rc=0
-output="$(/restic.sh audit 2>&1)" || rc=$?
-exec 9>&-
-[ "$rc" -eq 0 ]
-printf '%s\n' "$output" | grep -Fq 'running (lock held)'
-rm -f /data/restic-logs/backup.lock
-
-chown root:root /data/backup-status.txt
-chmod 644 /data/backup-status.txt
-status_before="$(cksum /data/backup-status.txt)"
-status_meta_before="$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)"
-files_before="$(find /data/restic-logs -maxdepth 1 -type f -print | sort)"
-rc=0
-output="$(/restic.sh audit 2>&1)" || rc=$?
-[ "$rc" -eq 2 ]
-printf '%s\n' "$output" | grep -Fq 'status marker'
-[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
-[ "$(stat -c '%U %a %s %Y %i' /data/backup-status.txt)" = "$status_meta_before" ]
-[ "$(find /data/restic-logs -maxdepth 1 -type f -print | sort)" = "$files_before" ]
-
-rm -rf /data/restic-logs
-status_before="$(cksum /data/backup-status.txt)"
-rc=0
-output="$(/restic.sh audit 2>&1)" || rc=$?
-[ "$rc" -eq 2 ]
-[ ! -e /data/restic-logs ]
-printf '%s\n' "$output" | grep -Fq 'log directory'
-[ "$(cksum /data/backup-status.txt)" = "$status_before" ]
-""",
-    )
-    suite.ok("audit is read-only, creates no log directory, and needs no repository password")
 
 
 def check_freshness_uptime_read_failure(image: str) -> None:
@@ -419,21 +336,12 @@ PATH="/tmp/stub:$PATH" BACKUP_MAX_AGE=7200 \
 grep -Fq 'Cannot determine the instance age' /tmp/freshness-uptime.log
 grep -qx 'state=failed' /data/backup-status.txt
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "an unreadable or malformed instance age fails the freshness guard",
+        "an unreadable or malformed instance age was treated as a new volume",
     )
-    if result.returncode == 0:
-        suite.ok("an unreadable or malformed instance age fails the freshness guard")
-    else:
-        suite.bad("an unreadable or malformed instance age was treated as a new volume")
-        print(combined(result), file=sys.stderr)
 
 
 def check_telegram_error_redaction(image: str) -> None:
@@ -469,21 +377,12 @@ if ! grep -Fq '<redacted>' /tmp/telegram-redaction.log; then
     exit 1
 fi
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "Telegram error responses redact the token and chat id",
+        "a Telegram error response leaked a credential into the run log",
     )
-    if result.returncode == 0:
-        suite.ok("Telegram error responses redact the token and chat id")
-    else:
-        suite.bad("a Telegram error response leaked a credential into the run log")
-        print(combined(result), file=sys.stderr)
 
 
 def check_snapshot_argument_boundaries(image: str) -> None:
@@ -523,21 +422,12 @@ if ! grep -Eq '^restore --target /tmp/restic-restore\..* -- --help$' /tmp/restic
     exit 1
 fi
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "snapshot references stay behind the restic option boundary",
+        "a snapshot reference is parsed as a restic option",
     )
-    if result.returncode == 0:
-        suite.ok("snapshot references stay behind the restic option boundary")
-    else:
-        suite.bad("a snapshot reference is parsed as a restic option")
-        print(combined(result), file=sys.stderr)
 
 
 def check_sqlite_integrity_contract(image: str) -> None:
@@ -566,21 +456,12 @@ grep -Fq 'CHECK constraint failed in t' /tmp/sqlite-integrity.log
 ! grep -Eq '^backup ' /tmp/restic-calls
 grep -Fq 'state=failed' /data/backup-status.txt
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "a non-ok SQLite integrity result stops the backup",
+        "a non-ok SQLite integrity result passed as a healthy backup",
     )
-    if result.returncode == 0:
-        suite.ok("a non-ok SQLite integrity result stops the backup")
-    else:
-        suite.bad("a non-ok SQLite integrity result passed as a healthy backup")
-        print(combined(result), file=sys.stderr)
 
 
 def check_restic_output_and_limit_failures(image: str) -> None:
@@ -601,7 +482,7 @@ count_file=/tmp/tail-count
 count="$(cat "$count_file" 2>/dev/null || echo 0)"
 count=$((count + 1))
 printf '%s\n' "$count" >"$count_file"
-[ "$count" -ne 2 ] || exit 1
+[ "$count" -ne 1 ] || exit 1
 exec /bin/busybox tail "$@"
 EOF
 printf '%s\n' \
@@ -613,7 +494,7 @@ rc=0
 PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
     /restic.sh snapshots >/tmp/restic-tail-failure.log 2>&1 || rc=$?
 [ "$rc" -eq 2 ]
-grep -Fq 'Unable to read the bounded command output' /tmp/restic-tail-failure.log
+! grep -Fq '✓' /tmp/restic-tail-failure.log
 
 # Every bound is checked before the log directory is created, the status marker
 # changes, or a backend command starts.
@@ -648,21 +529,12 @@ grep -Fq 'must not exceed RESTIC_LOG_DIR_MAX_BYTES' /tmp/restic-limit.log
 [ ! -e /tmp/unsafe-log-dir ]
 [ "$(cksum /data/backup-status.txt)" = "$status_before" ]
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "bounded output failures and unsafe restic limits fail before work",
+        "a tail failure passed or an unsafe restic limit reached the backend",
     )
-    if result.returncode == 0:
-        suite.ok("bounded output failures and unsafe restic limits fail before work")
-    else:
-        suite.bad("a tail failure passed or an unsafe restic limit reached the backend")
-        print(combined(result), file=sys.stderr)
 
 
 def check_log_rotation_failure(image: str) -> None:
@@ -693,21 +565,12 @@ grep -Fq 'cannot enforce the per-file log cap' /tmp/unreadable-backup.log
 grep -Fq 'message=Backup complete (log trim failed)' /data/backup-status.txt
 [ "$(grep -c '^fail$' /tmp/heartbeat-calls)" -eq 1 ]
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "an uncappable log is recorded as a backup warning",
+        "an uncappable log leaves a healthy backup marker",
     )
-    if result.returncode == 0:
-        suite.ok("an uncappable log is recorded as a backup warning")
-    else:
-        suite.bad("an uncappable log leaves a healthy backup marker")
-        print(combined(result), file=sys.stderr)
 
 
 def check_status_write_failure(image: str) -> None:
@@ -766,21 +629,12 @@ grep -Fq 'Cannot record backup start state' /tmp/status-write.log
 [ -d /data/backup-status.txt ]
 [ "$(find /data/backup-status.txt -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 0 ]
 """
-    result = docker(
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
+    expect_shell(
         image,
-        "-c",
         script,
-        check=False,
+        "an unwritable backup marker fails and alerts once",
+        "an unwritable backup marker is treated as a successful backup",
     )
-    if result.returncode == 0:
-        suite.ok("an unwritable backup marker fails and alerts once")
-    else:
-        suite.bad("an unwritable backup marker is treated as a successful backup")
-        print(combined(result), file=sys.stderr)
 
 
 def check_app_exit_stops_stack(image: str) -> None:
@@ -1964,7 +1818,6 @@ def main() -> int:
     check_services_requires_unprivileged_user(image)
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)
-    check_read_only_audit(image)
     check_freshness_uptime_read_failure(image)
     check_telegram_error_redaction(image)
     check_snapshot_argument_boundaries(image)

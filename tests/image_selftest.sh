@@ -615,7 +615,7 @@ mkdir -p "$unknown_curl_dir"
 : > "$unknown_tg_calls"
 : > "$unknown_hb_calls"
 chmod 666 "$unknown_tg_calls" "$unknown_hb_calls"
-printf '#!/bin/sh\ncase "$*" in\n  *api.telegram.org*) printf "telegram\\n" >> "%s"; printf "{\\"ok\\":true}\\n200\\n" ;;\n  *health.invalid*) printf "fail\\n" >> "%s" ;;\n  *) exit 1 ;;\nesac\n' \
+printf '#!/bin/sh\ncase "$*" in\n  *api.telegram.org*) printf "telegram\\n" >> "%s"; printf "{\\"ok\\":true}\\nHTTP_STATUS=200\\n" ;;\n  *health.invalid*) printf "fail\\n" >> "%s" ;;\n  *) exit 1 ;;\nesac\n' \
     "$unknown_tg_calls" "$unknown_hb_calls" > "$unknown_curl_dir/curl"
 chmod 755 "$unknown_curl_dir/curl"
 
@@ -699,7 +699,7 @@ same "a stale-backup alert records no email attempt" 0 \
     "$(grep -c 'Alert email' /tmp/selftest-hourly-mail.log)"
 
 # The backup runs on the same hourly schedule, so neither its success nor its
-# failure may email. The success notification stays opt-in and Telegram only.
+# failure may email.
 mkdir -p /data/icon_cache /data/attachments/backup-regression
 printf 'rebuildable\n' > /data/icon_cache/cache
 printf 'attachment\n' > /data/db.pdf
@@ -711,10 +711,10 @@ mkdir -p /data/attachments/backup-regression/icon_cache
 printf 'attachment\n' > /data/attachments/backup-regression/icon_cache/keep.txt
 printf 'attachment\n' > /data/attachments/backup-regression/normal.pdf
 : > "$mail_log"
-PATH="$mail_dir:$PATH" SMTP_TO=ops@example.com BACKUP_NOTIFY_ON_SUCCESS=true \
+PATH="$mail_dir:$PATH" SMTP_TO=ops@example.com \
     /restic.sh backup >/tmp/selftest-backup-ok.log 2>&1
 same "a successful backup never reaches the mailer" 0 "$(mail_calls)"
-same "an opt-in success notification records no email attempt" 0 \
+same "a successful backup records no email attempt" 0 \
     "$(grep -c 'Alert email' /tmp/selftest-backup-ok.log)"
 RESTIC_REPOSITORY="$RESTIC_REPOSITORY" RESTIC_PASSWORD="$RESTIC_PASSWORD" \
     restic ls latest >/tmp/selftest-backup-paths.log 2>&1
@@ -758,9 +758,6 @@ same "a failing backup records no email attempt" 0 \
 same "the alert recipient is not written to the run log" 0 \
     "$(grep -c 'ops@example.com' /tmp/selftest-backup-fail.log)"
 rm -rf "$mail_dir"
-BACKUP_NOTIFY_ON_SUCCESS=maybe /restic.sh snapshots \
-    >/tmp/selftest-notify-invalid.log 2>&1
-same "an invalid success-notification flag is rejected" 2 "$?"
 
 # Telegram is a second notification channel. The token and chat id are secrets:
 # they may appear in the API request but never in the persistent run log.
@@ -771,18 +768,13 @@ mkdir -p "$tg_dir"
 chmod 777 "$tg_dir"
 : > "$tg_calls"
 chmod 666 "$tg_calls"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "200"\nexit 0\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "HTTP_STATUS=200"\nexit 0\n' \
     "$tg_calls" > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
 PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
-    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
+    TELEGRAM_CHAT_ID='@selftest_channel' \
     /restic.sh backup >/tmp/selftest-tg-success.log 2>&1
-same "a successful backup sends one Telegram message" 1 \
-    "$(grep -c 'sendMessage' "$tg_calls")"
-same "the Telegram message carries the success text" 1 \
-    "$(grep -c 'Backup succeeded' "$tg_calls")"
-same "the Telegram notification is recorded" 1 \
-    "$(grep -c 'Telegram notification sent' /tmp/selftest-tg-success.log)"
+same "a successful backup stays quiet" 0 "$(grep -c 'sendMessage' "$tg_calls")"
 same "the Telegram token is not written to the run log" 0 \
     "$(grep -c '123456:selftest' /tmp/selftest-tg-success.log)"
 same "the Telegram chat id is not written to the run log" 0 \
@@ -813,12 +805,13 @@ same "a failed run sends one Telegram message" 1 \
 # HTTP success and API success are separate facts. A proxy or misbehaving
 # endpoint can return a non-2xx status with an `"ok": true` body; treating that
 # as delivered hides the alert failure that this channel exists to report.
-printf '#!/bin/sh\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "500"\nexit 0\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "HTTP_STATUS=500"\nexit 0\n' \
     > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
+seed_status 1
 PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
-    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
-    /restic.sh backup >/tmp/selftest-tg-http500.log 2>&1
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-tg-http500.log 2>&1
 same "a Telegram notification requires HTTP 200" 1 \
     "$(grep -c 'Telegram notification failed (HTTP 500)' /tmp/selftest-tg-http500.log)"
 same "a non-2xx response with ok=true is not reported as sent" 0 \
@@ -837,10 +830,10 @@ same "a non-2xx response with ok=true is not reported as sent" 0 \
 printf '#!/bin/sh\nfail=\nformat=\nwhile [ "$#" -gt 0 ]; do case "$1" in -f|--fail|-*f*) fail=1 ;; -w) shift; format="$1" ;; -w*) format="${1#-w}" ;; esac; shift; done\nif [ -n "$fail" ]; then echo "curl: (22) The requested URL returned error: 401" >&2; exit 22; fi\nprintf "%%s" "{\\"ok\\":false,\\"error_code\\":401,\\"description\\":\\"Unauthorized 123456:selftest\\"}"\nif [ -n "$format" ]; then printf "%%b" "$format" | sed "s/%%{http_code}/401/g"; fi\n' \
     > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
-seed_status "$(date -u +%s)"
+seed_status 1
 PATH="$tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
-    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=true \
-    /restic.sh backup >/tmp/selftest-tg-reject.log 2>&1
+    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_MAX_AGE=60 \
+    /restic.sh check-freshness >/tmp/selftest-tg-reject.log 2>&1
 same "a rejected Telegram notification is recorded as failed" 1 \
     "$(grep -c 'Telegram notification failed' /tmp/selftest-tg-reject.log)"
 same "a rejected notification records the API answer" 1 \
@@ -870,7 +863,7 @@ case "$tg_huge_log_limit" in
         tg_huge_log_limit=262144
         ;;
 esac
-printf '#!/bin/sh\ndd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr "\\000" x\nprintf "\\nrejected 123456:selftest @selftest_channel\\n401\\n"\n' \
+printf '#!/bin/sh\ndd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr "\\000" x\nprintf "\\nrejected 123456:selftest @selftest_channel\\nHTTP_STATUS=401\\n"\n' \
     > "$tg_dir/curl"
 chmod 755 "$tg_dir/curl"
 seed_status 1
@@ -1060,14 +1053,14 @@ mkdir -p "$warn_tg_dir"
 chmod 777 "$warn_tg_dir"
 : > "$warn_tg_calls"
 chmod 666 "$warn_tg_calls"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "200"\nexit 0\n' \
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "%%s\\n" "{\\"ok\\":true}"\nprintf "%%s\\n" "HTTP_STATUS=200"\nexit 0\n' \
     "$warn_tg_calls" > "$warn_tg_dir/curl"
 chmod 755 "$warn_tg_dir/curl"
 dd if=/dev/zero of=/data/restic-logs/selftest-frozen.log bs=1024 count=64 2>/dev/null
 chown vaultwarden:vaultwarden /data/restic-logs/selftest-frozen.log
 chmod 500 /data/restic-logs
 PATH="$warn_tg_dir:$PATH" TELEGRAM_BOT_TOKEN='123456:selftest' \
-    TELEGRAM_CHAT_ID='@selftest_channel' BACKUP_NOTIFY_ON_SUCCESS=false \
+    TELEGRAM_CHAT_ID='@selftest_channel' \
     RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1024 \
     /restic.sh backup >/tmp/selftest-trim-alert.log 2>&1
 trim_alert_rc=$?
