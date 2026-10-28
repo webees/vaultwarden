@@ -1,8 +1,19 @@
 #!/bin/bash
 
+is_numeric_host() {
+    local label
+    local -a labels=()
+    IFS=. read -r -a labels <<< "$1"
+    [ "${#labels[@]}" -gt 0 ] || return 1
+    for label in "${labels[@]}"; do
+        [[ "$label" =~ ^[0-9]+$ || "$label" =~ ^0[xX][0-9A-Fa-f]+$ ]] || return 1
+    done
+}
+
 valid_dns_name() {
     local name="$1"
     [ "${#name}" -le 253 ] \
+        && ! is_numeric_host "$name" \
         && [[ "$name" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
 }
 

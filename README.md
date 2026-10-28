@@ -25,8 +25,7 @@ fly secrets import --app "$FLY_APP" < .env
 reachable for Fly checks. `SIGNUPS_ALLOWED=false` is the safe default.
 
 Address inputs fail closed: `DOMAIN` must be a canonical HTTPS origin, `RESTIC_REPOSITORY` must be an
-absolute path or unambiguous `s3://` URI, and `HEALTHCHECK_URL` must be an HTTPS base URL. Ambiguous,
-credential-bearing, control-character, and traversal-like values are rejected before runtime writes.
+absolute path or unambiguous `s3://` URI, and `HEALTHCHECK_URL` must be an HTTPS base URL. Hosts must be DNS names or canonical ASCII punycode; IP literals, raw Unicode, userinfo, encoding, control characters, and traversal-like paths are rejected before runtime writes.
 
 Optional Telegram and SMTP alerts use the placeholders in `.env.example`. Hourly backup, freshness, and disk failures use Telegram. Monthly
 verification and restore failures also use email when SMTP exists. Successful backups are quiet. An HTTPS `HEALTHCHECK_URL` pings its base URL on success and `/fail` on failure.

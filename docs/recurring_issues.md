@@ -4,6 +4,10 @@ This file records defects that were fixed more than once, especially where a lat
 
 Review basis: all 243 commits reachable before this decision commit were inspected on 2026-10-28. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
 
+## Every-Round Recurrence Gate
+
+Before every audit, optimization, or review change, trace the same failure class through reachable history with `git log -S` and `git log -G`; classify it as never fixed, regressed after simplification, or partially fixed; and identify the one authoritative implementation. For a recurring class, add positive, boundary, negative, and mutation-control tests before declaring the issue closed. Do not combine a regression fix with a line-count reduction. After verification, update the affected History, Final decision, and Regression gate here. An unverified residual remains open and must never count as passing.
+
 ## Bounded Diagnostics
 
 History: `33ccfc2`, `b9187d4`, `f34550e`, `8154030`, `3874f9d`, and `9c06b0b` repeatedly tightened persistent logs, directory limits, timeouts, and captured command output. `5cd1219` then reduced `log()` back to unbounded command substitution while keeping only downstream file truncation.
@@ -14,11 +18,11 @@ Regression gate: oversized command output, failed `tail`, leftover log temporari
 
 ## One Address Policy
 
-History: proxy trust and address parsing changed in `3946373`, `807a94f`, `1763a2e`, and `f102ad2`. Multiple near-duplicate validators made it possible to fix one input path while leaving another path permissive.
+History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a034cf`; address validation was centralized in `f102ad2` and hardened in `ba7f452`. No earlier commit rejected numeric IPv4 forms and later removed that exact guard, but the pre-`f102ad2` design had no syntax validator and the new central validator still admitted dotted, decimal, and hexadecimal numeric forms. The recurrence is incomplete centralization and simplification, not a deleted numeric-IP patch.
 
-Final decision: `scripts/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
+Final decision: `scripts/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Hosts are DNS-only: IPv4 literals and numeric IPv4-compatible forms are rejected alongside bracketed IPv6, while names such as `version.127.example` remain valid. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
 
-Regression gate: accepted and rejected cases plus mutation controls live in `tests/test_address_audit.py`; changing a guard without observing its mutation test fail is not valid coverage.
+Regression gate: every entry point, an accepted name containing a numeric label, and each rejected numeric form are covered in `tests/test_address_audit.py`. A dedicated mutation control removes the shared numeric guard and proves the test fails without it; per-entry IP checks are forbidden because they recreate the fragmentation that caused this recurrence.
 
 ## Restore Isolation
 

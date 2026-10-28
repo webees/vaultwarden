@@ -189,7 +189,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertEqual(calls, bounded)
         self.assertIn("timeout \"$GH_TIMEOUT\" gh api", (ROOT / "scripts/deps.sh").read_text())
 
-    def test_recurring_log_regression_stays_fixed(self) -> None:
+    def test_recurring_regressions_stay_documented(self) -> None:
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
         start = restic.index("log() {")
         block = restic[start:restic.index("\n}\n", start) + 3]
@@ -199,6 +199,9 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertNotIn('body="$("$@" 2>&1)"', block)
         self.assertNotIn("eval ", restic)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
+        self.assertIn("Every-Round Recurrence Gate", decisions)
+        self.assertIn("git log -S", decisions)
+        self.assertIn("git log -G", decisions)
         self.assertIn("Bounded Diagnostics", decisions)
         self.assertIn("Simplification Rule", decisions)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
