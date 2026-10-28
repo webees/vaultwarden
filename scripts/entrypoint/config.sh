@@ -80,7 +80,7 @@ validate_restic_repository() {
         return 2
     fi
     case "$path" in
-        *//*|*'/../'*|../*|*/..|*'/./'*|./*|*/.*|*[[:space:][:cntrl:]\\?#%@]*)
+        /*|*//*|*'/../'*|../*|*/..|*'/./'*|./*|*/.*|*[[:space:][:cntrl:]\\?#%@]*)
             echo "Error: RESTIC_REPOSITORY contains an ambiguous or unsafe path" >&2
             return 2
             ;;

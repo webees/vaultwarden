@@ -247,6 +247,7 @@ class BackupAddressAuditTest(unittest.TestCase):
             "s3://example.invalid/bucket?query",
             "s3://example.invalid/bucket#fragment",
             "s3://example.invalid/bucket%2fescape",
+            "s3://example.invalid//bucket",
             "s3://127.0.0.1/bucket",
             "s3://999.999.999.999/bucket",
             "s3://2130706433/bucket",
@@ -350,11 +351,35 @@ class BackupAddressAuditTest(unittest.TestCase):
             prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")
         ) as temporary:
             mutated = Path(temporary) / "config.sh"
-            mutated.write_text(source.replace(marker, "case /safe in", 1), encoding="utf-8")
+            mutated.write_text(source.replace(marker, "case safe in", 1), encoding="utf-8")
             result = subprocess.run(
                 [
                     "/bin/bash", "-c",
                     '. "$1"; RESTIC_REPOSITORY=s3://s3.example.invalid/../bucket; validate_restic_repository',
+                    "address-audit", str(mutated),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_negative_control_detects_an_empty_repository_path_segment(self) -> None:
+        source = CADDY_CONFIG.read_text(encoding="utf-8")
+        marker = "        /*|*//*|*'/../'*|../*|*/.."
+        self.assertIn(marker, source)
+        with tempfile.TemporaryDirectory(
+            prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")
+        ) as temporary:
+            mutated = Path(temporary) / "config.sh"
+            mutated.write_text(
+                source.replace(marker, "        *//*|*'/../'*|../*|*/..", 1),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    "/bin/bash", "-c",
+                    '. "$1"; RESTIC_REPOSITORY=s3://example.invalid//bucket; validate_restic_repository',
                     "address-audit", str(mutated),
                 ],
                 capture_output=True,

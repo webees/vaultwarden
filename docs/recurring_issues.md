@@ -6,7 +6,7 @@ Review basis: all 243 commits reachable before this decision commit were inspect
 
 ## Every-Round Recurrence Gate
 
-Before every audit, optimization, or review change, trace the same failure class through reachable history with `git log -S` and `git log -G`; classify it as never fixed, regressed after simplification, or partially fixed; and identify the one authoritative implementation. For a recurring class, add positive, boundary, negative, and mutation-control tests before declaring the issue closed. Do not combine a regression fix with a line-count reduction. After verification, update the affected History, Final decision, and Regression gate here. An unverified residual remains open and must never count as passing.
+Every audit, optimization, or review round starts with a recurrence review of the failure class it changes. Trace that class through reachable history with `git log -S` and `git log -G`; classify it as never fixed, regressed after simplification, or partially fixed; and identify the one authoritative implementation. If a previous fix regressed, the round's first patch restores it before unrelated optimization. For a recurring class, add positive, boundary, negative, and mutation-control tests before declaring the issue closed. Do not combine a regression fix with a line-count reduction. A round cannot complete or receive a full score until the affected History, Final decision, and Regression gate here are current, and the PR or final report records the history evidence, authoritative guard, and mutation-control result without creating per-round files. An unverified residual remains open and must never count as passing.
 
 ## Bounded Diagnostics
 
@@ -22,7 +22,7 @@ History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a0
 
 Final decision: `scripts/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Hosts are DNS-only: IPv4 literals and numeric IPv4-compatible forms are rejected alongside bracketed IPv6, while names such as `version.127.example` remain valid. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
 
-Regression gate: every entry point, an accepted name containing a numeric label, and each rejected numeric form are covered in `tests/test_address_audit.py`. A dedicated mutation control removes the shared numeric guard and proves the test fails without it; per-entry IP checks are forbidden because they recreate the fragmentation that caused this recurrence.
+Regression gate: every entry point, an accepted name containing a numeric label, rejected numeric forms, and empty S3 path segments are covered in `tests/test_address_audit.py`. Dedicated mutation controls remove the shared numeric guard and the empty-segment guard independently; per-entry IP checks are forbidden because they recreate the fragmentation that caused this recurrence.
 
 ## Restore Isolation
 
