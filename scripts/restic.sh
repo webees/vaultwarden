@@ -1,6 +1,9 @@
 #!/bin/bash
-
+# shellcheck disable=SC1090
 set -uo pipefail
+ADDRESS_CONFIG=/entrypoint/config.sh
+[ -r "$ADDRESS_CONFIG" ] || ADDRESS_CONFIG="$(dirname "$0")/entrypoint/config.sh"
+. "$ADDRESS_CONFIG"
 
 COMMAND="${1:-}"
 if [ "$(id -u)" = 0 ] && command -v su-exec >/dev/null 2>&1; then
@@ -480,6 +483,8 @@ require_bounded_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT" "$LIMIT_QUICK_TIMEOUT"
 require_bounded_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT" "$LIMIT_LONG_TIMEOUT"
 require_bounded_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}" "$LIMIT_BACKUP_AGE"
 require_bounded_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}" 100
+validate_restic_repository
+validate_healthcheck_url
 [ "$MAX_LOG_BYTES" -le "$MAX_LOG_DIR_BYTES" ] || { echo "Error: RESTIC_LOG_MAX_BYTES must not exceed RESTIC_LOG_DIR_MAX_BYTES, got '${MAX_LOG_BYTES}' greater than '${MAX_LOG_DIR_BYTES}'" >&2; exit 2; }
 if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then

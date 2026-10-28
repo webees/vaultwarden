@@ -164,7 +164,8 @@ def _fetch_text(url: str) -> str:
 
 def _write_outputs(result: SyncResult, handle: TextIO) -> None:
     fields = ("changed", "range_count", "ipv4_count", "ipv6_count", "added_count", "removed_count")
-    for key, value in zip(fields, astuple(result), strict=True):
+    values = astuple(result)
+    for key, value in zip(fields, values):
         print(f"{key}={str(value).lower()}", file=handle)
 
 
