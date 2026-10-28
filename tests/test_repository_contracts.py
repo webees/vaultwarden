@@ -363,6 +363,9 @@ class RepositoryHygieneTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
+        for commit in set(re.findall(r"`([0-9a-f]{7})`", decisions)):
+            self.assertEqual(run("git", "merge-base", "--is-ancestor", commit, "HEAD").returncode, 0,
+                             f"documented history commit {commit} is not reachable from HEAD")
         assert_recurring_goal_gate(self, decisions)
         assert_recurring_class_contracts(self, decisions)
         weakened = decisions.replace(
