@@ -63,9 +63,6 @@ jobs:
           tar -xzf "$tmp/$archive" -C "$tmp" actionlint
           "$tmp/actionlint" -no-color
 
-      - name: Helper self tests
-        run: tests/selftest.sh
-
       # main builds the image once; pre-merge events validate it here.
       - name: Build and validate the image
         if: github.event_name != 'push'

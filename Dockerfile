@@ -42,16 +42,13 @@ RUN set -eu; \
         mailx; \
     addgroup -S vaultwarden; \
     adduser -S -G vaultwarden -h /app -s /bin/sh vaultwarden; \
-    touch /etc/msmtprc; \
-    chown vaultwarden:vaultwarden /etc/msmtprc; \
-    chmod 600 /etc/msmtprc; \
+    install -o vaultwarden -g vaultwarden -m 600 /dev/null /etc/msmtprc; \
     curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
         -o /usr/local/bin/supercronic; \
     echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c -; \
     chmod +x /usr/local/bin/supercronic; \
     ln -sf /usr/bin/msmtp /usr/bin/sendmail; \
-    ln -sf /usr/bin/msmtp /usr/sbin/sendmail; \
-    rm -rf /var/cache/apk/*
+    ln -sf /usr/bin/msmtp /usr/sbin/sendmail
 
 COPY config/crontab \
     config/Caddyfile \

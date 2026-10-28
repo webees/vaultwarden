@@ -40,6 +40,7 @@
 				request>headers>X-Forwarded-For delete
 				request>headers>X-Real-Ip delete
 				request>headers>Fly-Client-Ip delete
+				request>headers>Referer delete
 				request>uri regexp "\?.*$" "?redacted"
 			}
 		}

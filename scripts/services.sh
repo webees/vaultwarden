@@ -16,6 +16,12 @@ if [[ ! "$delay" =~ ^(0|[1-9][0-9]*|0\.[0-9]*[1-9][0-9]*|[1-9][0-9]*\.[0-9]+)$ ]
     exit 2
 fi
 
+wait_status() {
+    local status=0
+    wait "$1" || status=$?
+    return "$status"
+}
+
 supervise() {
     local name="$1" restart="$2" child status
     shift 2
@@ -28,11 +34,8 @@ supervise() {
     while :; do
         setsid "$@" &
         child=$!
-        if wait "$child"; then
-            status=0
-        else
-            status=$?
-        fi
+        status=0
+        wait_status "$child" || status=$?
         child=""
         if [ "$restart" != "true" ]; then
             return "$status"
@@ -40,11 +43,8 @@ supervise() {
         echo "[${name}] exited with status ${status}, restarting in ${delay}s" >&2
         sleep "$delay" &
         child=$!
-        if wait "$child"; then
-            status=0
-        else
-            status=$?
-        fi
+        status=0
+        wait_status "$child" || status=$?
         child=""
         if [ "$status" -ne 0 ]; then
             return "$status"
