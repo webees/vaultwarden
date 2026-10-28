@@ -359,12 +359,14 @@ backup() {
     run "Data backup" "$LONG_TIMEOUT" restic backup --verbose "${excludes[@]}" "$DATA"
     run "Health check" "$LONG_TIMEOUT" restic check
     run "Snapshot prune" "$LONG_TIMEOUT" restic forget --keep-hourly 24 --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --keep-yearly 3 --prune
-    local warning=""
-    trim_logs || warning=" (log trim failed)"
+    if ! trim_logs; then
+        CURRENT_STEP="Log directory limits cannot be enforced after backup"; echo "Error: cannot enforce log limits after backup" >&2
+        exit 2
+    fi
     LAST_SUCCESS="$(date -u +%s)"
-    if ! write_status ok "Backup complete${warning}"; then echo "Cannot record backup completion state" >&2; CURRENT_STEP="Cannot record backup completion state"; exit 2; fi
+    if ! write_status ok "Backup complete"; then echo "Cannot record backup completion state" >&2; CURRENT_STEP="Cannot record backup completion state"; exit 2; fi
     log echo "Backup process complete"
-    if [ -n "$warning" ]; then heartbeat fail; send_telegram "Backup succeeded with warnings" || :; else heartbeat ok; fi
+    heartbeat ok
 }
 
 restore() {

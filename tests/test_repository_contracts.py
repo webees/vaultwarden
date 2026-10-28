@@ -31,6 +31,8 @@ RECURRING_GOAL_GATE_CLAUSES = (
     "classify it as never fixed, regressed after simplification, or partially fixed",
     "identify the one authoritative implementation",
     "restore that invariant in the round's first patch",
+    "Check every execution path that reaches the invariant",
+    "State explicitly whether the same invariant was previously fixed and later removed",
     "positive, boundary, negative, and mutation-control tests",
     "The mutation control must fail when the authoritative guard is removed",
     "No score or completion claim is valid",
@@ -345,17 +347,34 @@ class RepositoryHygieneTest(unittest.TestCase):
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
         start = restic.index("log() {")
         block = restic[start:restic.index("\n}\n", start) + 3]
+        post_trim_guard = (
+            "    if ! trim_logs; then\n"
+            '        CURRENT_STEP="Log directory limits cannot be enforced after backup"; echo "Error: cannot enforce log limits after backup" >&2\n'
+            "        exit 2\n"
+            "    fi"
+        )
 
         self.assertIn('tail -c "$MAX_LOG_BYTES"', block)
         self.assertIn("write_log_entry", block)
         self.assertNotIn('body="$("$@" 2>&1)"', block)
         self.assertNotIn("eval ", restic)
+        self.assertEqual(restic.count(post_trim_guard), 1)
+        self.assertNotIn('trim_logs || warning=" (log trim failed)"', restic)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurring_goal_gate(self, decisions)
         assert_recurring_class_contracts(self, decisions)
         weakened = decisions.replace(
             "scan every recorded failure class below",
             "scan only the failure class currently being changed",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_recurring_goal_gate(self, weakened)
+        weakened = decisions.replace(
+            "Check every execution path that reaches the invariant",
+            "Check only the execution path currently being changed",
             1,
         )
         with self.assertRaises(AssertionError):
