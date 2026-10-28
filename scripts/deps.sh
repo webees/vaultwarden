@@ -11,14 +11,25 @@ readonly GH_TIMEOUT="${DEPS_GH_TIMEOUT:-30}"
 
 fail() { echo "$*" >&2; exit 1; }
 usage_error() { echo "$*" >&2; exit 2; }
-fetch() { curl -fsSL --max-time "$HTTP_TIMEOUT" --retry 2 --retry-delay 2 "$@"; }
 emit() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
 
+validate_timeout() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]] || fail "$2 must be a positive integer number of seconds"
+}
+
+fetch() {
+    validate_timeout "$HTTP_TIMEOUT" DEPS_HTTP_TIMEOUT
+    curl -fsSL --max-time "$HTTP_TIMEOUT" --retry 2 --retry-delay 2 "$@"
+}
+
 gh_api() {
+    validate_timeout "$GH_TIMEOUT" DEPS_GH_TIMEOUT
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$GH_TIMEOUT" gh api "$@"
+        timeout -k 2 "$GH_TIMEOUT" gh api "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout -k 2 "$GH_TIMEOUT" gh api "$@"
     else
-        gh api "$@"
+        fail "gh api requires timeout or gtimeout to enforce DEPS_GH_TIMEOUT"
     fi
 }
 

@@ -16,6 +16,14 @@ Final decision: bound output at capture time and again before persistence. Comma
 
 Regression gate: oversized command output, failed `tail`, leftover log temporaries, unsafe limits, an uncappable existing log, and write failures must all fail closed in `tests/runtime_smoke.py`. `scripts/restic.sh` must never return to the unbounded `body="$("$@" 2>&1)"` capture removed in `5cd1219`.
 
+## Outbound Network Bounds
+
+History: `bb51cdb` bounded `curl` calls, `12d9215` added a `gh api` timeout wrapper with an unbounded fallback, `5256c7a` bounded workflow API calls independently, and `376f55f` preserved the partial script fallback during simplification. The recurring defect is a partially fixed boundary: the timeout exists on CI but silently disappears on hosts without the expected command.
+
+Final decision: every outbound operation has a positive numeric time limit. `scripts/deps.sh` rejects zero, negative, fractional, and non-numeric timeout configuration before starting a request. `gh api` runs through `timeout` or `gtimeout` with a mandatory SIGKILL grace period, so a process that ignores SIGTERM still cannot hang the job. Absence of a supported timeout command fails closed, and a raw unbounded fallback is forbidden.
+
+Regression gate: success must prove the timeout wrapper is called; missing wrappers, unsafe timeout values, and a mutation that restores the raw fallback must fail in `tests/test_repository_contracts.py`. Every new outbound command must add a deterministic failure-path test instead of relying on CI runner behavior.
+
 ## One Address Policy
 
 History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a034cf`; address validation was centralized in `f102ad2` and hardened in `ba7f452`. No earlier commit rejected numeric IPv4 forms and later removed that exact guard, but the pre-`f102ad2` design had no syntax validator and the new central validator still admitted dotted, decimal, and hexadecimal numeric forms. The recurrence is incomplete centralization and simplification, not a deleted numeric-IP patch.

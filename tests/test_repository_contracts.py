@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from tests.performance import Result, apply_baseline, build_database, parse_docker_memory, require_temporary_path
@@ -135,14 +136,87 @@ else:
             {"tag_name": "v1.9.0", "prerelease": False, "draft": False, "assets": []},
             {"tag_name": "v3.0.0", "prerelease": True, "draft": False, "assets": []},
         ]
+        timeout_log = self.repo / "timeout-args"
+        write_executable(
+            self.bin / "timeout",
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{timeout_log}'\nshift 3\nexec \"$@\"\n",
+        )
         write_executable(self.bin / "gh", "#!/bin/sh\nprintf '%s\\n' \"$FAKE_RELEASES\"\n")
         write_executable(self.bin / "curl", "#!/bin/sh\nprintf 'payload'\n")
         self.env["FAKE_RELEASES"] = json.dumps(releases)
         result = self._deps("tools", check=True)
         output = self.output.read_text(encoding="utf-8")
+        self.assertRegex(timeout_log.read_text(encoding="utf-8"), r"^-k 2 30 gh api https://api\.github\.com/")
         self.assertIn("supercronic_version=v2.0.0", output)
         self.assertIn("supercronic_sha_amd64=", output)
         self.assertIn("supercronic_sha_arm64=", output)
+
+    def test_network_timeouts_reject_unbounded_values_before_network_calls(self) -> None:
+        marker = self.repo / "network-called"
+        write_executable(self.bin / "curl", f"#!/bin/sh\nprintf called > '{marker}'\n")
+        write_executable(self.bin / "gh", f"#!/bin/sh\nprintf called > '{marker}'\n")
+        write_executable(self.bin / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
+        for name, value, command in (
+            ("DEPS_HTTP_TIMEOUT", "0", "base"),
+            ("DEPS_HTTP_TIMEOUT", "1.5", "base"),
+            ("DEPS_GH_TIMEOUT", "0", "tools"),
+            ("DEPS_GH_TIMEOUT", "00", "tools"),
+            ("DEPS_GH_TIMEOUT", "-1", "tools"),
+            ("DEPS_GH_TIMEOUT", "1s", "tools"),
+        ):
+            with self.subTest(name=name, value=value):
+                marker.unlink(missing_ok=True)
+                self.env[name] = value
+                result = self._deps(command)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(name, result.stderr)
+                self.assertFalse(marker.exists())
+            self.env.pop(name, None)
+
+    def test_missing_timeout_fails_closed_and_mutation_control_catches_fallback(self) -> None:
+        marker = self.repo / "gh-called"
+        write_executable(self.bin / "gh", f"#!/bin/sh\nprintf called > '{marker}'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+
+        self.env["PATH"] = str(self.bin)
+        result = self._deps("tools")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires timeout or gtimeout", result.stderr)
+        self.assertFalse(marker.exists())
+
+        source = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
+        expected_guard = '        fail "gh api requires timeout or gtimeout to enforce DEPS_GH_TIMEOUT"'
+        self.assertEqual(source.count(expected_guard), 1)
+        mutated = self.repo / "scripts" / "deps-mutated.sh"
+        mutated.write_text(source.replace(expected_guard, '        gh api "$@"', 1), encoding="utf-8")
+        mutated.chmod(0o755)
+        result = run(str(mutated), "tools", cwd=self.repo, env=self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(marker.exists())
+
+    def test_real_timeout_stops_a_stalled_gh_request(self) -> None:
+        write_executable(self.bin / "gh", "#!/bin/sh\nexec sleep 5\n")
+        self.env["DEPS_GH_TIMEOUT"] = "1"
+        started = time.monotonic()
+        result = self._deps("tools")
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 2.5)
+
+    def test_gtimeout_is_an_accepted_bounded_fallback(self) -> None:
+        marker = self.repo / "gh-called"
+        timeout_log = self.repo / "gtimeout-args"
+        write_executable(self.bin / "gh", f"#!/bin/sh\nprintf called > '{marker}'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+        write_executable(
+            self.bin / "gtimeout",
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{timeout_log}'\nshift 3\nexec \"$@\"\n",
+        )
+        self.env["PATH"] = str(self.bin)
+        result = self._deps("tools")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(marker.exists())
+        self.assertRegex(timeout_log.read_text(encoding="utf-8"), r"^-k 2 30 gh api https://api\.github\.com/")
 
     def test_apk_and_rebuild_decisions_fail_closed(self) -> None:
         write_executable(self.bin / "docker", "#!/bin/sh\nprintf 'zlib 1.2.13-r0 1.2.13-r1\\n'\n")
@@ -187,7 +261,10 @@ class RepositoryHygieneTest(unittest.TestCase):
                 bounded += any(flag in block for flag in ("--max-time", " -m "))
         self.assertGreater(calls, 0)
         self.assertEqual(calls, bounded)
-        self.assertIn("timeout \"$GH_TIMEOUT\" gh api", (ROOT / "scripts/deps.sh").read_text())
+        deps = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
+        self.assertIn('timeout -k 2 "$GH_TIMEOUT" gh api', deps)
+        self.assertIn('gtimeout -k 2 "$GH_TIMEOUT" gh api', deps)
+        self.assertNotIn('\n        gh api "$@"', deps)
 
     def test_recurring_regressions_stay_documented(self) -> None:
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
@@ -207,6 +284,8 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn("A round cannot complete or receive a full score", decisions)
         self.assertIn("without creating per-round files", decisions)
         self.assertIn("Bounded Diagnostics", decisions)
+        self.assertIn("Outbound Network Bounds", decisions)
+        self.assertIn("Absence of a supported timeout command fails closed", decisions)
         self.assertIn("Simplification Rule", decisions)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
 
