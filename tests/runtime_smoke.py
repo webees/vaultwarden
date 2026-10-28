@@ -242,6 +242,7 @@ def check_invalid_addresses(image: str) -> None:
 
     backup_cases = (
         ("relative/path", "", "RESTIC_REPOSITORY"),
+        ("s3://example.invalid//bucket", "", "RESTIC_REPOSITORY"),
         ("s3://s3.example.invalid/bucket", "http://health.example.invalid", "HEALTHCHECK_URL"),
     )
     for repository, healthcheck, message in backup_cases:
