@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,9 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+from tests import runtime_smoke
 from tests.performance import Result, apply_baseline, build_database, parse_docker_memory, require_temporary_path
 
 
@@ -248,6 +251,47 @@ else:
 
 
 class RepositoryHygieneTest(unittest.TestCase):
+    def test_runtime_shell_retries_only_interrupted_attempts(self) -> None:
+        started = "__runtime_smoke_started__"
+        ended = "__runtime_smoke_ended__="
+        passed = "__runtime_smoke_passed__"
+        failed_assertion = subprocess.CompletedProcess(
+            [], 1, f"{started}\n{ended}2\nassertion failed\n", ""
+        )
+        started_case = subprocess.CompletedProcess(
+            [], 0, f"{started}\n{ended}0\n{passed}\n", ""
+        )
+        interrupted_container = subprocess.CompletedProcess([], 1, f"{started}\n", "")
+        clean_exit_without_markers = subprocess.CompletedProcess([], 0, "", "")
+
+        def run_case(*results: subprocess.CompletedProcess[str]) -> tuple[mock.Mock, mock.Mock]:
+            suite = mock.Mock()
+            with mock.patch.object(runtime_smoke, "docker", side_effect=results) as docker_mock:
+                with mock.patch.object(runtime_smoke, "suite", suite):
+                    with mock.patch("sys.stderr", io.StringIO()):
+                        runtime_smoke.expect_shell("image", "true", "accepted", "rejected")
+            return suite, docker_mock
+
+        suite, docker_mock = run_case(interrupted_container, started_case)
+        self.assertEqual(docker_mock.call_count, 2)
+        suite.ok.assert_called_once_with("accepted")
+        suite.bad.assert_not_called()
+
+        suite, docker_mock = run_case(failed_assertion)
+        self.assertEqual(docker_mock.call_count, 1)
+        suite.ok.assert_not_called()
+        suite.bad.assert_called_once_with("rejected")
+
+        suite, docker_mock = run_case(*(interrupted_container,) * 3)
+        self.assertEqual(docker_mock.call_count, 3)
+        suite.ok.assert_not_called()
+        suite.bad.assert_called_once_with("rejected: shell case was interrupted after 3 attempts")
+
+        suite, docker_mock = run_case(clean_exit_without_markers)
+        self.assertEqual(docker_mock.call_count, 1)
+        suite.ok.assert_not_called()
+        suite.bad.assert_called_once_with("rejected: shell case exited without lifecycle markers")
+
     def test_runtime_files_have_one_process_model_and_static_ranges(self) -> None:
         service = (ROOT / "scripts/services.sh").read_text(encoding="utf-8")
         for command in ("/vaultwarden", "caddy run --config /Caddyfile", "supercronic /crontab"):
@@ -303,6 +347,7 @@ class RepositoryHygieneTest(unittest.TestCase):
             assert_recurring_goal_gate(self, weakened)
         self.assertIn("Bounded Diagnostics", decisions)
         self.assertIn("Outbound Network Bounds", decisions)
+        self.assertIn("Runtime Harness Lifecycle", decisions)
         self.assertIn("Absence of a supported timeout command fails closed", decisions)
         self.assertIn("Simplification Rule", decisions)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
