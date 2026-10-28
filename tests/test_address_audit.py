@@ -72,11 +72,15 @@ def audit_addresses(
 class CaddyAddressAuditTest(unittest.TestCase):
     def test_valid_hosts_are_unique_and_case_normalized(self) -> None:
         result = validate_caddy(
-            "EXAMPLE.com   xn--bcher-kva.example", "https://vault.example.com:8443"
+            "EXAMPLE.com   version.127.example   xn--bcher-kva.example",
+            "https://vault.example.com:8443",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "CADDY_DOMAINS=example.com xn--bcher-kva.example\n")
+        self.assertEqual(
+            result.stdout,
+            "CADDY_DOMAINS=example.com version.127.example xn--bcher-kva.example\n",
+        )
 
     def test_unset_or_empty_domain_is_allowed_but_hosts_are_required(self) -> None:
         self.assertEqual(validate_caddy(None, None).returncode, 0)
@@ -98,6 +102,10 @@ class CaddyAddressAuditTest(unittest.TestCase):
             "raw unicode": "bücher.example",
             "oversized label": f"{'a' * 64}.example.com",
             "oversized name": ".".join(["a" * 63] * 4),
+            "ipv4": "127.0.0.1",
+            "invalid dotted numeric": "999.999.999.999",
+            "decimal ipv4": "2130706433",
+            "hexadecimal ipv4": "0x7f000001",
         }
         for label, value in cases.items():
             with self.subTest(label=label):
@@ -125,6 +133,10 @@ class CaddyAddressAuditTest(unittest.TestCase):
             "raw unicode host": "https://bücher.example",
             "bracketed IPv6": "https://[2001:db8::1]",
             "unbracketed IPv6": "https://2001:db8::1",
+            "ipv4": "https://127.0.0.1",
+            "invalid dotted numeric": "https://999.999.999.999",
+            "decimal ipv4": "https://2130706433",
+            "hexadecimal ipv4": "https://0x7f000001",
             "oversized origin": f"https://{'a' * 254}",
         }
         for label, value in cases.items():
@@ -142,6 +154,23 @@ class CaddyAddressAuditTest(unittest.TestCase):
             self.assertIn(marker, source)
             mutated.write_text(source.replace(marker, 'true || {', 1), encoding="utf-8")
             result = validate_caddy_script(mutated, "bad_host", None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_negative_control_detects_a_disabled_numeric_host_guard(self) -> None:
+        source = CADDY_CONFIG.read_text(encoding="utf-8")
+        marker = '        && ! is_numeric_host "$name" \\\n'
+        self.assertIn(marker, source)
+        with tempfile.TemporaryDirectory(
+            prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")
+        ) as temporary:
+            mutated = Path(temporary) / "config.sh"
+            mutated.write_text(source.replace(marker, "", 1), encoding="utf-8")
+            result = subprocess.run(
+                ["/bin/bash", "-c", '. "$1"; valid_dns_name 127.0.0.1', "address-audit", str(mutated)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_negative_control_detects_a_disabled_cidr_family_guard(self) -> None:
@@ -218,6 +247,11 @@ class BackupAddressAuditTest(unittest.TestCase):
             "s3://example.invalid/bucket?query",
             "s3://example.invalid/bucket#fragment",
             "s3://example.invalid/bucket%2fescape",
+            "s3://127.0.0.1/bucket",
+            "s3://999.999.999.999/bucket",
+            "s3://2130706433/bucket",
+            "s3://0x7f000001/bucket",
+            "s3://[2001:db8::1]/bucket",
         )
         for value in rejected:
             with self.subTest(value=value):
@@ -254,6 +288,10 @@ class BackupAddressAuditTest(unittest.TestCase):
             "https://health.invalid/ping:token",
             "https://health.invalid/ping@token",
             "https://[2001:db8::1]/ping",
+            "https://127.0.0.1/ping",
+            "https://999.999.999.999/ping",
+            "https://2130706433/ping",
+            "https://0x7f000001/ping",
             f"https://health.invalid/{'a' * 1025}",
         )
         for value in rejected:
