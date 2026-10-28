@@ -7,6 +7,7 @@ set -euo pipefail
 . /entrypoint/restore.sh
 . /entrypoint/smtp.sh
 
+audit_addresses
 prepare_filesystem
 harden_config_json
 if [ -f /data/restore-pending ]; then

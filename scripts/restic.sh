@@ -1,6 +1,9 @@
 #!/bin/bash
-
+# shellcheck disable=SC1090
 set -uo pipefail
+ADDRESS_CONFIG=/entrypoint/config.sh
+[ -r "$ADDRESS_CONFIG" ] || ADDRESS_CONFIG="$(dirname "$0")/entrypoint/config.sh"
+. "$ADDRESS_CONFIG"
 
 COMMAND="${1:-}"
 if [ "$(id -u)" = 0 ] && command -v su-exec >/dev/null 2>&1; then
@@ -8,8 +11,7 @@ if [ "$(id -u)" = 0 ] && command -v su-exec >/dev/null 2>&1; then
 fi
 
 umask 077
-APP_NAME="${FLY_APP_NAME:-Vaultwarden}"
-DATA=/data
+APP_NAME="${FLY_APP_NAME:-Vaultwarden}" DATA=/data
 LOG_DIR="${RESTIC_LOG_DIR:-/data/restic-logs}"
 LOG="$LOG_DIR/$(date +%Y%m%d_%H%M%S).log"
 STATUS_FILE=/data/backup-status.txt
@@ -47,9 +49,7 @@ read_status_body() {
     printf '%s' "$body"
 }
 
-STATUS_STATE=""
-STATUS_MARKER_ERROR=""
-LAST_SUCCESS=0
+STATUS_STATE="" STATUS_MARKER_ERROR="" LAST_SUCCESS=0
 if [ -e "$STATUS_FILE" ]; then
     if body="$(read_status_body)"; then
         STATUS_STATE="$(printf '%s\n' "$body" | sed -n 's/^state=//p' | head -n 1)"
@@ -90,12 +90,25 @@ redact() {
     printf '%s' "$body" | sed -E '/^[[:space:]]*[0-9a-fA-F]{8}[[:space:]]/ s/([[:space:]])[0-9a-fA-F]{12,}([[:space:]]|$)/\1[redacted-fly-machine-host]\2/g'
 }
 
-log() {
-    local body redacted
-    body="$("$@" 2>&1)"
-    redacted="$(redact "$body")"
-    [ -z "$redacted" ] || printf '%s\n' "$redacted" | tee -a "$LOG"
+write_log_entry() {
+    local body="$1" tmp
+    tmp="$(mktemp "${LOG}.tmp.XXXXXX")" || return 1
+    { [ ! -f "$LOG" ] || tail -c "$MAX_LOG_BYTES" "$LOG"; printf '%s\n' "$body"; } \
+        | tail -c "$MAX_LOG_BYTES" > "$tmp" && mv -f "$tmp" "$LOG" && printf '%s\n' "$body" && return 0
+    rm -f "$tmp"
+    echo "Error: cannot write bounded output to ${LOG}" >&2
+    return 1
 }
+
+log() {
+    local body redacted rc
+    body="$({ "$@" 2>&1 | tail -c "$MAX_LOG_BYTES"; })"; rc=$?
+    if [ "$rc" -ne 0 ]; then echo "Error: cannot capture bounded log output" >&2; exit 2; fi
+    if ! redacted="$(redact "$body")"; then echo "Error: cannot redact log output" >&2; exit 2; fi
+    if [ -n "$redacted" ] && ! write_log_entry "$redacted"; then exit 2; fi
+}
+
+log_safe() { ( log "$@" ) || :; }
 
 write_status() {
     local state="$1" message="${2:-}" body tmp="${STATUS_FILE}.tmp.$$"
@@ -125,7 +138,7 @@ heartbeat() {
     [ -z "${HEALTHCHECK_URL:-}" ] && return 0
     local suffix=""
     [ "${1:-ok}" = fail ] && suffix=/fail
-    curl -fsS -m 10 --retry 3 "${HEALTHCHECK_URL}${suffix}" >/dev/null 2>&1 || log echo "Heartbeat ping failed"
+    curl -fsS -m 10 --retry 3 "${HEALTHCHECK_URL}${suffix}" >/dev/null 2>&1 || log_safe echo "Heartbeat ping failed"
 }
 
 die() { log echo "$1"; exit 2; }
@@ -150,7 +163,7 @@ stop_process_group() {
     local pid="$1" attempt=0
     kill -TERM -"$pid" 2>/dev/null || return 0
     while kill -0 -"$pid" 2>/dev/null; do
-        if [ "$attempt" -ge 10 ]; then kill -KILL -"$pid" 2>/dev/null || :; break; fi
+        if [ "$attempt" -ge 10 ]; then kill -KILL -"$pid" 2>/dev/null || :; sleep 0.1; break; fi
         sleep 0.1
         attempt=$((attempt + 1))
     done
@@ -183,8 +196,8 @@ send_mail() {
     local out rc
     out="$(set -o pipefail; timeout 45 mail -a "Content-Type: text/plain; charset=UTF-8" -s "[$APP_NAME] $1" "$SMTP_TO" < "$LOG" 2>&1 | tail -c "$MAX_LOG_BYTES")"
     rc=$?
-    if [ "$rc" -eq 0 ]; then log echo "Alert email sent"; return 0; fi
-    log echo "Alert email failed (exit ${rc})"; [ -z "$out" ] || log redact "$out"
+    if [ "$rc" -eq 0 ]; then log_safe echo "Alert email sent"; return 0; fi
+    log_safe echo "Alert email failed (exit ${rc})"; [ -z "$out" ] || log_safe redact "$out"
     return 1
 }
 
@@ -202,11 +215,11 @@ send_telegram() {
     body="$(printf '%s\n' "$out" | sed '/^HTTP_STATUS=/d')"
     body="${body//"$TELEGRAM_BOT_TOKEN"/<redacted>}"
     [ -z "$TELEGRAM_CHAT_ID" ] || body="${body//"$TELEGRAM_CHAT_ID"/<redacted>}"
-    if [ "$rc" -eq 0 ] && [ "$status" = 200 ] && [[ "$body" =~ $TELEGRAM_OK ]]; then log echo "Telegram notification sent"; return 0; fi
-    if [ "$rc" -ne 0 ]; then log echo "Telegram notification failed (curl exit ${rc})"
-    elif [[ "$status" =~ ^[0-9]+$ ]] && [ "$status" != 000 ]; then log echo "Telegram notification failed (HTTP ${status})"
-    else log echo "Telegram notification failed (no HTTP response)"; fi
-    [ -z "$body" ] || log printf '%s\n' "$body"
+    if [ "$rc" -eq 0 ] && [ "$status" = 200 ] && [[ "$body" =~ $TELEGRAM_OK ]]; then log_safe echo "Telegram notification sent"; return 0; fi
+    if [ "$rc" -ne 0 ]; then log_safe echo "Telegram notification failed (curl exit ${rc})"
+    elif [[ "$status" =~ ^[0-9]+$ ]] && [ "$status" != 000 ]; then log_safe echo "Telegram notification failed (HTTP ${status})"
+    else log_safe echo "Telegram notification failed (no HTTP response)"; fi
+    [ -z "$body" ] || log_safe printf '%s\n' "$body"
     return 1
 }
 
@@ -224,19 +237,7 @@ notify_test() {
     return 1
 }
 
-check_audit_trail() {
-    ( : >> "$LOG" ) 2>/dev/null || echo "Warning: cannot write ${LOG}; this run leaves no persistent log" >&2
-    if ! is_regular_file "$STATUS_FILE"; then
-        echo "Warning: ${STATUS_FILE} is not a regular file; backup state will not be recorded" >&2
-    elif ! ( : >> "$STATUS_FILE" ) 2>/dev/null; then
-        echo "Warning: cannot write ${STATUS_FILE}; backup state will not be recorded" >&2
-    fi
-}
-
-RESTORE_TMP_DIR=""
-RESTORE_BOOT_LOG=""
-RESTORE_BOOT_PIPE=""
-RESTORE_BOOT_READER=""
+RESTORE_TMP_DIR="" RESTORE_BOOT_LOG="" RESTORE_BOOT_PIPE="" RESTORE_BOOT_READER=""
 
 finish_restore_boot_log() {
     local attempt=0
@@ -288,8 +289,8 @@ run_command() {
     local show_success="$1" label="$2" timeout_seconds="$3" out_file rc
     shift 3
     CURRENT_STEP="$label"
+    log printf '%s ' "$label"
     out_file="$(mktemp "${TMPDIR:-/tmp}/restic-run.XXXXXX")" || die "Unable to create temporary output file"
-    printf '%s ' "$(redact "$label")" | tee -a "$LOG"
     ( exec 9>&-; set -o pipefail; timed "$timeout_seconds" "$@" 2>&1 | tail -c "$MAX_LOG_BYTES" > "$out_file" ) || rc=$?
     if [ "${rc:-0}" -eq 0 ]; then
         log echo OK
@@ -480,6 +481,7 @@ require_bounded_int RESTIC_QUICK_TIMEOUT "$QUICK_TIMEOUT" "$LIMIT_QUICK_TIMEOUT"
 require_bounded_int RESTIC_LONG_TIMEOUT "$LONG_TIMEOUT" "$LIMIT_LONG_TIMEOUT"
 require_bounded_int BACKUP_MAX_AGE "${BACKUP_MAX_AGE:-7200}" "$LIMIT_BACKUP_AGE"
 require_bounded_int BACKUP_MAX_USAGE_PERCENT "${BACKUP_MAX_USAGE_PERCENT:-85}" 100
+audit_addresses || exit $?
 [ "$MAX_LOG_BYTES" -le "$MAX_LOG_DIR_BYTES" ] || { echo "Error: RESTIC_LOG_MAX_BYTES must not exceed RESTIC_LOG_DIR_MAX_BYTES, got '${MAX_LOG_BYTES}' greater than '${MAX_LOG_DIR_BYTES}'" >&2; exit 2; }
 if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_CHAT_ID" ]; then
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
@@ -492,7 +494,9 @@ fi
 
 mkdir -p "$LOG_DIR" 2>/dev/null || :
 trim_logs
-check_audit_trail
+if [ "$COMMAND" != backup ]; then
+    ( : >> "$LOG" ) || { echo "Error: cannot create ${LOG}" >&2; exit 2; }
+fi
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
     case "$COMMAND" in

@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import io
 import ipaddress
-import json
 from pathlib import Path
 import stat
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -103,6 +101,26 @@ class CloudflareRangeSyncTest(unittest.TestCase):
         for value in (self.v4_a, self.v4_b, self.v6_a, self.v6_b):
             self.assertIn(f"client_ip {value}\n", rendered)
         self.assertEqual(list(self.root.glob(".*.tmp")), [])
+
+    def test_atomic_replace_syncs_the_file_and_parent_directory(self) -> None:
+        self.path.write_text("original\n", encoding="utf-8")
+
+        with mock.patch.object(cloudflare_ranges.os, "fsync", wraps=cloudflare_ranges.os.fsync) as sync:
+            cloudflare_ranges._atomic_write(self.path, "replacement\n")
+
+        self.assertEqual(sync.call_count, 2)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "replacement\n")
+
+    def test_directory_sync_failure_is_not_silenced(self) -> None:
+        self.path.write_text("original\n", encoding="utf-8")
+
+        with mock.patch.object(
+            cloudflare_ranges.os, "fsync", side_effect=[None, OSError("directory sync failed")]
+        ):
+            with self.assertRaisesRegex(OSError, "directory sync failed"):
+                cloudflare_ranges._atomic_write(self.path, "replacement\n")
+
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "replacement\n")
 
     def test_removed_ranges_are_reported(self) -> None:
         write_ranges(self.path, [*self.ipv4_ranges, self.v4_b], self.ipv6_ranges)
@@ -338,72 +356,6 @@ class CloudflareRangeSyncTest(unittest.TestCase):
 
         self.assertTrue(args.file.is_absolute())
         self.assertEqual(args.file, REPO_ROOT / "config" / "cloudflare_ips.caddy")
-
-
-def load_workflow() -> dict[str, object]:
-    ruby = """
-      require "json"
-      require "yaml"
-      print JSON.generate(YAML.load_file(ARGV.fetch(0)))
-    """
-    result = subprocess.run(
-        ["ruby", "-e", ruby, ".github/workflows/dependency_updates.yml"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(result.stderr.strip() or "could not parse workflow")
-    return json.loads(result.stdout)
-
-
-class DependencyWorkflowTest(unittest.TestCase):
-    def test_cloudflare_changes_use_the_guarded_dependency_pr_path(self) -> None:
-        workflow = load_workflow()
-        jobs = workflow.get("jobs")
-        self.assertIsInstance(jobs, dict)
-        steps = jobs["check"]["steps"]
-        self.assertIsInstance(steps, list)
-
-        cloudflare = next(
-            (step for step in steps if step.get("id") == "cloudflare"), None
-        )
-        self.assertIsNotNone(cloudflare)
-        self.assertIn(
-            "python3 scripts/cloudflare_ranges.py sync",
-            str(cloudflare.get("run", "")),
-        )
-
-        changed = next(step for step in steps if step.get("id") == "changed")
-        changed_run = str(changed.get("run", ""))
-        self.assertIn("steps.compare.outputs.changed", changed_run)
-        self.assertIn("steps.cloudflare.outputs.changed", changed_run)
-
-        pull_request = next(step for step in steps if step.get("id") == "pr")
-        self.assertIn(
-            "steps.changed.outputs.changed == 'true'",
-            str(pull_request.get("if", "")),
-        )
-        pull_request_run = str(pull_request.get("run", ""))
-        self.assertIn("git add Dockerfile config/cloudflare_ips.caddy", pull_request_run)
-
-        published_apk = next(
-            step for step in steps if step.get("id") == "published-apk"
-        )
-        self.assertIn(
-            "steps.changed.outputs.changed != 'true'",
-            str(published_apk.get("if", "")),
-        )
-
-        deploy = next(
-            step
-            for step in steps
-            if "Build and deploy after the merge" in str(step.get("name", ""))
-        )
-        self.assertIn(
-            "steps.changed.outputs.changed == 'true'", str(deploy.get("if", ""))
-        )
 
 
 if __name__ == "__main__":

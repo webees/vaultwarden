@@ -225,6 +225,39 @@ def check_invalid_restart_delay(image: str) -> None:
     suite.ok("an invalid process restart delay fails closed before services start")
 
 
+def check_invalid_addresses(image: str) -> None:
+    cases = (
+        (("CADDY_DOMAINS=bad_host",), "not a valid DNS name"),
+        (("DOMAIN=http://example.com",), "must be an https URL"),
+    )
+    for environment, message in cases:
+        args = ["run", "--rm"]
+        for value in environment:
+            args.extend(("--env", value))
+        result = docker(*args, image, check=False)
+        if result.returncode != 2 or message not in combined(result):
+            suite.bad("an invalid entrypoint address did not fail closed")
+            print(f"rc={result.returncode}\n{combined(result)}", file=sys.stderr)
+            suite.report()
+
+    backup_cases = (
+        ("relative/path", "", "RESTIC_REPOSITORY"),
+        ("s3://s3.example.invalid/bucket", "http://health.example.invalid", "HEALTHCHECK_URL"),
+    )
+    for repository, healthcheck, message in backup_cases:
+        result = docker(
+            "run", "--rm", "--entrypoint", "/restic.sh",
+            "--env", f"RESTIC_REPOSITORY={repository}",
+            "--env", f"HEALTHCHECK_URL={healthcheck}",
+            image, "check-disk", check=False,
+        )
+        if result.returncode != 2 or message not in combined(result):
+            suite.bad("an invalid backup address did not fail closed")
+            print(f"rc={result.returncode}\n{combined(result)}", file=sys.stderr)
+            suite.report()
+    suite.ok("unsafe entrypoint, repository and heartbeat addresses fail closed")
+
+
 def check_services_requires_unprivileged_user(image: str) -> None:
     result = docker(
         "run",
@@ -245,7 +278,8 @@ def check_timeout_process_group_cleanup(image: str) -> None:
     """A helper that ignores TERM must not survive its command's process group."""
     script = r"""
 set -eu
-mkdir -p /tmp/stub
+mkdir -p /data/restic-logs /tmp/stub
+chown -R vaultwarden:vaultwarden /data
 printf '%s\n' \
     '#!/bin/sh' \
     '(trap "" TERM; sleep 300) &' \
@@ -288,7 +322,7 @@ rc=0
 output="$(
     PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
     TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
-    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+    HEALTHCHECK_URL=https://health.invalid/ping /restic.sh backup 2>&1
 )" || rc=$?
 printf '%s\n' "$output"
 [ "$rc" -eq 2 ] || exit 1
@@ -496,6 +530,25 @@ PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
 [ "$rc" -eq 2 ]
 ! grep -Fq '✓' /tmp/restic-tail-failure.log
 
+rm -rf /data/restic-logs
+mkdir -p /data/restic-logs
+chown vaultwarden:vaultwarden /data/restic-logs
+printf '%s\n' \
+    '#!/bin/sh' \
+    'head -c 2097152 /dev/zero | tr "\\000" x' \
+    'exit 0' >/tmp/stub/restic
+chmod +x /tmp/stub/restic
+rc=0
+PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_REPOSITORY=/tmp/repo \
+    RESTIC_LOG_MAX_BYTES=4096 RESTIC_LOG_DIR_MAX_BYTES=4096 \
+    /restic.sh snapshots >/tmp/restic-huge-output.log 2>&1 || rc=$?
+[ "$rc" -eq 0 ]
+log_file="$(find /data/restic-logs -maxdepth 1 -type f -name '*.log' | head -n 1)"
+[ -n "$log_file" ]
+[ "$(wc -c < "$log_file")" -le 4096 ]
+[ -z "$(find /data/restic-logs -maxdepth 1 -type f -name '*.tmp.*' -print -quit)" ]
+rm -f /tmp/restic-huge-output.log
+
 # Every bound is checked before the log directory is created, the status marker
 # changes, or a backend command starts.
 status_before="$(cksum /data/backup-status.txt)"
@@ -559,7 +612,7 @@ printf '%s\n' \
 chmod +x /tmp/stub/restic /tmp/stub/sqlite3 /tmp/stub/curl
 PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest \
     RESTIC_LOG_MAX_BYTES=1024 RESTIC_LOG_DIR_MAX_BYTES=1048576 \
-    HEALTHCHECK_URL=http://health.invalid/ping \
+    HEALTHCHECK_URL=https://health.invalid/ping \
     /restic.sh backup >/tmp/unreadable-backup.log 2>&1
 grep -Fq 'cannot enforce the per-file log cap' /tmp/unreadable-backup.log
 grep -Fq 'message=Backup complete (log trim failed)' /data/backup-status.txt
@@ -600,7 +653,7 @@ rc=0
 output="$(
     PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_DIR=/tmp/logs \
     TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
-    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+    HEALTHCHECK_URL=https://health.invalid/ping /restic.sh backup 2>&1
 )" || rc=$?
 chmod 700 /data
 printf '%s\n' "$output" >/tmp/status-write.log
@@ -619,7 +672,7 @@ rc=0
 output="$(
     PATH="/tmp/stub:$PATH" RESTIC_PASSWORD=selftest RESTIC_LOG_DIR=/tmp/logs \
     TELEGRAM_BOT_TOKEN='123456:selftest' TELEGRAM_CHAT_ID='@selftest_channel' \
-    HEALTHCHECK_URL=http://health.invalid/ping /restic.sh backup 2>&1
+    HEALTHCHECK_URL=https://health.invalid/ping /restic.sh backup 2>&1
 )" || rc=$?
 printf '%s\n' "$output" >/tmp/status-write.log
 [ "$rc" -eq 2 ]
@@ -1811,6 +1864,7 @@ def main() -> int:
 
     check_apk_stub(work, image)
     check_invalid_restart_delay(image)
+    check_invalid_addresses(image)
     check_services_requires_unprivileged_user(image)
     check_timeout_process_group_cleanup(image)
     check_backup_lock_error(image)

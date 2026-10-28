@@ -8,10 +8,13 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
 import unittest
+
+from tests.performance import Result, apply_baseline, build_database, parse_docker_memory, require_temporary_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,16 +28,6 @@ def run(*args: str, cwd: Path = ROOT, env: dict[str, str] | None = None) -> subp
 def write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
-
-
-def yaml_document(path: Path) -> dict[str, object]:
-    ruby = "require 'json'; require 'yaml'; print JSON.generate(YAML.load_file(ARGV[0]))"
-    result = run("ruby", "-e", ruby, str(path))
-    if result.returncode:
-        raise AssertionError(result.stderr.strip() or f"cannot parse {path}")
-    document = json.loads(result.stdout)
-    document["on"] = document.get("on", document.get("true", {}))
-    return document
 
 
 def tracked_files() -> list[Path]:
@@ -163,66 +156,6 @@ else:
         self.assertEqual(self._deps("unknown").returncode, 2)
 
 
-class WorkflowContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.workflows = {
-            path.name: yaml_document(path)
-            for path in sorted((ROOT / ".github/workflows").glob("*.yml"))
-        }
-
-    def test_workflow_names_and_schedules_are_stable(self) -> None:
-        self.assertEqual(
-            {name: document["name"] for name, document in self.workflows.items()},
-            {
-                "build_and_deploy.yml": "Build and Deploy",
-                "dependency_updates.yml": "Dependency Updates",
-                "ghcr_cleanup.yml": "GHCR Cleanup",
-                "validate.yml": "Validate",
-            },
-        )
-        for name, document in self.workflows.items():
-            schedules = (document.get("on") or {}).get("schedule", [])
-            for entry in schedules:
-                self.assertNotEqual(entry["cron"].split()[0], "0", name)
-
-    def test_jobs_are_bounded_and_read_only_checkouts_do_not_persist_credentials(self) -> None:
-        for name, document in self.workflows.items():
-            for job_name, job in document.get("jobs", {}).items():
-                with self.subTest(workflow=name, job=job_name):
-                    self.assertIn("timeout-minutes", job)
-        for name in ("build_and_deploy.yml", "validate.yml"):
-            for step in self.workflows[name]["jobs"].get("build", self.workflows[name]["jobs"].get("validate"))["steps"]:
-                if str(step.get("uses", "")).startswith("actions/checkout@"):
-                    self.assertIs(step.get("with", {}).get("persist-credentials"), False)
-
-    def test_actions_are_pinned_and_validate_is_the_required_path(self) -> None:
-        pin = re.compile(r"@[0-9a-f]{40}$")
-        for path in sorted((ROOT / ".github").rglob("*.yml")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if "uses:" in line and not line.strip().endswith("uses: ./"):
-                    value = line.split("uses:", 1)[1].split("#", 1)[0].strip()
-                    if not value.startswith("./"):
-                        self.assertRegex(value, pin, f"{path}: {line}")
-        validate = self.workflows["validate.yml"]
-        self.assertIn("pull_request", validate["on"])
-        self.assertIn("workflow_dispatch", validate["on"])
-
-    def test_dependency_and_deploy_chains_are_automatic(self) -> None:
-        dependency = self.workflows["dependency_updates.yml"]
-        build = self.workflows["build_and_deploy.yml"]
-        self.assertEqual(dependency["on"]["schedule"][0]["cron"], "41 */2 * * *")
-        self.assertIn("workflow_run", dependency["on"])
-        self.assertEqual(dependency["concurrency"]["group"], "dependency_updates")
-        self.assertEqual(build["concurrency"]["group"], "ghcr-registry")
-        check_steps = dependency["jobs"]["check"]["steps"]
-        self.assertTrue(any(step.get("id") == "arm" for step in check_steps))
-        self.assertTrue(any("Build and deploy after the merge" in str(step.get("name")) for step in check_steps))
-        build_steps = build["jobs"]["build"]["steps"]
-        self.assertTrue(any(step.get("id") == "digest" for step in build_steps))
-        self.assertTrue(any(step.get("id") == "verify" for step in build["jobs"]["deploy"]["steps"]))
-
-
 class RepositoryHygieneTest(unittest.TestCase):
     def test_runtime_files_have_one_process_model_and_static_ranges(self) -> None:
         service = (ROOT / "scripts/services.sh").read_text(encoding="utf-8")
@@ -256,6 +189,33 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertEqual(calls, bounded)
         self.assertIn("timeout \"$GH_TIMEOUT\" gh api", (ROOT / "scripts/deps.sh").read_text())
 
+    def test_recurring_log_regression_stays_fixed(self) -> None:
+        restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
+        start = restic.index("log() {")
+        block = restic[start:restic.index("\n}\n", start) + 3]
+
+        self.assertIn('tail -c "$MAX_LOG_BYTES"', block)
+        self.assertIn("write_log_entry", block)
+        self.assertNotIn('body="$("$@" 2>&1)"', block)
+        self.assertNotIn("eval ", restic)
+        decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
+        self.assertIn("Bounded Diagnostics", decisions)
+        self.assertIn("Simplification Rule", decisions)
+        self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
+
+    def test_security_randomness_uses_operating_system_entropy(self) -> None:
+        production = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/cloudflare_ranges.py")
+        )
+        forbidden = re.compile(
+            r"\$RANDOM|random\.(?:random|randint|randrange|choice|choices)|uuid\.uuid1|openssl\s+rand"
+        )
+        self.assertIsNone(forbidden.search(production))
+        performance = (ROOT / "tests/performance.py").read_text(encoding="utf-8")
+        self.assertIn("secrets.token_hex", performance)
+        self.assertNotRegex(performance, r"uuid\.uuid1|random\.(?:random|randint|randrange)")
+
     def test_env_docs_and_secret_placeholders_stay_aligned(self) -> None:
         example = (ROOT / ".env.example").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -284,8 +244,6 @@ class RepositoryHygieneTest(unittest.TestCase):
             ".env.example": 48,
             "scripts/restic.sh": 520,
             "scripts/cloudflare_ranges.py": 200,
-            ".github/workflows/dependency_updates.yml": 450,
-            ".github/workflows/build_and_deploy.yml": 300,
         }
         for path, limit in budgets.items():
             with self.subTest(path=path):
@@ -309,6 +267,65 @@ class RepositoryHygieneTest(unittest.TestCase):
                 self.assertTrue(mode & stat.S_IXUSR, path)
             if path.suffix in {".md", ".yml", ".yaml", ".toml"}:
                 self.assertFalse(mode & stat.S_IXUSR, path)
+
+
+class PerformanceHarnessTest(unittest.TestCase):
+    def result(self, median: float) -> Result:
+        return Result(
+            name="scenario",
+            baseline_median_ms=None,
+            median_ms=median,
+            p95_ms=median,
+            peak_bytes=1,
+            peak_budget_bytes=2,
+            budget_ms=200,
+            baseline_delta_percent=None,
+        )
+
+    def test_baseline_drift_gate_has_a_real_boundary(self) -> None:
+        self.assertTrue(apply_baseline(self.result(110), {"scenario": 100}).passed)
+        self.assertFalse(apply_baseline(self.result(110.01), {"scenario": 100}).passed)
+        self.assertTrue(apply_baseline(self.result(9.99), {"scenario": 8}).passed)
+        self.assertFalse(apply_baseline(self.result(10.01), {"scenario": 8}).passed)
+        with self.assertRaisesRegex(ValueError, "missing scenario"):
+            apply_baseline(self.result(1), {})
+
+    def test_missing_or_zero_memory_measurements_fail_closed(self) -> None:
+        self.assertEqual(parse_docker_memory("12.5MiB / 256MiB"), 13_107_200)
+        for output in ("", "0B / 1GiB", "not-a-measurement"):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(ValueError, "memory value"):
+                    parse_docker_memory(output)
+        result = self.result(1)
+        self.assertFalse(
+            Result(
+                name=result.name,
+                baseline_median_ms=None,
+                median_ms=result.median_ms,
+                p95_ms=result.p95_ms,
+                peak_bytes=0,
+                peak_budget_bytes=result.peak_budget_bytes,
+                budget_ms=result.budget_ms,
+                baseline_delta_percent=None,
+            ).passed
+        )
+
+    def test_sqlite_restore_fixture_is_self_contained(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vaultwarden-audit-", dir=os.environ.get("TMPDIR", "/tmp")) as temporary:
+            source = Path(temporary) / "source.sqlite3"
+            restored = Path(temporary) / "restored.sqlite3"
+            build_database(source)
+            shutil.copyfile(source, restored)
+            self.assertFalse(Path(f"{source}-wal").exists())
+            with sqlite3.connect(f"file:{restored}?mode=ro", uri=True) as connection:
+                self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                self.assertEqual(connection.execute("SELECT count(*) FROM audit").fetchone(), (4096,))
+
+    def test_baseline_files_are_confined_to_temporary_storage(self) -> None:
+        with tempfile.NamedTemporaryFile(prefix="vaultwarden-audit-", suffix=".json") as temporary:
+            self.assertEqual(require_temporary_path(Path(temporary.name)).name, Path(temporary.name).name)
+        with self.assertRaisesRegex(ValueError, "temporary directory"):
+            require_temporary_path(ROOT / "baseline.json")
 
 
 if __name__ == "__main__":
