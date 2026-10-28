@@ -5,12 +5,6 @@ backups to any S3-compatible store such as Cloudflare R2.
 
 ## Architecture
 
-```text
-Fly proxy :443 -> Caddy :8080 -> Vaultwarden :8081
-                              |-> Supercronic
-                              `-> Restic -> S3/R2
-```
-
 The entrypoint repairs `/data` ownership and modes, drops privileges, and starts one process table.
 Caddy and Supercronic restart after a crash; a Vaultwarden exit stops the container so Fly can
 replace it. The app name stays out of the repository and comes from the `FLY_APP` repository secret.
@@ -106,9 +100,8 @@ database untouched and reporting the reason in `fly logs`. Keep an offline copy 
 `RESTIC_PASSWORD`; losing it makes every snapshot unreadable. To rotate it, add the new key with
 `restic key add` before changing the secret.
 
-The Actions operation menu is limited to `check-freshness`, `notify-test`, `snapshots`, `verify`,
-`restore-test`, and `backup`. It accepts no arbitrary command. In-place `restore` remains an SSH
-operation guarded by `RESTORE_CONFIRM=yes`.
+The Actions operation menu accepts only `check-freshness`, `notify-test`, `snapshots`, `verify`,
+`restore-test`, or `backup`; in-place `restore` remains an SSH operation guarded by `RESTORE_CONFIRM=yes`.
 
 ## Security
 
@@ -138,7 +131,7 @@ over a Fly secret. Prefer Fly secrets and remove those keys from `/data/config.j
 ## Verification
 
 ```bash
-shellcheck scripts/*.sh scripts/entrypoint/*.sh tests/*.sh
+shellcheck scripts/*.sh scripts/entrypoint/*.sh
 python3 -m py_compile scripts/*.py tests/*.py
 python3 -m unittest discover -s tests -p 'test_*.py'
 docker build --tag vaultwarden:local .
@@ -146,8 +139,7 @@ python3 tests/runtime_smoke.py vaultwarden:local
 ```
 
 `tests/runtime_smoke.py` boots the image and validates process supervision, proxy boundaries, backup
-paths, SMTP delivery, log limits, SQLite integrity, and isolated restore. CI also enforces source,
-workflow, test, and documentation size budgets to prevent structural regressions.
+paths, SMTP delivery, log limits, SQLite integrity, isolated restore, and size budgets.
 
 ## License
 

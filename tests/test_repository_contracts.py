@@ -280,7 +280,7 @@ class RepositoryHygieneTest(unittest.TestCase):
 
     def test_quality_budgets_do_not_regress(self) -> None:
         budgets = {
-            "README.md": 154,
+            "README.md": 146,
             ".env.example": 48,
             "scripts/restic.sh": 520,
             "scripts/cloudflare_ranges.py": 200,
