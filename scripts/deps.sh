@@ -104,8 +104,9 @@ tools() {
             [.assets[] | select(.name == $name) | .browser_download_url]
             | if length == 1 and (.[0] | type == "string") then .[0] else empty end
         ' <<< "$release")"
-        [ -n "$urls" ] && [[ "$urls" != *$'\n'* ]] \
-            || fail "supercronic release ${tag}: missing or ambiguous ${arch} asset"
+        if [ -z "$urls" ] || [[ "$urls" == *$'\n'* ]]; then
+            fail "supercronic release ${tag}: missing or ambiguous ${arch} asset"
+        fi
         url="$urls"
         [[ "$url" =~ ^https://github\.com/aptible/supercronic/releases/download/${tag}/supercronic-linux-${arch}$ ]] \
             || fail "untrusted download URL for supercronic ${arch}"
