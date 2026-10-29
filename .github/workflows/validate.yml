@@ -20,6 +20,10 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,17 +71,17 @@ jobs:
       - name: Build and validate the image
         if: github.event_name != 'push'
         run: |
-          docker build --tag validate:local .
+          timeout 1200 docker build --tag validate:local .
           python3 tests/runtime_smoke.py validate:local
 
       # Exercise both SMTP configuration branches.
       - name: SMTP config branches
         if: github.event_name != 'push'
         run: |
-          docker run --rm validate:local /entrypoint.sh sh -c '
+          timeout 60 docker run --rm validate:local /entrypoint.sh sh -c '
             test ! -s /etc/msmtprc
             echo "no SMTP settings: /etc/msmtprc left empty"'
-          docker run --rm \
+          timeout 60 docker run --rm \
             --env SMTP_HOST=smtp.example.com \
             --env SMTP_TO=ops@example.com \
             --env SMTP_FROM=from@example.com \
@@ -91,3 +95,13 @@ jobs:
               test "$(stat -c %a /etc/msmtprc)" = 600
               test "$(stat -c %U /etc/msmtprc)" = vaultwarden
               echo "SMTP settings: config written, 0600, owned by vaultwarden"'
+
+      - name: Reject generated repository files
+        run: |
+          set -euo pipefail
+          status="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$status" ]; then
+            echo "$status" >&2
+            echo "::error::validation generated files in the repository" >&2
+            exit 1
+          fi

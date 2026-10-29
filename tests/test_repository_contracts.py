@@ -42,6 +42,37 @@ def tracked_files() -> list[Path]:
     return [ROOT / value for value in result.stdout.split("\0") if value and (ROOT / value).exists()]
 
 
+def merge_binding_errors(workflow: str) -> list[str]:
+    errors = []
+    if workflow.count('--match-head-commit "$HEAD_SHA"') != 2:
+        errors.append("both auto-merge paths must bind the reviewed head SHA")
+    if workflow.count('[[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]') != 2:
+        errors.append("both auto-merge paths must validate a full lowercase SHA")
+    return errors
+
+
+def unbounded_gh_commands(workflow: str) -> list[str]:
+    return [
+        f"line {number}: {line.strip()}"
+        for number, line in enumerate(workflow.splitlines(), 1)
+        if re.search(r"\bgh\s+(?:api|pr|workflow)\b", line)
+        and not re.search(r"\btimeout\s+[0-9]+\s+gh\s+", line)
+    ]
+
+
+def python_cache_errors(workflow: str) -> list[str]:
+    errors = []
+    for expected in (
+        'PYTHONDONTWRITEBYTECODE: "1"',
+        "PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache",
+        "TMPDIR: /tmp",
+        "git status --porcelain --untracked-files=all",
+    ):
+        if expected not in workflow:
+            errors.append(f"missing cache confinement: {expected}")
+    return errors
+
+
 class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -223,6 +254,7 @@ else:
         self.assertRegex(timeout_log.read_text(encoding="utf-8"), r"^-k 2 30 gh api https://api\.github\.com/")
 
     def test_apk_and_rebuild_decisions_fail_closed(self) -> None:
+        write_executable(self.bin / "timeout", "#!/bin/sh\nshift 3\nexec \"$@\"\n")
         write_executable(self.bin / "docker", "#!/bin/sh\nprintf 'zlib 1.2.13-r0 1.2.13-r1\\n'\n")
         result = self._deps("apk", "image", check=True)
         self.assertIn("upgradable packages: 1", result.stdout)
@@ -233,8 +265,62 @@ else:
         self.assertEqual(self._deps("rebuild-needed", "bad", "2").returncode, 2)
         self.assertEqual(self._deps("unknown").returncode, 2)
 
+    def test_docker_commands_fail_closed_without_a_timeout_program(self) -> None:
+        marker = self.repo / "docker-called"
+        write_executable(self.bin / "docker", f"#!/bin/sh\nprintf called > '{marker}'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+        self.env["PATH"] = str(self.bin)
+        result = self._deps("apk", "image")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires timeout or gtimeout", result.stderr)
+        self.assertFalse(marker.exists())
+
 
 class RepositoryHygieneTest(unittest.TestCase):
+    def test_dependency_auto_merge_is_bound_to_the_reviewed_head(self) -> None:
+        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        self.assertEqual(merge_binding_errors(workflow), [])
+        weakened = workflow.replace(' --match-head-commit "$HEAD_SHA"', "", 1)
+        self.assertIn("reviewed head SHA", "\n".join(merge_binding_errors(weakened)))
+
+    def test_workflow_gh_calls_are_bounded_and_mutation_is_detected(self) -> None:
+        workflows = {
+            path.name: path.read_text(encoding="utf-8")
+            for path in (ROOT / ".github/workflows").glob("*.yml")
+        }
+        for name, workflow in workflows.items():
+            with self.subTest(workflow=name):
+                self.assertEqual(unbounded_gh_commands(workflow), [])
+        mutated = next(text for text in workflows.values() if "timeout 30 gh api" in text)
+        self.assertTrue(unbounded_gh_commands(mutated.replace("timeout 30 gh api", "gh api", 1)))
+
+    def test_validation_keeps_python_cache_outside_the_repository(self) -> None:
+        workflow = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        self.assertEqual(python_cache_errors(workflow), [])
+        weakened = workflow.replace("PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache", "PYTHONPYCACHEPREFIX: .", 1)
+        self.assertTrue(python_cache_errors(weakened))
+
+    def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
+        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        query = 'actions/runs?head_sha=${merge_sha}&event=push&per_page=20'
+        dispatch = "timeout 60 gh workflow run build_and_deploy.yml"
+        self.assertIn(query, workflow)
+        self.assertIn(dispatch, workflow)
+        self.assertLess(workflow.index(query), workflow.index(dispatch))
+        self.assertIn(".github/workflows/validate.yml", workflow)
+        self.assertIn("reported a change but no tracked file changed", workflow)
+        failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
+        self.assertIn(failure_gate, workflow)
+        maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
+        for expected in (
+            "dependency_watchdog:",
+            "actions: write",
+            'select(.status == "queued" or .status == "in_progress")',
+            "MAX_AGE_SECONDS: 21600",
+            "gh workflow run dependency_updates.yml",
+        ):
+            self.assertIn(expected, maintenance)
+
     def test_runtime_shell_retries_only_interrupted_attempts(self) -> None:
         started = "__runtime_smoke_started__"
         ended = "__runtime_smoke_ended__="
@@ -310,6 +396,9 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn('timeout -k 2 "$GH_TIMEOUT" gh api', deps)
         self.assertIn('gtimeout -k 2 "$GH_TIMEOUT" gh api', deps)
         self.assertNotIn('\n        gh api "$@"', deps)
+        self.assertIn('timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', deps)
+        self.assertIn('gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', deps)
+        self.assertIn('rows="$(docker_bounded run --rm', deps)
 
     def test_recurring_regressions_stay_documented(self) -> None:
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")

@@ -33,3 +33,41 @@ jobs:
           package: ${{ github.event.repository.name }}
           delete-untagged: true
           delete-broken: true
+
+  dependency_watchdog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: dependency-watchdog
+      cancel-in-progress: false
+    steps:
+      - name: Restart a stale dependency check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_AGE_SECONDS: 21600
+        run: |
+          set -euo pipefail
+          [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid dependency age limit" >&2; exit 1; }
+          runs="$(timeout 30 gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency_updates.yml/runs?per_page=20")"
+          active="$(jq -r '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length' <<< "$runs")"
+          if [ "$active" -gt 0 ]; then
+            echo "dependency check already active: ${active} run(s)"
+            exit 0
+          fi
+          latest="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty' <<< "$runs")"
+          stale=false
+          if [ -z "$latest" ]; then
+            stale=true
+          else
+            age=$(( $(date -u +%s) - $(date -u -d "$latest" +%s) ))
+            echo "last successful dependency check: ${latest} (${age}s ago)"
+            [ "$age" -lt "$MAX_AGE_SECONDS" ] || stale=true
+          fi
+          if [ "$stale" = true ]; then
+            timeout 60 gh workflow run dependency_updates.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "dispatched a stale dependency check"
+          fi
