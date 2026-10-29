@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid dependency age limit" >&2; exit 1; }
           runs="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency_updates.yml/runs?per_page=20")"
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency_updates.yml/runs?event=schedule&per_page=20")"
           active="$(jq -r '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length' <<< "$runs")"
           if [ "$active" -gt 0 ]; then
             echo "dependency check already active: ${active} run(s)"

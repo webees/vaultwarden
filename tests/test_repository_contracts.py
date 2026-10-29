@@ -399,6 +399,8 @@ class RepositoryHygieneTest(unittest.TestCase):
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
         self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
+        self.assertIn("runs?event=schedule&per_page=20", maintenance)
+        self.assertEqual(("runs?per_page=20" in maintenance, "runs?per_page=20" in maintenance.replace("event=schedule&", "", 1)), (False, True))
         for expected in (
             "dependency_watchdog:",
             "actions: write",
