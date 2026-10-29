@@ -238,7 +238,8 @@ class SmtpSinkBindingTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.bind, "127.0.0.1")
+        context = smtp_sink.create_tls_context()
+        self.assertEqual((args.bind, context.minimum_version), ("127.0.0.1", smtp_sink.ssl.TLSVersion.TLSv1_2))
 
     def test_message_terminator_and_exact_limits_are_accepted(self) -> None:
         self.assertEqual(smtp_sink.read_message(io.BytesIO(b".\r\n")), "")
