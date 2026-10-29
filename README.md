@@ -27,11 +27,11 @@ reachable for Fly checks. `SIGNUPS_ALLOWED=false` is the safe default.
 Address inputs fail closed: `DOMAIN` must be a canonical HTTPS origin, `RESTIC_REPOSITORY` must be an
 absolute path or unambiguous `s3://` URI, and `HEALTHCHECK_URL` must be an HTTPS base URL. Hosts must be DNS names or canonical ASCII punycode; IP literals, raw Unicode, userinfo, encoding, control characters, and traversal-like paths are rejected before runtime writes.
 
-Optional Telegram and SMTP alerts use the placeholders in `.env.example`. Hourly backup, freshness, and disk failures use Telegram. Monthly
-verification and restore failures also use email when SMTP exists. Successful backups are quiet. An HTTPS `HEALTHCHECK_URL` pings its base URL on success and `/fail` on failure.
+Alerts are opt-in: hourly backup, freshness, and disk failures use Telegram; monthly verification and restore-drill failures use SMTP and Telegram. Successful backups are quiet.
+`notify-test` exercises every configured transport. An HTTPS `HEALTHCHECK_URL` receives a success ping after backup, verification, or restore drills and `/fail` on guarded failures.
 
-The `/admin` origin accepts only a Cloudflare network carrying `Cf-Access-Jwt-Assertion`; configure
-Cloudflare Access for `/admin` and `/admin/*`. Keep the long, random `ADMIN_TOKEN` as a second factor.
+The `/admin` route accepts traffic only from configured Cloudflare ranges when `Cf-Access-Jwt-Assertion` is present. Caddy checks the network source and header presence, not JWT validity.
+Enforce Cloudflare Access for `/admin` and `/admin/*`, and keep the long, random `ADMIN_TOKEN` as a second factor.
 
 ## Deploy
 
@@ -69,7 +69,7 @@ Auto-merge waits for required `validate`; the merged commit follows the same bui
 
 ## Backup And Restore
 
-Backup runs hourly at `:17`; freshness checks run at `:45`, disk checks at `:35`, and verification and restore drills run monthly. SQLite `.backup` creates
+Backup runs hourly at `:17`; freshness checks run at `:45`, disk checks at `:35`; verification runs at 03:30 and the restore drill at 04:15 on the first day of each month (`Asia/Shanghai`). SQLite `.backup` creates
 `/data/backup.bak`, then `PRAGMA integrity_check` validates it. Snapshots keep keys, attachments, and that consistent database copy; live SQLite files, `icon_cache`, status state, and the configured log directory are excluded.
 Retention is 24 hourly, 7 daily, 4 weekly, 3 monthly, and 3 yearly snapshots before prune. Every
 command is time-bounded, each run log is capped at 256 KiB, and the directory at 10 MiB; an unmaintainable cap refuses new work.
@@ -121,19 +121,20 @@ Settings in `/data/config.json` override matching environment variables. The ent
 | :--- | :--- |
 | Repeated machine restarts | `fly logs`; a Vaultwarden exit intentionally stops the stack |
 | Fly health check fails | `fly status`; `/alive` must pass through Caddy |
+| `/admin` returns `403` | Confirm Cloudflare Access is configured and the request reaches the origin through a current Cloudflare range |
 | New settings have no effect | Remove matching keys from `/data/config.json`, then restart |
 | Backup stale or lock stuck | Run `check-freshness`, then inspect `fly logs` and `/data/backup-status.txt` |
 | Restore did not apply | Check `restore-pending` and entrypoint diagnostics |
-| Alert did not arrive | Run `notify-test`; the run log records the transport result |
 
 ## Verification
 
 ```bash
 shellcheck scripts/*.sh scripts/entrypoint/*.sh
-python3 -m py_compile scripts/*.py tests/*.py && python3 -m unittest discover -s tests -p 'test_*.py'
+PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/vaultwarden-pycache" python3 -m py_compile scripts/*.py tests/*.py
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 -m unittest discover -s tests -p 'test_*.py'
 docker build --tag vaultwarden:local .
-python3 tests/runtime_smoke.py vaultwarden:local
-python3 tests/performance.py vaultwarden:local
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 tests/runtime_smoke.py vaultwarden:local
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 tests/performance.py vaultwarden:local
 ```
 
 `tests/runtime_smoke.py` validates supervision, proxy boundaries, backup paths, SMTP delivery, log limits, SQLite integrity, and isolated restore.

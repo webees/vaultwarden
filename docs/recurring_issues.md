@@ -1,12 +1,12 @@
 # Recurring Engineering Decisions
 
-This file records defects that were fixed more than once, especially where a later simplification removed the fix. These are permanent invariants: a change that weakens one needs a failing regression test and an explicit replacement design first.
+This file records defects that were fixed more than once, especially where a later simplification removed the fix. Treat every entry as a permanent invariant: a change that weakens one needs a failing regression test and an explicit replacement design first.
 
-Baseline history audit: all 253 commits reachable through `cbcb78f` were scanned on 2026-10-28; each later round must scan every commit reachable at its start. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
+The fixed baseline audit covers all 253 commits reachable through `cbcb78f` on 2026-10-28. Every later round must extend that audit to every commit reachable at its start. The recurring pattern is not only missing code; it is removing an existing invariant while optimizing line count. Commit identifiers below are evidence, not exceptions to the rules.
 
 ## Target-Mode Prompt
 
-Every new, resumed, review, optimization, scoring, release, and post-merge round starts with this gate. Build a nine-row evidence matrix containing the class, history classification, authoritative guard, positive/boundary/negative evidence, named mutation control, and observed result. Run the named mutation control and prove that removing the guard changes the outcome. If a row is failing, unverified, or shows a guard weakened by simplification, repair the invariant in the same round before other work. Do not optimize, score, merge, deploy, or claim completion while any row lacks evidence or has an unclassified residual. Record the matrix in the PR or final report without creating per-round files.
+Every new, resumed, review, optimization, scoring, release, and post-merge round starts with this gate. Build a nine-row evidence matrix containing the class, history classification, authoritative guard, positive/boundary/negative evidence, named mutation control, and observed result. Run the named mutation control and prove that removing the guard changes the outcome. If a row is failing, unverified, or shows a guard weakened by simplification, repair the invariant in the same round before other work. Do not optimize, score, merge, deploy, or claim completion while any row lacks evidence or has an unclassified residual. Record the matrix in the PR or final report without creating per-round files. The matrix is a review artifact, not a score: a passing row requires observed command or test output.
 
 ## Every-Round Goal Gate
 
@@ -61,7 +61,7 @@ Regression gate: every entry point, an accepted name containing a numeric label,
 
 History: restore safety required repeated fixes in `35f6371`, `d33b662`, `9097c10`, `04ce17f`, `360f8c6`, `5be475a`, `acaad01`, and `eba14c9`. The recurring causes were symlinks, SQLite sidecars, partial swaps, and treating a successful command exit as a valid restore.
 
-Final decision: restore drills use a bounded, loopback-only scratch directory and never modify production `/data`. In-place restore requires explicit confirmation, rejects non-regular paths and symlinks, validates database output exactly, and keeps a rollback journal until the swap succeeds.
+Final decision: restore drills use a size-checked scratch directory and a Vaultwarden process bound only to loopback; they never modify production `/data`. In-place restore requires explicit confirmation, rejects non-regular paths and symlinks, validates database output exactly, and copies into a reserved staging path before the atomic replacement.
 
 Authority: `scripts/restic.sh:restore_test` and its isolated restore target.
 
