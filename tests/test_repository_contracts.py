@@ -356,6 +356,31 @@ class RepositoryHygieneTest(unittest.TestCase):
             Path(env["STATUS_FIXTURE"]).write_text(json.dumps(status), encoding="utf-8")
             self.assertEqual(run("/bin/bash", "-c", mutated, cwd=ROOT, env=env).returncode, 0)
 
+    def test_cleanup_automation_health_fails_closed(self) -> None:
+        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        script = workflow_step_script(workflow, "Check cleanup automation health")
+        with tempfile.TemporaryDirectory() as temporary:
+            root, binary = Path(temporary), Path(temporary) / "bin"
+            binary.mkdir()
+            runs = root / "runs.json"
+            write_executable(binary / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
+            write_executable(binary / "gh", "#!/bin/sh\ncat \"$CLEANUP_RUNS_FIXTURE\"\n")
+            write_executable(binary / "date", "#!/bin/sh\ncase \"$*\" in '-u +%s') printf '2000\\n' ;; '-u -d 2026-10-29T00:00:00Z +%s') printf '1900\\n' ;; '-u -d 2026-10-29T01:00:00Z +%s') printf '2000\\n' ;; *) exit 2 ;; esac\n")
+            env = os.environ | {"GITHUB_REPOSITORY": "owner/repository", "PATH": f"{binary}:{os.environ['PATH']}", "CLEANUP_RUNS_FIXTURE": str(runs)}
+            failure = {"conclusion": "failure", "created_at": "2026-10-29T01:00:00Z"}
+            success = {"conclusion": "success", "created_at": "2026-10-29T00:00:00Z"}
+            def assert_runs(items: list[dict[str, str]], max_age: str, code: int) -> None:
+                env["MAX_CLEANUP_AGE_SECONDS"] = max_age
+                runs.write_text(json.dumps({"workflow_runs": items}), encoding="utf-8")
+                self.assertEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, code)
+            assert_runs([failure, success], "150", 0)
+            assert_runs([failure, success], "50", 1)
+            mutated = script.replace('select(.conclusion == "success")', 'select(true)', 1)
+            runs.write_text(json.dumps({"workflow_runs": [failure, success]}), encoding="utf-8")
+            self.assertEqual(run("/bin/bash", "-c", mutated, cwd=ROOT, env=env).returncode, 0)
+            runs.write_text(json.dumps({"workflow_runs": [failure]}), encoding="utf-8")
+            self.assertNotEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, 0)
+
     def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         query, dispatch = 'actions/runs?head_sha=${merge_sha}&event=push&per_page=20', "timeout 60 gh workflow run build_and_deploy.yml"
@@ -370,6 +395,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn("for platform in linux/amd64 linux/arm64", build)
         self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
         self.assertIn("DOCKER_BUILD_RECORD_UPLOAD: false", build)
+        self.assertIn('[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty', build)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
         self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
@@ -420,9 +446,9 @@ esac
             result = run("/bin/bash", "-c", script, cwd=ROOT, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             removed = deletes.read_text(encoding="utf-8")
-            for expected in ("artifact=11", "artifact=12", "cache=21", "cache=23"):
+            for expected in ("artifact=11", "artifact=12", "artifact=13", "cache=21", "cache=23"):
                 self.assertIn(expected, removed)
-            for kept in ("artifact=13", "artifact=14", "cache=22", "cache=24"):
+            for kept in ("artifact=14", "cache=22", "cache=24"):
                 self.assertNotIn(kept, removed)
             artifacts.write_text(json.dumps({"artifacts": [{"id": "invalid", "created_at": "2026-10-20T00:00:00Z", "expired": False, "name": "bad.dockerbuild"}]}), encoding="utf-8")
             deletes.unlink()
