@@ -137,6 +137,6 @@ Final decision: a required published-image probe whose outcome is not `success` 
 
 Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/deps.sh:rebuild-needed`.
 
-Mutation control: `tests/test_repository_contracts.py:test_merged_dependency_does_not_dispatch_a_duplicate_build`.
+Mutation control: `tests/test_repository_contracts.py:test_published_package_probe_script_fails_closed`.
 
 Regression gate: deleting the outcome assertion while keeping `continue-on-error: true` must fail the repository contract.
