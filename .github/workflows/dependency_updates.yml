@@ -402,6 +402,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Set up Flyctl
@@ -418,6 +419,30 @@ jobs:
             exit 1
           }
           echo "image=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Check cleanup automation health
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_CLEANUP_AGE_SECONDS: 172800
+        run: |
+          set -euo pipefail
+          [[ "$MAX_CLEANUP_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::MAX_CLEANUP_AGE_SECONDS must be a positive integer" >&2
+            exit 1
+          }
+          runs="$(timeout 30 gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&per_page=50")"
+          last="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty' <<< "$runs")"
+          [[ "$last" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+            echo "::error::no successful scheduled cleanup run was found" >&2
+            exit 1
+          }
+          age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
+          echo "last successful scheduled cleanup: ${last} (${age}s ago)"
+          [ "$age" -le "$MAX_CLEANUP_AGE_SECONDS" ] || {
+            echo "::error::scheduled cleanup has not succeeded within ${MAX_CLEANUP_AGE_SECONDS}s" >&2
+            exit 1
+          }
 
       - name: Verify production release and runtime health
         env:

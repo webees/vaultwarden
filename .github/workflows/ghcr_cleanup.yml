@@ -33,11 +33,12 @@ jobs:
         run: |
           set -euo pipefail
           cutoff="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          # Build records are no longer uploaded. Every remaining dockerbuild
+          # artifact is legacy and safe to remove regardless of age.
           artifacts="$(timeout 90 gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-            | jq -r --arg cutoff "$cutoff" '
+            | jq -r '
               .artifacts[]
-              | select(.created_at < $cutoff or .expired == true)
               | select(.name | endswith(".dockerbuild"))
               | .id
             ')"
