@@ -43,7 +43,7 @@ RUN set -eu; \
     addgroup -S vaultwarden; \
     adduser -S -G vaultwarden -h /app -s /bin/sh vaultwarden; \
     install -o vaultwarden -g vaultwarden -m 600 /dev/null /etc/msmtprc; \
-    curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
+    curl -fsSL --retry 3 --max-time 120 "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
         -o /usr/local/bin/supercronic; \
     echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c -; \
     chmod +x /usr/local/bin/supercronic; \

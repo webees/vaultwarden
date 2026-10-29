@@ -8,6 +8,7 @@ readonly REGISTRY=https://registry-1.docker.io/v2/vaultwarden/server
 readonly GH_API=https://api.github.com/repos
 readonly HTTP_TIMEOUT="${DEPS_HTTP_TIMEOUT:-30}"
 readonly GH_TIMEOUT="${DEPS_GH_TIMEOUT:-30}"
+readonly DOCKER_TIMEOUT="${DEPS_DOCKER_TIMEOUT:-300}"
 
 fail() { echo "$*" >&2; exit 1; }
 usage_error() { echo "$*" >&2; exit 2; }
@@ -30,6 +31,17 @@ gh_api() {
         gtimeout -k 2 "$GH_TIMEOUT" gh api "$@"
     else
         fail "gh api requires timeout or gtimeout to enforce DEPS_GH_TIMEOUT"
+    fi
+}
+
+docker_bounded() {
+    validate_timeout "$DOCKER_TIMEOUT" DEPS_DOCKER_TIMEOUT
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"
+    else
+        fail "docker requires timeout or gtimeout to enforce DEPS_DOCKER_TIMEOUT"
     fi
 }
 
@@ -170,7 +182,7 @@ apply() {
 apk() {
     [ "$#" -ge 1 ] || usage_error "usage: deps.sh apk <image>"
     local image="$1" rows count
-    rows="$(docker run --rm "$image" sh -c \
+    rows="$(docker_bounded run --rm "$image" sh -c \
         'apk update >/dev/null 2>&1 || { echo "apk update failed" >&2; exit 1; }; apk version -v -l "<" || { echo "apk version failed" >&2; exit 1; }' \
         | awk 'NF == 3 {print $1, $3}')"
     count="$(grep -c . <<< "$rows" || true)"

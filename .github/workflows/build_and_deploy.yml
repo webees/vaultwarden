@@ -117,7 +117,7 @@ jobs:
           TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
         run: |
           set -euo pipefail
-          digest="$(docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
+          digest="$(timeout 120 docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
             --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
           test -n "$digest"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
@@ -224,7 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
-          flyctl deploy --app "$FLY_APP" \
+          timeout 900 flyctl deploy --app "$FLY_APP" \
             --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}" \
             --yes 2>&1 | sed -E "$FLY_LOG_REDACT"
 

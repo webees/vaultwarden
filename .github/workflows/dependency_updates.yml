@@ -55,7 +55,7 @@ jobs:
   check:
     if: >-
       github.event_name == 'schedule' ||
-      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.operation == 'none')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -126,8 +126,8 @@ jobs:
               SUPERCRONIC_SHA256_amd64="${{ steps.tools.outputs.supercronic_sha_amd64 }}" \
               SUPERCRONIC_SHA256_arm64="${{ steps.tools.outputs.supercronic_sha_arm64 }}"
           fi
-          docker build --tag dependency-check:local .
-          docker run --rm --entrypoint caddy dependency-check:local \
+          timeout 900 docker build --tag dependency-check:local .
+          timeout 60 docker run --rm --entrypoint caddy dependency-check:local \
             validate --config /Caddyfile --adapter caddyfile
 
       - name: Open the dependency PR
@@ -177,22 +177,25 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add Dockerfile config/cloudflare_ips.caddy
-          git diff --cached --quiet && { echo "Nothing to commit"; exit 0; }
+          if git diff --cached --quiet; then
+            echo "dependency checks reported a change but no tracked file changed" >&2
+            exit 1
+          fi
           git commit -m "chore(deps): update pinned upstream dependencies"
-          git push --force origin "$branch"
+          timeout 120 git push --force origin "$branch"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
+          open_pr="$(timeout 30 gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
             --state open --json number --jq '.[0].number // empty')"
           if [ -n "$open_pr" ]; then
-            gh pr edit "$open_pr" --repo "$GITHUB_REPOSITORY" \
+            timeout 60 gh pr edit "$open_pr" --repo "$GITHUB_REPOSITORY" \
               --title "$title" --body-file "$body_file"
             echo "updated the existing open PR for ${branch}"
           else
-            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+            timeout 60 gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
               --title "$title" \
               --body-file "$body_file"
           fi
-          echo "number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
+          echo "number=$(timeout 30 gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" \
             --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
 
       - name: Release the held validate run
@@ -205,7 +208,7 @@ jobs:
           for _ in {1..18}; do
             id="$(timeout 30 gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${SHA}&per_page=20" \
-              --jq '[.workflow_runs[] | select(.conclusion == "action_required")] | first | .id // empty')" || id=""
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/validate.yml" and .conclusion == "action_required")] | first | .id // empty')" || id=""
             if [ -n "$id" ]; then
               timeout 30 gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve" >/dev/null
               echo "released the held pull_request run ${id}"
@@ -220,12 +223,16 @@ jobs:
         if: steps.changed.outputs.changed == 'true' && env.AUTO_MERGE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ steps.pr.outputs.branch }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
         run: |
           set -euo pipefail
-          gh pr merge "$BRANCH" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --auto
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "invalid dependency pull request number" >&2; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid dependency pull request head SHA" >&2; exit 1; }
+          timeout 60 gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch --auto --match-head-commit "$HEAD_SHA"
           for _ in {1..18}; do
-            count="$(timeout 30 gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+            count="$(timeout 30 gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --json statusCheckRollup --jq '.statusCheckRollup | length')"
             [[ "$count" =~ ^[0-9]+$ ]] || { echo "invalid status-check count" >&2; exit 1; }
             [ "$count" -eq 0 ] || { echo "auto-merge armed; ${count} status check(s) registered"; exit 0; }
@@ -253,8 +260,25 @@ jobs:
             sleep 15
           done
           [ "$state" = MERGED ] || { echo "dependency pull request did not merge" >&2; exit 1; }
-          gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
-          echo "dispatched the build for the merged dependency update"
+          merge_sha="$(timeout 30 gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json mergeCommit --jq '.mergeCommit.oid // empty')"
+          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "merged dependency pull request has no commit SHA" >&2; exit 1; }
+
+          # A normal merge emits a push build. Dispatch only if GitHub did not create it.
+          run_id=""
+          for _ in {1..12}; do
+            run_id="$(timeout 30 gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${merge_sha}&event=push&per_page=20" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/build_and_deploy.yml") | .id] | first // empty')"
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -n "$run_id" ]; then
+            echo "push build already exists for ${merge_sha}: run ${run_id}"
+          else
+            timeout 60 gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "dispatched the build after no push run appeared for ${merge_sha}"
+          fi
 
       - name: Rebuild when only Alpine packages moved
         if: >-
@@ -269,7 +293,7 @@ jobs:
         run: |
           set -euo pipefail
           if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
-            gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+            timeout 60 gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
 
   dependabot_automerge:
@@ -288,11 +312,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           case "$PR_NUMBER" in
             ''|*[!0-9]*) echo "invalid pull request number" >&2; exit 2 ;;
           esac
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid pull request head SHA" >&2; exit 2; }
 
           # This write-capable event accepts only workflow/action pin changes.
           files="$(timeout 90 gh api --paginate \
@@ -305,8 +331,8 @@ jobs:
             esac
           done <<< "$files"
 
-          gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
-            --squash --delete-branch --auto
+          timeout 60 gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
+            --squash --delete-branch --auto --match-head-commit "$HEAD_SHA"
           for _ in {1..18}; do
             count="$(timeout 30 gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
               --json statusCheckRollup --jq '.statusCheckRollup | length')"
@@ -320,7 +346,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none') ||
       github.event_name == 'schedule' ||
-      github.event_name == 'workflow_run'
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -348,7 +374,9 @@ jobs:
 
   notify_failure:
     # Wait for every work job so the reported state is final.
-    if: failure()
+    if: >-
+      failure() ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success')
     needs:
       - check
       - dependabot_automerge
@@ -367,8 +395,9 @@ jobs:
         env:
           WORKFLOW: ${{ github.workflow }}
           EVENT: ${{ github.event_name }}
-          SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.run_id }}
+          BUILD_RESULT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion || 'not-applicable' }}
           CHECK_RESULT: ${{ needs.check.result }}
           DEPENDABOT_RESULT: ${{ needs.dependabot_automerge.result }}
           OPERATION_RESULT: ${{ needs.fly_operation.result }}
@@ -411,8 +440,8 @@ jobs:
           }
           workflow_name="$(html_escape "$WORKFLOW")"
           event_name="$(html_escape "$EVENT")"
-          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>fly_operation</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
-            "$workflow_name" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" \
+          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>build</code>: %s\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>fly_operation</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
+            "$workflow_name" "$BUILD_RESULT" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" \
             "${SHA:0:12}" "$event_name" "$RUN_URL")"
           set +e
           out="$({
