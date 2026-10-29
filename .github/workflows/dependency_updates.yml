@@ -25,6 +25,7 @@ on:
           - notify-test
           - snapshots
           - verify
+          - verify-production
           - restore-test
           - backup
   schedule:
@@ -67,6 +68,8 @@ jobs:
 
       - name: Resolve the Vaultwarden base image
         id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/deps.sh base
 
       - name: Resolve supercronic
@@ -109,11 +112,20 @@ jobs:
         id: published-apk
         if: >-
           success() &&
-          github.event_name != 'workflow_run' &&
-          steps.changed.outputs.changed != 'true' &&
-          steps.apk.outputs.count != '0'
+          github.event_name != 'workflow_run'
         continue-on-error: true
         run: scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
+
+      - name: Validate the published package probe
+        if: success() && github.event_name != 'workflow_run'
+        env:
+          PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then
+            echo "::error::could not inspect packages in the latest published image" >&2
+            exit 1
+          fi
 
       - name: Update the pins and validate the build
         if: steps.changed.outputs.changed == 'true'
@@ -181,6 +193,12 @@ jobs:
             echo "dependency checks reported a change but no tracked file changed" >&2
             exit 1
           fi
+          while IFS= read -r -d '' file; do
+            case "$file" in
+              Dockerfile|config/cloudflare_ips.caddy) ;;
+              *) echo "refusing unexpected dependency path: ${file}" >&2; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only -z)
           git commit -m "chore(deps): update pinned upstream dependencies"
           timeout 120 git push --force origin "$branch"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -254,7 +272,7 @@ jobs:
           set -euo pipefail
           [ -n "$NUMBER" ] || { echo "no dependency pull request number recorded" >&2; exit 1; }
           state=""
-          for _ in {1..40}; do
+          for _ in {1..80}; do
             state="$(timeout 30 gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             [ "$state" = MERGED ] && break
             sleep 15
@@ -284,19 +302,13 @@ jobs:
         if: >-
           success() &&
           steps.changed.outputs.changed != 'true' &&
-          steps.apk.outputs.count != '0' &&
           github.event_name != 'workflow_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           PUBLISHED_APK_COUNT: ${{ steps.published-apk.outputs.count }}
-          PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}
         run: |
           set -euo pipefail
-          if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then
-            echo "::error::could not inspect packages in the latest published image" >&2
-            exit 1
-          fi
           if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             timeout 60 gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
@@ -349,7 +361,7 @@ jobs:
 
   fly_operation:
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.operation != 'none' && github.event.inputs.operation != 'verify-production') ||
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
@@ -377,6 +389,84 @@ jobs:
           timeout 2400 flyctl ssh console --app "$FLY_APP" --command "$command" \
             2>&1 | sed -E "$FLY_LOG_REDACT"
 
+  production_audit:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.operation == 'verify-production')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Resolve the latest published amd64 image
+        id: published
+        run: |
+          set -euo pipefail
+          digest="$(timeout 120 docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:latest" \
+            --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::latest published amd64 digest is missing or malformed" >&2
+            exit 1
+          }
+          echo "image=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify production release and runtime health
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          EXPECTED_IMAGE: ${{ steps.published.outputs.image }}
+        run: |
+          set -euo pipefail
+          : "${FLY_APP:?repository secret FLY_APP must hold the Fly app name}"
+          : "${EXPECTED_IMAGE:?the latest published image digest is missing}"
+          releases="$(timeout 60 flyctl releases --app "$FLY_APP" --json 2>&1 | sed -E "$FLY_LOG_REDACT")"
+          status="$(timeout 60 flyctl status --app "$FLY_APP" --json 2>&1 | sed -E "$FLY_LOG_REDACT")"
+          jq -e 'type == "array" and length > 0' <<< "$releases" >/dev/null || {
+            echo "::error::Fly releases did not return a non-empty JSON array" >&2
+            exit 1
+          }
+          jq -e 'type == "object" and (.Machines | type) == "array"' <<< "$status" >/dev/null || {
+            echo "::error::Fly status did not return the expected JSON object" >&2
+            exit 1
+          }
+          latest_image="$(jq -r '
+            if type == "array" then sort_by(.Version) | last else empty end
+            | .ImageRef // empty
+          ' <<< "$releases")"
+          [[ "$latest_image" =~ ^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::the latest Fly release has no valid image digest" >&2
+            exit 1
+          }
+          [ "$latest_image" = "$EXPECTED_IMAGE" ] || {
+            echo "::error::the latest Fly release does not match the latest published image" >&2
+            exit 1
+          }
+          jq -e '
+            (if type == "array" then sort_by(.Version) | last else null end) as $latest
+            | ($latest != null)
+              and (all(.[]; (.InProgress // false) == false))
+              and (($latest.Status // "" | ascii_downcase) == "complete")
+              and (($latest.InProgress // false) == false)
+              and (($latest.ImageRef // "") != "")
+          ' <<< "$releases" >/dev/null
+          jq -e --arg image "$latest_image" '
+            ((.Status // "" | ascii_downcase) == "deployed")
+            and ((.Machines | length) > 0)
+            and all(.Machines[];
+              ((.state // "" | ascii_downcase) == "started")
+              and ((.host_status // "" | ascii_downcase) == "ok")
+              and (((.image_ref.registry // "") + "/"
+                + (.image_ref.repository // "") + "@"
+                + (.image_ref.digest // "")) == $image)
+              and ((.checks | length) > 0)
+              and all(.checks[]; ((.status // "" | ascii_downcase) == "passing"))
+            )
+          ' <<< "$status" >/dev/null
+          echo "Production audit passed for ${latest_image}"
+
   notify_failure:
     # Wait for every work job so the reported state is final.
     if: >-
@@ -386,6 +476,7 @@ jobs:
       - check
       - dependabot_automerge
       - fly_operation
+      - production_audit
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -406,6 +497,7 @@ jobs:
           CHECK_RESULT: ${{ needs.check.result }}
           DEPENDABOT_RESULT: ${{ needs.dependabot_automerge.result }}
           OPERATION_RESULT: ${{ needs.fly_operation.result }}
+          AUDIT_RESULT: ${{ needs.production_audit.result }}
         run: |
           set -euo pipefail
           : "${FLY_API_TOKEN:?repository secret FLY_API_TOKEN must hold a Fly token}"
@@ -445,8 +537,8 @@ jobs:
           }
           workflow_name="$(html_escape "$WORKFLOW")"
           event_name="$(html_escape "$EVENT")"
-          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>build</code>: %s\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>fly_operation</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
-            "$workflow_name" "$BUILD_RESULT" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" \
+          message="$(printf '<b>工作流失败</b>\n%s\n\n<b>任务状态</b>\n<code>build</code>: %s\n<code>check</code>: %s\n<code>dependabot_automerge</code>: %s\n<code>fly_operation</code>: %s\n<code>production_audit</code>: %s\n\n<b>提交</b>: <code>%s</code>\n<b>事件</b>: <code>%s</code>\n\n<a href="%s">查看 Actions 运行详情</a>' \
+            "$workflow_name" "$BUILD_RESULT" "$CHECK_RESULT" "$DEPENDABOT_RESULT" "$OPERATION_RESULT" "$AUDIT_RESULT" \
             "${SHA:0:12}" "$event_name" "$RUN_URL")"
           set +e
           out="$({

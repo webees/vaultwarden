@@ -99,6 +99,11 @@ jobs:
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        env:
+          # Build records are useful interactively, but they accumulate as tiny
+          # artifacts on every scheduled production rebuild.
+          DOCKER_BUILD_SUMMARY: false
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           build-args: |
@@ -111,6 +116,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Verify the multi-arch manifest
+        env:
+          TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
+        run: |
+          set -euo pipefail
+          manifest="$(timeout 120 docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{println}}{{end}}')"
+          for platform in linux/amd64 linux/arm64; do
+            grep -Fxq "$platform" <<< "$manifest" || {
+              echo "::error::published manifest is missing ${platform}" >&2
+              exit 1
+            }
+          done
+
       - name: Record the published amd64 digest
         id: digest
         env:
@@ -119,7 +138,10 @@ jobs:
           set -euo pipefail
           digest="$(timeout 120 docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}" \
             --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
-          test -n "$digest"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::published amd64 digest is missing or malformed" >&2
+            exit 1
+          }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Published ${REGISTRY}/${IMAGE_NAME}:${TIMESTAMP_TAG}@${digest}"
 
@@ -256,8 +278,8 @@ jobs:
           while :; do
             releases_json=""
             status_json=""
-            if releases_json="$(timeout 30 flyctl releases --app "$FLY_APP" --json)" &&
-              status_json="$(timeout 30 flyctl status --app "$FLY_APP" --json)" &&
+            if releases_json="$(timeout 60 flyctl releases --app "$FLY_APP" --json)" &&
+              status_json="$(timeout 60 flyctl status --app "$FLY_APP" --json)" &&
               jq -e \
                 --arg image "$EXPECTED_IMAGE" '
                   (if type == "array" then sort_by(.Version) | last else empty end)

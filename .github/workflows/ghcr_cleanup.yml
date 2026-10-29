@@ -7,6 +7,7 @@ on:
     - cron: '17 3 * * *'
 
 permissions:
+  actions: write
   contents: read
   packages: write
 
@@ -25,6 +26,42 @@ jobs:
         with:
           # Cleanup never pushes.
           persist-credentials: false
+
+      - name: Remove stale Actions artifacts and build caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          artifacts="$(timeout 90 gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            | jq -r --arg cutoff "$cutoff" '
+              .artifacts[]
+              | select(.created_at < $cutoff or .expired == true)
+              | select(.name | endswith(".dockerbuild"))
+              | .id
+            ')"
+          caches="$(timeout 90 gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            | jq -r --arg cutoff "$cutoff" '
+              .actions_caches[]
+              | select(.last_accessed_at < $cutoff)
+              | select(.key | test("^(buildkit-|index-buildkit-)"))
+              | .id
+            ')"
+          for id in $artifacts; do
+            [[ "$id" =~ ^[1-9][0-9]*$ ]] || { echo "invalid artifact id" >&2; exit 1; }
+            timeout 15 gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" >/dev/null
+          done
+          for id in $caches; do
+            [[ "$id" =~ ^[1-9][0-9]*$ ]] || { echo "invalid cache id" >&2; exit 1; }
+            timeout 15 gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" >/dev/null
+          done
+          artifact_count="$(grep -c . <<< "$artifacts" || true)"
+          cache_count="$(grep -c . <<< "$caches" || true)"
+          echo "removed ${artifact_count} stale artifact(s) and ${cache_count} stale build cache(s)"
 
       - name: Cleanup GHCR
         uses: ./.github/actions/expire_tags

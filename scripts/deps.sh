@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 readonly DOCKERFILE=Dockerfile
 readonly REGISTRY=https://registry-1.docker.io/v2/vaultwarden/server
 readonly GH_API=https://api.github.com/repos
+readonly VAULTWARDEN_REPO=dani-garcia/vaultwarden
 readonly HTTP_TIMEOUT="${DEPS_HTTP_TIMEOUT:-30}"
 readonly GH_TIMEOUT="${DEPS_GH_TIMEOUT:-30}"
 readonly DOCKER_TIMEOUT="${DEPS_DOCKER_TIMEOUT:-300}"
@@ -50,6 +51,20 @@ pin() {
     sed -n "s/^ARG $1=//p" "$DOCKERFILE" | head -n 1
 }
 
+verify_vaultwarden_release() {
+    local version="$1" metadata
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || fail "invalid Vaultwarden release version: ${version:-missing}"
+    metadata="$(gh_api "repos/${VAULTWARDEN_REPO}/releases/tags/${version}")"
+    jq -e --arg version "$version" '
+        type == "object"
+        and .tag_name == $version
+        and .draft == false
+        and .prerelease == false
+    ' >/dev/null 2>&1 <<< "$metadata" \
+        || fail "Vaultwarden ${version} is not an official stable release"
+}
+
 validate_pin_value() {
     case "$1" in
         VAULTWARDEN_VERSION|SUPERCRONIC_VERSION)
@@ -88,6 +103,7 @@ base() {
     done
     found="$(printf '%s' "$candidates" | sed '/^$/d' | sort -u \
         | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
+    verify_vaultwarden_release "$found"
     tag="${found}-alpine"
 
     auth="$(fetch 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull')"
@@ -112,13 +128,15 @@ tools() {
                 | [($parts[0] | tonumber), ($parts[1] | tonumber),
                    (($parts[2] // "0") | tonumber)];
             [.[]
-             | select((.prerelease | not) and (.draft | not))
+             | select(.prerelease == false and .draft == false)
              | select((.tag_name | type) == "string"
                       and (.tag_name | test("^v[0-9]+(\\.[0-9]+){1,2}$")))]
             | sort_by(version) | last // empty
         ')"
     jq -e 'type == "object"
         and (.tag_name | type == "string" and test("^v[0-9]+(\\.[0-9]+){1,2}$"))
+        and (.prerelease == false)
+        and (.draft == false)
         and (.assets | type == "array")' >/dev/null 2>&1 <<< "$release" \
         || fail "malformed supercronic release metadata"
     tag="$(jq -r .tag_name <<< "$release")"
@@ -196,9 +214,9 @@ rebuild_needed() {
     local base_count="${1:-}" published_count="${2:-}"
     [[ "$base_count" =~ ^[0-9]+$ && "$published_count" =~ ^[0-9]+$ ]] \
         || usage_error "usage: deps.sh rebuild-needed <base-count> <published-count>"
-    [ "$base_count" -ne 0 ] || { echo "no rebuild needed: the pinned base image has no package upgrades"; return 1; }
-    [ "$published_count" -ne 0 ] || { echo "no rebuild needed: the published image already contains the package upgrades"; return 1; }
-    echo "rebuild needed: ${published_count} package upgrade(s) remain in the published image"
+    [ "$published_count" -ne 0 ] \
+        || { echo "no rebuild needed: the published image has no package upgrades"; return 1; }
+    echo "rebuild needed: ${published_count} package upgrade(s) remain in the published image (pinned base reports ${base_count})"
 }
 
 case "${1:-}" in

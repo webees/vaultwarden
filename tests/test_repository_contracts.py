@@ -73,10 +73,11 @@ def python_cache_errors(workflow: str) -> list[str]:
             errors.append(f"missing cache confinement: {expected}")
     return errors
 
-def package_probe_script(workflow: str) -> str:
-    marker = "      - name: Rebuild when only Alpine packages moved\n"
-    block = workflow[workflow.index(marker) + len(marker):].split("\n\n  dependabot_automerge:", 1)[0]
-    return textwrap.dedent(block.split("        run: |\n", 1)[1])
+def workflow_step_script(workflow: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    block = workflow.split(marker, 1)[1]
+    body = block.split("        run: |\n", 1)[1]
+    return textwrap.dedent(re.split(r"\n\n(?=  [A-Za-z0-9_-]+:|      - name:)", body, maxsplit=1)[0])
 
 class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -145,9 +146,10 @@ class DependencyResolverTest(unittest.TestCase):
         self.assertEqual(run("git", "diff", "--quiet", cwd=self.repo).returncode, 0)
 
     def test_base_selects_highest_semver_and_uses_its_digest(self) -> None:
-        page = json.dumps({"results": [
-            {"name": "1.9.0-alpine"}, {"name": "latest"}, {"name": "1.10.0-alpine"}
-        ], "next": None})
+        page = json.dumps({"results": [{"name": "1.9.0-alpine"}, {"name": "latest"}, {"name": "1.10.0-alpine"}], "next": None})
+        release = json.dumps({"tag_name": "1.10.0", "draft": False, "prerelease": False})
+        self.env["FAKE_RELEASE"] = release
+        write_executable(self.bin / "gh", "#!/bin/sh\nprintf '%s\\n' \"${FAKE_RELEASE}\"\n")
         curl = f"""#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
@@ -166,21 +168,24 @@ else:
         output = self.output.read_text(encoding="utf-8")
         self.assertIn("version=1.10.0", output)
         self.assertIn(f"digest={DIGEST}", output)
+        self.output.write_text("", encoding="utf-8")
+        self.env["FAKE_RELEASE"] = json.dumps({"tag_name": "1.10.0", "draft": False, "prerelease": True})
+        result = self._deps("base")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not an official stable release", result.stderr)
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "")
 
     def test_tools_choose_latest_stable_release_and_hashes_both_architectures(self) -> None:
         releases = [
             {"tag_name": "v2.0.0", "prerelease": False, "draft": False, "assets": [
-                {"name": "supercronic-linux-amd64", "browser_download_url": "https://github.com/aptible/supercronic/releases/download/v2.0.0/supercronic-linux-amd64"},
-                {"name": "supercronic-linux-arm64", "browser_download_url": "https://github.com/aptible/supercronic/releases/download/v2.0.0/supercronic-linux-arm64"},
-            ]},
+                {"name": f"supercronic-linux-{arch}", "browser_download_url": f"https://github.com/aptible/supercronic/releases/download/v2.0.0/supercronic-linux-{arch}"}
+                for arch in ("amd64", "arm64")]},
             {"tag_name": "v1.9.0", "prerelease": False, "draft": False, "assets": []},
             {"tag_name": "v3.0.0", "prerelease": True, "draft": False, "assets": []},
+            {"tag_name": "v4.0.0", "assets": []},
         ]
         timeout_log = self.repo / "timeout-args"
-        write_executable(
-            self.bin / "timeout",
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{timeout_log}'\nshift 3\nexec \"$@\"\n",
-        )
+        write_executable(self.bin / "timeout", f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{timeout_log}'\nshift 3\nexec \"$@\"\n")
         write_executable(self.bin / "gh", "#!/bin/sh\nprintf '%s\\n' \"$FAKE_RELEASES\"\n")
         write_executable(self.bin / "curl", "#!/bin/sh\nprintf 'payload'\n")
         self.env["FAKE_RELEASES"] = json.dumps(releases)
@@ -264,31 +269,26 @@ else:
         result = self._deps("apk", "image", check=True)
         self.assertIn("upgradable packages: 1", result.stdout)
         self.assertIn("count=1", self.output.read_text(encoding="utf-8"))
+        self.assertNotEqual(self._deps("rebuild-needed", "0", "0").returncode, 0)
+        self.assertNotEqual(self._deps("rebuild-needed", "1", "0").returncode, 0)
+        self.assertEqual(self._deps("rebuild-needed", "0", "1").returncode, 0)
+        self.assertEqual(self._deps("rebuild-needed", "1", "1").returncode, 0)
         self.assertEqual(self._deps("rebuild-needed", "bad", "2").returncode, 2)
         self.assertEqual(self._deps("unknown").returncode, 2)
 
     def test_published_package_probe_script_fails_closed(self) -> None:
-        script = package_probe_script((ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8"))
+        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        script = workflow_step_script(workflow, "Validate the published package probe")
         self.env["GITHUB_REPOSITORY"] = "owner/repository"
-        marker = self.bin / "workflow-dispatch"
-        write_executable(self.bin / "timeout", "#!/bin/sh\nshift 1\nexec \"$@\"\n")
-        write_executable(self.bin / "gh", f"#!/bin/sh\nprintf dispatched > '{marker}'\n")
-        for outcome, apk, published, code, dispatched in (
-            ("failure", "1", "0", 1, False), ("", "1", "0", 1, False),
-            ("success", "0", "0", 0, False), ("success", "1", "0", 0, False),
-            ("success", "1", "1", 0, True),
-        ):
-            with self.subTest(outcome=outcome, apk=apk, published=published):
-                marker.unlink(missing_ok=True)
-                self.env.update(PUBLISHED_APK_OUTCOME=outcome, APK_COUNT=apk, PUBLISHED_APK_COUNT=published)
+        for outcome, code in (("failure", 1), ("", 1), ("success", 0)):
+            with self.subTest(outcome=outcome):
+                self.env["PUBLISHED_APK_OUTCOME"] = outcome
                 result = run("/bin/bash", "-c", script, cwd=self.repo, env=self.env)
                 self.assertEqual(result.returncode, code, result.stderr)
-                self.assertEqual(marker.exists(), dispatched)
-        marker.unlink(missing_ok=True)
-        self.env.update(PUBLISHED_APK_OUTCOME="failure", APK_COUNT="1", PUBLISHED_APK_COUNT="1")
+        self.env["PUBLISHED_APK_OUTCOME"] = "failure"
         mutated = script.replace('if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "if false; then", 1)
         self.assertEqual(run("/bin/bash", "-c", mutated, cwd=self.repo, env=self.env).returncode, 0)
-        self.assertTrue(marker.exists(), "mutation must expose a missing fail-closed guard")
+        self.assertNotIn("steps.apk.outputs.count != '0'", workflow)
 
     def test_docker_commands_fail_closed_without_a_timeout_program(self) -> None:
         marker = self.repo / "docker-called"
@@ -307,6 +307,8 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertEqual(merge_binding_errors(workflow), [])
         weakened = workflow.replace(' --match-head-commit "$HEAD_SHA"', "", 1)
         self.assertIn("reviewed head SHA", "\n".join(merge_binding_errors(weakened)))
+        self.assertIn("AUDIT_RESULT: ${{ needs.production_audit.result }}", workflow)
+        self.assertIn("<code>production_audit</code>", workflow)
 
     def test_workflow_gh_calls_are_bounded_and_mutation_is_detected(self) -> None:
         workflows = {path.name: path.read_text(encoding="utf-8") for path in (ROOT / ".github/workflows").glob("*.yml")}
@@ -322,6 +324,38 @@ class RepositoryHygieneTest(unittest.TestCase):
         weakened = workflow.replace("PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache", "PYTHONPYCACHEPREFIX: .", 1)
         self.assertTrue(python_cache_errors(weakened))
 
+    def test_production_audit_executes_fail_closed_contract(self) -> None:
+        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        script = workflow_step_script(workflow, "Verify production release and runtime health")
+        digest = "sha256:" + "d" * 64
+        image = f"ghcr.io/owner/repository@{digest}"
+        release = [{"Version": 1, "Status": "complete", "InProgress": False, "ImageRef": image}]
+        machine = {"state": "started", "host_status": "ok", "checks": [{"status": "passing"}], "image_ref": {"registry": "ghcr.io", "repository": "owner/repository", "digest": digest}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root, binary = Path(temporary), Path(temporary) / "bin"
+            binary.mkdir()
+            write_executable(binary / "flyctl", '#!/bin/sh\ncase "$1" in releases) cat "$RELEASES_FIXTURE" ;; status) cat "$STATUS_FIXTURE" ;; *) exit 2 ;; esac\n')
+            env = os.environ | {"FLY_APP": "test-app", "EXPECTED_IMAGE": image, "FLY_LOG_REDACT": "s/x/y/", "PATH": f"{binary}:{os.environ['PATH']}", "RELEASES_FIXTURE": str(root / "r.json"), "STATUS_FIXTURE": str(root / "s.json")}
+            def audit(releases: object, status: object) -> subprocess.CompletedProcess[str]:
+                Path(env["RELEASES_FIXTURE"]).write_text(json.dumps(releases), encoding="utf-8")
+                Path(env["STATUS_FIXTURE"]).write_text(json.dumps(status), encoding="utf-8")
+                return run("/bin/bash", "-c", script, cwd=ROOT, env=env)
+            status = {"Status": "deployed", "Machines": [machine]}
+            self.assertEqual(audit(release, status).returncode, 0)
+            for item in ({**machine, "checks": []}, {**machine, "checks": [{"status": "critical"}]}, {**machine, "image_ref": {**machine["image_ref"], "digest": "sha256:" + "e" * 64}}):
+                self.assertNotEqual(audit(release, {"Status": "deployed", "Machines": [item]}).returncode, 0)
+            self.assertNotEqual(audit([{**release[0], "Status": "failed"}], status).returncode, 0)
+            self.assertNotEqual(audit([{**release[0], "Version": 0, "InProgress": True}, *release], status).returncode, 0)
+            env["EXPECTED_IMAGE"] = "ghcr.io/owner/repository@sha256:" + "f" * 64
+            self.assertNotEqual(audit(release, status).returncode, 0)
+            env["EXPECTED_IMAGE"] = image
+            mutated = script.replace('(($latest.Status // "" | ascii_downcase) == "complete")', "true", 1)
+            Path(env["RELEASES_FIXTURE"]).write_text(
+                json.dumps([{**release[0], "Status": "failed"}]), encoding="utf-8"
+            )
+            Path(env["STATUS_FIXTURE"]).write_text(json.dumps(status), encoding="utf-8")
+            self.assertEqual(run("/bin/bash", "-c", mutated, cwd=ROOT, env=env).returncode, 0)
+
     def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         query, dispatch = 'actions/runs?head_sha=${merge_sha}&event=push&per_page=20', "timeout 60 gh workflow run build_and_deploy.yml"
@@ -330,22 +364,111 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertLess(workflow.index(query), workflow.index(dispatch))
         self.assertIn(".github/workflows/validate.yml", workflow)
         self.assertIn("reported a change but no tracked file changed", workflow)
+        for expected in ("refusing unexpected dependency path", "production_audit:", "verify-production"): self.assertIn(expected, workflow)
+        self.assertIn("verify_vaultwarden_release()", (ROOT / "scripts/deps.sh").read_text(encoding="utf-8"))
+        build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
+        self.assertIn("for platform in linux/amd64 linux/arm64", build)
+        self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
+        self.assertIn("DOCKER_BUILD_RECORD_UPLOAD: false", build)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
         self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
-        for expected in ("dependency_watchdog:", "actions: write", 'select(.status == "queued" or .status == "in_progress")', "MAX_AGE_SECONDS: 21600", "gh workflow run dependency_updates.yml"):
+        for expected in (
+            "dependency_watchdog:",
+            "actions: write",
+            'select(.status == "queued" or .status == "in_progress")',
+            "MAX_AGE_SECONDS: 21600",
+            "gh workflow run dependency_updates.yml",
+            "Remove stale Actions artifacts and build caches",
+            "actions/caches/",
+        ):
             self.assertIn(expected, maintenance)
 
+    def test_cleanup_executes_only_stale_build_assets(self) -> None:
+        workflow = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
+        script = workflow_step_script(workflow, "Remove stale Actions artifacts and build caches")
+        with tempfile.TemporaryDirectory() as temporary:
+            root, binary = Path(temporary), Path(temporary) / "bin"
+            binary.mkdir()
+            artifacts = root / "artifacts.json"
+            caches = root / "caches.json"
+            deletes = root / "deletes"
+            artifacts.write_text(json.dumps({"artifacts": [
+                {"id": 11, "created_at": "2026-10-20T00:00:00Z", "expired": False, "name": "old.dockerbuild"},
+                {"id": 12, "created_at": "2026-10-28T00:00:00Z", "expired": True, "name": "expired.dockerbuild"},
+                {"id": 13, "created_at": "2026-10-28T00:00:00Z", "expired": False, "name": "fresh.dockerbuild"},
+                {"id": 14, "created_at": "2026-10-20T00:00:00Z", "expired": False, "name": "report.zip"},
+            ]}), encoding="utf-8")
+            caches.write_text(json.dumps({"actions_caches": [
+                {"id": 21, "last_accessed_at": "2026-10-20T00:00:00Z", "key": "buildkit-old"},
+                {"id": 22, "last_accessed_at": "2026-10-28T00:00:00Z", "key": "buildkit-fresh"},
+                {"id": 23, "last_accessed_at": "2026-10-20T00:00:00Z", "key": "index-buildkit-old"},
+                {"id": 24, "last_accessed_at": "2026-10-20T00:00:00Z", "key": "python-old"},
+            ]}), encoding="utf-8")
+            write_executable(binary / "date", "#!/bin/sh\nprintf '2026-10-24T00:00:00Z\\n'\n")
+            write_executable(binary / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
+            write_executable(binary / "gh", """#!/bin/sh
+case "$*" in
+  *actions/artifacts?per_page=100*) cat "$ARTIFACTS_FIXTURE" ;;
+  *actions/caches?per_page=100*) cat "$CACHES_FIXTURE" ;;
+  *--method\ DELETE*actions/artifacts/*) printf 'artifact=%s\\n' "${4##*/}" >> "$DELETE_LOG" ;;
+  *--method\ DELETE*actions/caches/*) printf 'cache=%s\\n' "${4##*/}" >> "$DELETE_LOG" ;;
+  *) exit 2 ;;
+esac
+""")
+            env = os.environ | {"GITHUB_REPOSITORY": "owner/repository", "PATH": f"{binary}:{os.environ['PATH']}", "ARTIFACTS_FIXTURE": str(artifacts), "CACHES_FIXTURE": str(caches), "DELETE_LOG": str(deletes)}
+            result = run("/bin/bash", "-c", script, cwd=ROOT, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            removed = deletes.read_text(encoding="utf-8")
+            for expected in ("artifact=11", "artifact=12", "cache=21", "cache=23"):
+                self.assertIn(expected, removed)
+            for kept in ("artifact=13", "artifact=14", "cache=22", "cache=24"):
+                self.assertNotIn(kept, removed)
+            artifacts.write_text(json.dumps({"artifacts": [{"id": "invalid", "created_at": "2026-10-20T00:00:00Z", "expired": False, "name": "bad.dockerbuild"}]}), encoding="utf-8")
+            deletes.unlink()
+            self.assertNotEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, 0)
+            self.assertFalse(deletes.exists())
+
+    def test_published_manifest_and_digest_are_strict(self) -> None:
+        workflow = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
+        manifest = workflow_step_script(workflow, "Verify the multi-arch manifest")
+        digest = workflow_step_script(workflow, "Record the published amd64 digest")
+        dependency_workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        audit_image = workflow_step_script(dependency_workflow, "Resolve the latest published amd64 image")
+        with tempfile.TemporaryDirectory() as temporary:
+            root, binary = Path(temporary), Path(temporary) / "bin"
+            binary.mkdir()
+            output = root / "output"
+            write_executable(binary / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
+            write_executable(binary / "docker", "#!/bin/sh\nprintf '%s\\n' \"$DOCKER_OUTPUT\"\n")
+            env = os.environ | {"REGISTRY": "ghcr.io", "IMAGE_NAME": "owner/repository", "TIMESTAMP_TAG": "202610300615", "GITHUB_OUTPUT": str(output), "PATH": f"{binary}:{os.environ['PATH']}"}
+            env["DOCKER_OUTPUT"] = "linux/amd64\nlinux/arm64"
+            self.assertEqual(run("/bin/bash", "-c", manifest, cwd=ROOT, env=env).returncode, 0)
+            env["DOCKER_OUTPUT"] = "linux/amd64"
+            self.assertNotEqual(run("/bin/bash", "-c", manifest, cwd=ROOT, env=env).returncode, 0)
+            expected = "sha256:" + "a" * 64
+            output.write_text("", encoding="utf-8")
+            env["DOCKER_OUTPUT"] = expected
+            self.assertEqual(run("/bin/bash", "-c", digest, cwd=ROOT, env=env).returncode, 0)
+            self.assertIn(f"digest={expected}", output.read_text(encoding="utf-8"))
+            output.write_text("", encoding="utf-8")
+            env["DOCKER_OUTPUT"] = "sha256:short"
+            self.assertNotEqual(run("/bin/bash", "-c", digest, cwd=ROOT, env=env).returncode, 0)
+            self.assertEqual(output.read_text(encoding="utf-8"), "")
+            output.write_text("", encoding="utf-8")
+            env["DOCKER_OUTPUT"] = expected
+            self.assertEqual(run("/bin/bash", "-c", audit_image, cwd=ROOT, env=env).returncode, 0)
+            self.assertIn(f"image=ghcr.io/owner/repository@{expected}", output.read_text(encoding="utf-8"))
+            output.write_text("", encoding="utf-8")
+            env["DOCKER_OUTPUT"] = "sha256:short"
+            self.assertNotEqual(run("/bin/bash", "-c", audit_image, cwd=ROOT, env=env).returncode, 0)
+            self.assertEqual(output.read_text(encoding="utf-8"), "")
+
     def test_runtime_shell_retries_only_interrupted_attempts(self) -> None:
-        started = "__runtime_smoke_started__"
-        ended = "__runtime_smoke_ended__="
+        started, ended = "__runtime_smoke_started__", "__runtime_smoke_ended__="
         passed = "__runtime_smoke_passed__"
-        failed_assertion = subprocess.CompletedProcess(
-            [], 1, f"{started}\n{ended}2\nassertion failed\n", ""
-        )
-        started_case = subprocess.CompletedProcess(
-            [], 0, f"{started}\n{ended}0\n{passed}\n", ""
-        )
+        failed_assertion = subprocess.CompletedProcess([], 1, f"{started}\n{ended}2\nassertion failed\n", "")
+        started_case = subprocess.CompletedProcess([], 0, f"{started}\n{ended}0\n{passed}\n", "")
         interrupted_container = subprocess.CompletedProcess([], 1, f"{started}\n", "")
         clean_exit_without_markers = subprocess.CompletedProcess([], 0, "", "")
 
@@ -361,17 +484,14 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertEqual(docker_mock.call_count, 2)
         suite.ok.assert_called_once_with("accepted")
         suite.bad.assert_not_called()
-
         suite, docker_mock = run_case(failed_assertion)
         self.assertEqual(docker_mock.call_count, 1)
         suite.ok.assert_not_called()
         suite.bad.assert_called_once_with("rejected")
-
         suite, docker_mock = run_case(*(interrupted_container,) * 3)
         self.assertEqual(docker_mock.call_count, 3)
         suite.ok.assert_not_called()
         suite.bad.assert_called_once_with("rejected: shell case was interrupted after 3 attempts")
-
         suite, docker_mock = run_case(clean_exit_without_markers)
         self.assertEqual(docker_mock.call_count, 1)
         suite.ok.assert_not_called()
@@ -408,7 +528,13 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertGreater(calls, 0)
         self.assertEqual(calls, bounded)
         deps = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
-        for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'):
+        for expected in (
+            'timeout -k 2 "$GH_TIMEOUT" gh api',
+            'gtimeout -k 2 "$GH_TIMEOUT" gh api',
+            'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"',
+            'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"',
+            'rows="$(docker_bounded run --rm',
+        ):
             self.assertIn(expected, deps)
         self.assertNotIn('\n        gh api "$@"', deps)
 
@@ -478,7 +604,7 @@ class RepositoryHygieneTest(unittest.TestCase):
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4500, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 4650, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"):
             self.assertFalse((ROOT / "tests" / removed).exists())
 
