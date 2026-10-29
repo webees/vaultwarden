@@ -64,10 +64,16 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def create_tls_context():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def main():
     args = parse_args()
 
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context = create_tls_context()
     context.load_cert_chain(args.cert, args.key)
 
     server = socket.socket()
