@@ -140,3 +140,13 @@ Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and 
 Mutation control: `tests/test_repository_contracts.py:test_published_package_probe_script_fails_closed`.
 
 Regression gate: deleting the outcome assertion while keeping `continue-on-error: true` must fail the repository contract.
+
+### Dependabot Auto-Merge Trust
+
+History: `7bc1c48` introduced write-capable Dependabot auto-merge with path checks; `f91bbc3` later bound the reviewed head SHA but still trusted every line inside an allowed workflow path.
+
+Final decision: a Dependabot PR may auto-merge only when every changed line is a complete remote Action `uses: owner/action@40-sha # version` replacement for the same Action and indentation. Workflow logic, local Actions, file additions, deletions, short refs, missing version comments, and cross-hunk moves must fail closed.
+
+Authority: `.github/workflows/dependency_updates.yml:dependabot_automerge` and `scripts/validate_action_pin_update.py:validate`.
+
+Regression gate: `tests/test_action_pin_update.py:ActionPinUpdateTest` must accept a valid same-Action pin update and reject non-pin edits, path expansion, identity changes, incomplete pairs, and cross-hunk moves before auto-merge is armed.
