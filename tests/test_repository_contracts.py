@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import textwrap
 import time
 import unittest
 from unittest import mock
@@ -72,8 +73,10 @@ def python_cache_errors(workflow: str) -> list[str]:
             errors.append(f"missing cache confinement: {expected}")
     return errors
 
-def package_probe_errors(workflow: str) -> list[str]:
-    return [f"missing fail-closed package probe guard: {value}" for value in ("PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}", 'if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "could not inspect packages in the latest published image") if value not in workflow]
+def package_probe_script(workflow: str) -> str:
+    marker = "      - name: Rebuild when only Alpine packages moved\n"
+    block = workflow[workflow.index(marker) + len(marker):].split("\n\n  dependabot_automerge:", 1)[0]
+    return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -261,11 +264,31 @@ else:
         result = self._deps("apk", "image", check=True)
         self.assertIn("upgradable packages: 1", result.stdout)
         self.assertIn("count=1", self.output.read_text(encoding="utf-8"))
-        self.assertEqual(self._deps("rebuild-needed", "0", "0").returncode, 1)
-        self.assertEqual(self._deps("rebuild-needed", "1", "0").returncode, 1)
-        self.assertEqual(self._deps("rebuild-needed", "1", "2").returncode, 0)
         self.assertEqual(self._deps("rebuild-needed", "bad", "2").returncode, 2)
         self.assertEqual(self._deps("unknown").returncode, 2)
+
+    def test_published_package_probe_script_fails_closed(self) -> None:
+        script = package_probe_script((ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8"))
+        self.env["GITHUB_REPOSITORY"] = "owner/repository"
+        marker = self.bin / "workflow-dispatch"
+        write_executable(self.bin / "timeout", "#!/bin/sh\nshift 1\nexec \"$@\"\n")
+        write_executable(self.bin / "gh", f"#!/bin/sh\nprintf dispatched > '{marker}'\n")
+        for outcome, apk, published, code, dispatched in (
+            ("failure", "1", "0", 1, False), ("", "1", "0", 1, False),
+            ("success", "0", "0", 0, False), ("success", "1", "0", 0, False),
+            ("success", "1", "1", 0, True),
+        ):
+            with self.subTest(outcome=outcome, apk=apk, published=published):
+                marker.unlink(missing_ok=True)
+                self.env.update(PUBLISHED_APK_OUTCOME=outcome, APK_COUNT=apk, PUBLISHED_APK_COUNT=published)
+                result = run("/bin/bash", "-c", script, cwd=self.repo, env=self.env)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(marker.exists(), dispatched)
+        marker.unlink(missing_ok=True)
+        self.env.update(PUBLISHED_APK_OUTCOME="failure", APK_COUNT="1", PUBLISHED_APK_COUNT="1")
+        mutated = script.replace('if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "if false; then", 1)
+        self.assertEqual(run("/bin/bash", "-c", mutated, cwd=self.repo, env=self.env).returncode, 0)
+        self.assertTrue(marker.exists(), "mutation must expose a missing fail-closed guard")
 
     def test_docker_commands_fail_closed_without_a_timeout_program(self) -> None:
         marker = self.repo / "docker-called"
@@ -286,10 +309,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn("reviewed head SHA", "\n".join(merge_binding_errors(weakened)))
 
     def test_workflow_gh_calls_are_bounded_and_mutation_is_detected(self) -> None:
-        workflows = {
-            path.name: path.read_text(encoding="utf-8")
-            for path in (ROOT / ".github/workflows").glob("*.yml")
-        }
+        workflows = {path.name: path.read_text(encoding="utf-8") for path in (ROOT / ".github/workflows").glob("*.yml")}
         for name, workflow in workflows.items():
             with self.subTest(workflow=name):
                 self.assertEqual(unbounded_gh_commands(workflow), [])
@@ -304,23 +324,16 @@ class RepositoryHygieneTest(unittest.TestCase):
 
     def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
-        query = 'actions/runs?head_sha=${merge_sha}&event=push&per_page=20'
-        dispatch = "timeout 60 gh workflow run build_and_deploy.yml"
+        query, dispatch = 'actions/runs?head_sha=${merge_sha}&event=push&per_page=20', "timeout 60 gh workflow run build_and_deploy.yml"
         self.assertIn(query, workflow)
         self.assertIn(dispatch, workflow)
         self.assertLess(workflow.index(query), workflow.index(dispatch))
         self.assertIn(".github/workflows/validate.yml", workflow)
         self.assertIn("reported a change but no tracked file changed", workflow)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
-        self.assertIn(failure_gate, workflow); self.assertEqual(package_probe_errors(workflow), []); self.assertTrue(package_probe_errors(workflow.replace('if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "", 1)))
+        self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
-        for expected in (
-            "dependency_watchdog:",
-            "actions: write",
-            'select(.status == "queued" or .status == "in_progress")',
-            "MAX_AGE_SECONDS: 21600",
-            "gh workflow run dependency_updates.yml",
-        ):
+        for expected in ("dependency_watchdog:", "actions: write", 'select(.status == "queued" or .status == "in_progress")', "MAX_AGE_SECONDS: 21600", "gh workflow run dependency_updates.yml"):
             self.assertIn(expected, maintenance)
 
     def test_runtime_shell_retries_only_interrupted_attempts(self) -> None:
@@ -395,12 +408,9 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertGreater(calls, 0)
         self.assertEqual(calls, bounded)
         deps = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
-        self.assertIn('timeout -k 2 "$GH_TIMEOUT" gh api', deps)
-        self.assertIn('gtimeout -k 2 "$GH_TIMEOUT" gh api', deps)
+        for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'):
+            self.assertIn(expected, deps)
         self.assertNotIn('\n        gh api "$@"', deps)
-        self.assertIn('timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', deps)
-        self.assertIn('gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', deps)
-        self.assertIn('rows="$(docker_bounded run --rm', deps)
 
     def test_recurring_regressions_stay_documented(self) -> None:
         restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
@@ -423,12 +433,8 @@ class RepositoryHygieneTest(unittest.TestCase):
             self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurrence_contract(self, decisions)
-        self.assertIn("Bounded Diagnostics", decisions)
-        self.assertIn("Outbound Network Bounds", decisions)
-        self.assertIn("Status writes are atomic or fail without truncating", decisions)
-        self.assertIn("Runtime Harness Lifecycle", decisions)
-        self.assertIn("Absence of a supported timeout command fails closed", decisions)
-        self.assertIn("Simplification Rule", decisions)
+        for section in ("Bounded Diagnostics", "Outbound Network Bounds", "Status writes are atomic or fail without truncating", "Runtime Harness Lifecycle", "Absence of a supported timeout command fails closed", "Simplification Rule"):
+            self.assertIn(section, decisions)
         self.assertNotIn('printf \'%s\' "$body" > "$STATUS_FILE"', restic)
         self.assertIn("refusing to create a new log", restic)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
@@ -438,9 +444,7 @@ class RepositoryHygieneTest(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/cloudflare_ranges.py")
         )
-        forbidden = re.compile(
-            r"\$RANDOM|random\.(?:random|randint|randrange|choice|choices)|uuid\.uuid1|openssl\s+rand"
-        )
+        forbidden = re.compile(r"\$RANDOM|random\.(?:random|randint|randrange|choice|choices)|uuid\.uuid1|openssl\s+rand")
         self.assertIsNone(forbidden.search(production))
         performance = (ROOT / "tests/performance.py").read_text(encoding="utf-8")
         self.assertIn("secrets.token_hex", performance)
@@ -467,12 +471,7 @@ class RepositoryHygieneTest(unittest.TestCase):
             self.assertEqual(scan_for_sensitive_data(text), [], f"sensitive value in {path.relative_to(ROOT)}")
 
     def test_quality_budgets_do_not_regress(self) -> None:
-        budgets = {
-            "README.md": 146,
-            ".env.example": 48,
-            "scripts/restic.sh": 520,
-            "scripts/cloudflare_ranges.py": 200,
-        }
+        budgets = {"README.md": 146, ".env.example": 48, "scripts/restic.sh": 520, "scripts/cloudflare_ranges.py": 200}
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
