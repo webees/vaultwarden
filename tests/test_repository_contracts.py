@@ -597,14 +597,17 @@ esac
             self.assertEqual(scan_for_sensitive_data(text), [], f"sensitive value in {path.relative_to(ROOT)}")
 
     def test_quality_budgets_do_not_regress(self) -> None:
-        budgets = {"README.md": 146, ".env.example": 48, "scripts/restic.sh": 520, "scripts/cloudflare_ranges.py": 200}
+        budgets = {
+            "README.md": 146, ".env.example": 48, "scripts/restic.sh": 520,
+            "scripts/cloudflare_ranges.py": 200, "scripts/validate_action_pin_update.py": 140,
+        }
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4650, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 4800, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"):
             self.assertFalse((ROOT / "tests" / removed).exists())
 

@@ -324,6 +324,23 @@ jobs:
       pull-requests: write
       actions: read
     steps:
+      - name: Checkout the trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Validate the Action pin update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          files="$(timeout 90 gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
+          printf '%s' "$files" | python3 scripts/validate_action_pin_update.py
+
       - name: Arm auto-merge for the Dependabot PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -336,17 +353,6 @@ jobs:
             ''|*[!0-9]*) echo "invalid pull request number" >&2; exit 2 ;;
           esac
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid pull request head SHA" >&2; exit 2; }
-
-          # This write-capable event accepts only workflow/action pin changes.
-          files="$(timeout 90 gh api --paginate \
-            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
-          [ -n "$files" ] || { echo "Dependabot PR has no changed files" >&2; exit 1; }
-          while IFS= read -r file; do
-            case "$file" in
-              .github/workflows/*.yml|.github/workflows/*.yaml|.github/actions/*/*.yml|.github/actions/*/*.yaml|.github/dependabot.yml) ;;
-              *) echo "refusing auto-merge for unexpected path: ${file}" >&2; exit 1 ;;
-            esac
-          done <<< "$files"
 
           timeout 60 gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
             --squash --delete-branch --auto --match-head-commit "$HEAD_SHA"

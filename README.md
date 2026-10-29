@@ -48,9 +48,9 @@ Deployment passes only when the newest release is complete, every machine runs t
 and all health checks pass. Timestamp tags expire after 30 days; stale Actions artifacts and build
 caches are removed nightly, and a nightly watchdog replays a stale dependency schedule.
 
-Dependabot checks pinned Actions daily. Every two hours the dependency workflow checks official Vaultwarden,
-Supercronic, Alpine packages, and Cloudflare ranges, then opens or refreshes one protected PR. Its scheduled
-audit also verifies the live release, digest, machines and health; auto-merge waits for required `validate`.
+Dependabot checks pinned Actions daily; auto-merge accepts only same-Action SHA and comment changes, never workflow logic.
+Every two hours the dependency workflow checks official Vaultwarden, Supercronic, Alpine packages, and Cloudflare ranges,
+then opens or refreshes one protected PR; its audit verifies the live release, digest, machines, health, and required `validate`.
 
 ### Tuning
 
