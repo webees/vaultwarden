@@ -81,6 +81,8 @@ jobs:
           timeout 60 docker run --rm validate:local /entrypoint.sh sh -c '
             test ! -s /etc/msmtprc
             echo "no SMTP settings: /etc/msmtprc left empty"'
+          # The command substitution runs inside the container, not on the runner.
+          # shellcheck disable=SC2016
           timeout 60 docker run --rm \
             --env SMTP_HOST=smtp.example.com \
             --env SMTP_TO=ops@example.com \
