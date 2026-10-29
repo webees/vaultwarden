@@ -72,6 +72,8 @@ def python_cache_errors(workflow: str) -> list[str]:
             errors.append(f"missing cache confinement: {expected}")
     return errors
 
+def package_probe_errors(workflow: str) -> list[str]:
+    return [f"missing fail-closed package probe guard: {value}" for value in ("PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}", 'if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "could not inspect packages in the latest published image") if value not in workflow]
 
 class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -310,7 +312,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn(".github/workflows/validate.yml", workflow)
         self.assertIn("reported a change but no tracked file changed", workflow)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
-        self.assertIn(failure_gate, workflow)
+        self.assertIn(failure_gate, workflow); self.assertEqual(package_probe_errors(workflow), []); self.assertTrue(package_probe_errors(workflow.replace('if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then', "", 1)))
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
         for expected in (
             "dependency_watchdog:",
