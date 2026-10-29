@@ -128,3 +128,15 @@ Authority: `tests/test_recurring_gate.py:assert_recurrence_contract`.
 Mutation control: `tests/test_recurring_gate.py:test_contract_mutation_removes_authoritative_field`.
 
 Regression gate: every recurring class must retain History, Final decision, and Regression gate sections, and repository tests must fail if a class or required field is removed. Simplification must also preserve every existing class gate and mutation control.
+
+### Published Package Probe
+
+History: `f64c7ef` made a failed published-image package probe fail closed; `7854f9f` later removed the outcome assertion while retaining `continue-on-error`.
+
+Final decision: a required published-image probe whose outcome is not `success` must fail the dependency job, notify, and must not dispatch a rebuild. A clean probe remains a no-op; a probe with pending upgrades dispatches exactly one rebuild. `workflow_run` remains exempt to prevent a build-to-check loop.
+
+Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/deps.sh:rebuild-needed`.
+
+Mutation control: `tests/test_repository_contracts.py:test_merged_dependency_does_not_dispatch_a_duplicate_build`.
+
+Regression gate: deleting the outcome assertion while keeping `continue-on-error: true` must fail the repository contract.

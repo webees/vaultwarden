@@ -290,8 +290,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APK_COUNT: ${{ steps.apk.outputs.count }}
           PUBLISHED_APK_COUNT: ${{ steps.published-apk.outputs.count }}
+          PUBLISHED_APK_OUTCOME: ${{ steps.published-apk.outcome }}
         run: |
           set -euo pipefail
+          if [ "$PUBLISHED_APK_OUTCOME" != "success" ]; then
+            echo "::error::could not inspect packages in the latest published image" >&2
+            exit 1
+          fi
           if scripts/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             timeout 60 gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
