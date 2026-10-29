@@ -45,12 +45,12 @@ fly releases rollback <release> --app "$FLY_APP"
 ```
 
 Deployment passes only when the newest release is complete, every machine runs the expected digest,
-and all health checks pass. Timestamp tags expire after 30 days; cleanup runs nightly and from builds
-when the schedule is stale.
+and all health checks pass. Timestamp tags expire after 30 days; stale Actions artifacts and build
+caches are removed nightly, and a nightly watchdog replays a stale dependency schedule.
 
-Dependabot checks pinned Actions daily. Every two hours the dependency workflow checks Vaultwarden,
-Supercronic, Alpine packages, and Cloudflare ranges, then opens or refreshes one protected PR.
-Auto-merge waits for required `validate` and binds the reviewed head SHA; a merge produces one build and deploy.
+Dependabot checks pinned Actions daily. Every two hours the dependency workflow checks official Vaultwarden,
+Supercronic, Alpine packages, and Cloudflare ranges, then opens or refreshes one protected PR. Its scheduled
+audit also verifies the live release, digest, machines and health; auto-merge waits for required `validate`.
 
 ### Tuning
 
