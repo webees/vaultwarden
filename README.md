@@ -36,7 +36,7 @@ Enforce Cloudflare Access for `/admin` and `/admin/*`, and keep the long, random
 ## Deploy
 
 Image and production-input changes build a multi-architecture GHCR image with an `Asia/Shanghai` timestamp tag such as
-`202610180615`. After runtime verification, that exact index is promoted to `latest`; failures leave it unchanged. Fly deploys the exact amd64 digest, not a tag.
+`202610180615`. Documentation-only commits do not trigger production builds. After runtime verification, that exact index is promoted to `latest`; failures leave it unchanged. Fly deploys the exact amd64 digest, not a tag.
 
 ```bash
 fly releases --app "$FLY_APP"

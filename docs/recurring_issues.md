@@ -165,6 +165,18 @@ Mutation control: `tests/test_repository_contracts.py:test_scheduled_automation_
 
 Regression gate: zero and nonzero package counts, probe failure, both bot identities, human authors, unrelated branches, fresh pull requests, and removal of the branch filter must all produce the expected allow or deny result.
 
+### Documentation-only commits stay outside production builds
+
+History: PR #201 changed a recurring-issues document and production code together, then a manual workflow dispatch created a second successful production build for the same commit.
+
+Final decision: documentation-only commits must not build or deploy. The production trigger ignores README, license, repository automation, tests, and documentation paths, while keeping Dockerfile, fly.toml, config, and scripts as production inputs.
+
+Authority: `.github/workflows/build_and_deploy.yml:push.paths-ignore`.
+
+Mutation control: `tests/test_repository_contracts.py:test_documentation_changes_do_not_trigger_production_builds` removes `docs/**` and requires the contract to fail.
+
+Regression gate: every non-production allowlist entry must remain ignored, and no production input may appear in the ignore list.
+
 ### Failure Notification JSON Validation
 
 History: run `40983432496` received HTTP 200 from Telegram but failed because the response was redacted before JSON validation. The numeric chat identifier became `<redacted>` inside the JSON document.

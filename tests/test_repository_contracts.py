@@ -324,6 +324,12 @@ class RepositoryHygieneTest(unittest.TestCase):
         weakened = workflow.replace("PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache", "PYTHONPYCACHEPREFIX: .", 1)
         self.assertTrue(python_cache_errors(weakened))
 
+    def test_documentation_changes_do_not_trigger_production_builds(self) -> None:
+        workflow = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8"); ignore = workflow.split("    paths-ignore:\n", 1)[1].split("  schedule:\n", 1)[0]
+        entries = set(re.findall(r"^      - (\S+)$", ignore, re.MULTILINE)); required = {"README.md", "LICENSE", ".github/**", "docs/**", "tests/**"}
+        self.assertEqual((required <= entries, bool({"Dockerfile", "fly.toml", "config/**", "scripts/**"} & entries)), (True, False))
+        self.assertNotIn("docs/**", set(re.findall(r"^      - (\S+)$", ignore.replace("      - docs/**\n", "", 1), re.MULTILINE)))
+
     def test_production_and_notification_contracts_fail_closed(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         script = workflow_step_script(workflow, "Verify production release and runtime health")
@@ -597,7 +603,7 @@ esac
             self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurrence_contract(self, decisions)
-        for section in ("Bounded Diagnostics", "Outbound Network Bounds", "Status writes are atomic or fail without truncating", "Runtime Harness Lifecycle", "Absence of a supported timeout command fails closed", "Simplification Rule"): self.assertIn(section, decisions)
+        for section in ("Bounded Diagnostics", "Outbound Network Bounds", "Status writes are atomic or fail without truncating", "Runtime Harness Lifecycle", "Absence of a supported timeout command fails closed", "Documentation-only commits stay outside production builds", "Simplification Rule"): self.assertIn(section, decisions)
         self.assertNotIn('printf \'%s\' "$body" > "$STATUS_FILE"', restic)
         self.assertIn("refusing to create a new log", restic)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
