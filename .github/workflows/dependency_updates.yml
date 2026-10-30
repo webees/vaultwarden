@@ -615,18 +615,18 @@ jobs:
           out="${out%$'\n'}"
           status="$(printf '%s\n' "$out" | sed -n 's/^HTTP_STATUS=//p' | tail -n 1)"
           body="$(printf '%s\n' "$out" | sed '/^HTTP_STATUS=/d')"
-          body="${body//"$token"/<redacted>}"
-          body="${body//"$chat_id"/<redacted>}"
+          safe_body="${body//"$token"/<redacted>}"
+          safe_body="${safe_body//"$chat_id"/<redacted>}"
           if [ "$rc" -ne 0 ]; then
-            echo "::error::Telegram failure alert transport failed (curl exit ${rc}): ${body:-no diagnostic}" >&2
+            echo "::error::Telegram failure alert transport failed (curl exit ${rc}): ${safe_body:-no diagnostic}" >&2
             exit 1
           fi
           if [ "$status" != "200" ]; then
-            echo "::error::Telegram failure alert rejected (HTTP ${status:-unknown}): ${body:-no response body}" >&2
+            echo "::error::Telegram failure alert rejected (HTTP ${status:-unknown}): ${safe_body:-no response body}" >&2
             exit 1
           fi
           if ! printf '%s' "$body" | python3 -c 'import json,sys; data=json.load(sys.stdin); raise SystemExit(0 if isinstance(data, dict) and data.get("ok") is True else 1)'; then
-            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${body:-no success response}" >&2
+            echo "::error::Telegram failure alert rejected (HTTP ${status}): ${safe_body:-no success response}" >&2
             exit 1
           fi
           echo "Telegram failure alert sent"

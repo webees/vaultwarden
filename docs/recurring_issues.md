@@ -162,3 +162,15 @@ Authority: `.github/workflows/build_and_deploy.yml:rebuild_check` and `.github/w
 Mutation control: `tests/test_repository_contracts.py:test_scheduled_automation_skips_idle_rebuilds_and_closes_stale_bots`.
 
 Regression gate: zero and nonzero package counts, probe failure, both bot identities, human authors, unrelated branches, fresh pull requests, and removal of the branch filter must all produce the expected allow or deny result.
+
+### Failure Notification JSON Validation
+
+History: run `40983432496` received HTTP 200 from Telegram but failed because the response was redacted before JSON validation. The numeric chat identifier became `<redacted>` inside the JSON document.
+
+Final decision: validate the raw response document first, then derive a separate redacted diagnostic string. A syntactically valid top-level `{"ok":true}` response is successful; malformed JSON, nested success, non-200 status, transport failure, or missing credentials fail the notification job. Redaction must never mutate the document used for validation.
+
+Authority: `.github/workflows/dependency_updates.yml:Send the failure through Telegram`.
+
+Mutation control: `tests/test_repository_contracts.py:test_production_and_notification_contracts_fail_closed` changes the chat-ID redaction target back to `body` and requires the notification step to fail.
+
+Regression gate: a response containing the chat identifier must validate successfully while diagnostics expose neither the token nor the chat identifier.
