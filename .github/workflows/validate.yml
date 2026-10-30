@@ -36,7 +36,8 @@ jobs:
           sudo apt-get install -y -qq shellcheck
           mapfile -d '' shell_files < <(find scripts -type f -name '*.sh' -print0)
           shellcheck "${shell_files[@]}"
-          python3 -m py_compile scripts/*.py tests/*.py
+          mapfile -d '' python_files < <(find scripts -type f -name '*.py' -print0)
+          python3 -m py_compile "${python_files[@]}" tests/*.py
           python3 -m unittest discover -s tests -p 'test_*.py'
 
       # Parse every workflow, composite action and fly.toml.

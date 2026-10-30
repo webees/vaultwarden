@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime configuration validation.
 
 is_numeric_host() {
     local label

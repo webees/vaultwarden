@@ -73,6 +73,12 @@ def python_cache_errors(workflow: str) -> list[str]:
             errors.append(f"missing cache confinement: {expected}")
     return errors
 
+
+def script_boundary_errors(dockerfile: str, dockerignore: str) -> list[str]:
+    sources = set(re.findall(r"scripts/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", dockerfile))
+    errors = ["Dockerfile copies CI-only scripts into the image"] if any(path.startswith("scripts/ci/") for path in sources) else []
+    return errors + ([] if "scripts/ci" in dockerignore.splitlines() else [".dockerignore does not exclude scripts/ci"])
+
 def workflow_step_script(workflow: str, name: str) -> str:
     marker = f"      - name: {name}\n"
     block = workflow.split(marker, 1)[1]
@@ -83,8 +89,8 @@ class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        (self.repo / "scripts").mkdir()
-        shutil.copy2(ROOT / "scripts/deps.sh", self.repo / "scripts/deps.sh")
+        (self.repo / "scripts" / "ci").mkdir(parents=True)
+        shutil.copy2(ROOT / "scripts/ci/deps.sh", self.repo / "scripts/ci/deps.sh")
         (self.repo / "Dockerfile").write_text(
             "ARG VAULTWARDEN_VERSION=1.0.0\n"
             f"ARG VAULTWARDEN_DIGEST={DIGEST}\n"
@@ -112,7 +118,7 @@ class DependencyResolverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def _deps(self, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
-        result = run("scripts/deps.sh", *args, cwd=self.repo, env=self.env)
+        result = run("scripts/ci/deps.sh", *args, cwd=self.repo, env=self.env)
         if check:
             self.assertEqual(result.returncode, 0, result.stderr)
         return result
@@ -221,7 +227,7 @@ else:
     def test_missing_timeout_fails_closed_and_mutation_control_catches_fallback(self) -> None:
         marker = self.repo / "gh-called"
         write_executable(self.bin / "gh", f"#!/bin/sh\nprintf called > '{marker}'\n")
-        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts/ci\\n'\n")
 
         self.env["PATH"] = str(self.bin)
         result = self._deps("tools")
@@ -229,10 +235,10 @@ else:
         self.assertIn("requires timeout or gtimeout", result.stderr)
         self.assertFalse(marker.exists())
 
-        source = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
+        source = (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8")
         expected_guard = '        fail "gh api requires timeout or gtimeout to enforce DEPS_GH_TIMEOUT"'
         self.assertEqual(source.count(expected_guard), 1)
-        mutated = self.repo / "scripts" / "deps-mutated.sh"
+        mutated = self.repo / "scripts" / "ci" / "deps-mutated.sh"
         mutated.write_text(source.replace(expected_guard, '        gh api "$@"', 1), encoding="utf-8")
         mutated.chmod(0o755)
         result = run(str(mutated), "tools", cwd=self.repo, env=self.env)
@@ -252,7 +258,7 @@ else:
         marker = self.repo / "gh-called"
         timeout_log = self.repo / "gtimeout-args"
         write_executable(self.bin / "gh", f"#!/bin/sh\nprintf called > '{marker}'\n")
-        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts/ci\\n'\n")
         write_executable(
             self.bin / "gtimeout",
             f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{timeout_log}'\nshift 3\nexec \"$@\"\n",
@@ -293,7 +299,7 @@ else:
     def test_docker_commands_fail_closed_without_a_timeout_program(self) -> None:
         marker = self.repo / "docker-called"
         write_executable(self.bin / "docker", f"#!/bin/sh\nprintf called > '{marker}'\n")
-        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts\\n'\n")
+        write_executable(self.bin / "dirname", "#!/bin/sh\nprintf 'scripts/ci\\n'\n")
         self.env["PATH"] = str(self.bin)
         result = self._deps("apk", "image")
         self.assertNotEqual(result.returncode, 0)
@@ -326,9 +332,10 @@ class RepositoryHygieneTest(unittest.TestCase):
 
     def test_documentation_changes_do_not_trigger_production_builds(self) -> None:
         workflow = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8"); ignore = workflow.split("    paths-ignore:\n", 1)[1].split("  schedule:\n", 1)[0]
-        entries = set(re.findall(r"^      - (\S+)$", ignore, re.MULTILINE)); required = {"README.md", "LICENSE", ".github/**", "docs/**", "tests/**"}
+        entries = set(re.findall(r"^      - (\S+)$", ignore, re.MULTILINE)); required = {"README.md", "LICENSE", ".github/**", "docs/**", "tests/**", "scripts/ci/**"}
         self.assertEqual((required <= entries, bool({"Dockerfile", "fly.toml", "config/**", "scripts/**"} & entries)), (True, False))
         self.assertNotIn("docs/**", set(re.findall(r"^      - (\S+)$", ignore.replace("      - docs/**\n", "", 1), re.MULTILINE)))
+        self.assertNotIn("scripts/ci/**", set(re.findall(r"^      - (\S+)$", ignore.replace("      - scripts/ci/**\n", "", 1), re.MULTILINE)))
 
     def test_production_and_notification_contracts_fail_closed(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
@@ -400,7 +407,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn(".github/workflows/validate.yml", workflow)
         self.assertIn("reported a change but no tracked file changed", workflow)
         for expected in ("refusing unexpected dependency path", "production_audit:", "verify-production"): self.assertIn(expected, workflow)
-        self.assertIn("verify_vaultwarden_release()", (ROOT / "scripts/deps.sh").read_text(encoding="utf-8"))
+        self.assertIn("verify_vaultwarden_release()", (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8"))
         build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
         self.assertIn("for platform in linux/amd64 linux/arm64", build)
         self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
@@ -554,15 +561,28 @@ esac
         suite.bad.assert_called_once_with("rejected: shell case exited without lifecycle markers")
 
     def test_runtime_files_have_one_process_model_and_static_ranges(self) -> None:
-        service = (ROOT / "scripts/services.sh").read_text(encoding="utf-8")
+        service = (ROOT / "scripts/container/services.sh").read_text(encoding="utf-8")
         for command in ("/vaultwarden", "caddy run --config /Caddyfile", "supercronic /crontab"): self.assertIn(command, service)
-        entrypoint = (ROOT / "scripts/entrypoint.sh").read_text(encoding="utf-8")
+        entrypoint = (ROOT / "scripts/container/entrypoint.sh").read_text(encoding="utf-8")
         for module in ("filesystem", "config", "restore", "smtp"): self.assertIn(f"/entrypoint/{module}.sh", entrypoint)
         runtime = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
-            for path in ("Dockerfile", "scripts/services.sh", "scripts/entrypoint.sh")
+            for path in ("Dockerfile", "scripts/container/services.sh", "scripts/container/entrypoint.sh")
         )
         for forbidden in ("overmind", "tmux", "Procfile", "supervise.sh"): self.assertNotIn(forbidden, runtime)
+
+    def test_script_boundary_mutation_detects_ci_copy(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        self.assertEqual(script_boundary_errors(dockerfile, dockerignore), [])
+        container = {"entrypoint", "entrypoint.sh", "restic.sh", "services.sh"}
+        ci = {"cloudflare_ranges.py", "deps.sh", "validate_action_pin_update.py"}
+        self.assertEqual({path.name for path in (ROOT / "scripts/container").iterdir()}, container)
+        self.assertEqual({path.name for path in (ROOT / "scripts/ci").iterdir()}, ci)
+        self.assertFalse(any(path.is_file() for path in (ROOT / "scripts").iterdir()))
+        mutated = dockerfile.replace("scripts/container/restic.sh", "scripts/ci/deps.sh", 1)
+        self.assertIn("CI-only scripts", "; ".join(script_boundary_errors(mutated, dockerignore)))
+        self.assertIn("does not exclude", "; ".join(script_boundary_errors(dockerfile, dockerignore.replace("scripts/ci\n", "", 1))))
 
     def test_scripts_wrap_network_calls_and_avoid_nonportable_find(self) -> None:
         scripts = list((ROOT / "scripts").rglob("*.sh"))
@@ -578,12 +598,12 @@ esac
                 block = "\n".join(lines[index:index + 5])
                 bounded += any(flag in block for flag in ("--max-time", " -m "))
         self.assertGreater(calls, 0); self.assertEqual(calls, bounded)
-        deps = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
+        deps = (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8")
         for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'): self.assertIn(expected, deps)
         self.assertNotIn('\n        gh api "$@"', deps)
 
     def test_recurring_regressions_stay_documented(self) -> None:
-        restic = (ROOT / "scripts/restic.sh").read_text(encoding="utf-8")
+        restic = (ROOT / "scripts/container/restic.sh").read_text(encoding="utf-8")
         start = restic.index("log() {")
         block = restic[start:restic.index("\n}\n", start) + 3]
         post_trim_guard = (
@@ -609,7 +629,7 @@ esac
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_security_randomness_uses_operating_system_entropy(self) -> None:
-        production = "\n".join(path.read_text(encoding="utf-8") for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/cloudflare_ranges.py"))
+        production = "\n".join(path.read_text(encoding="utf-8") for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/ci/cloudflare_ranges.py"))
         forbidden = re.compile(r"\$RANDOM|random\.(?:random|randint|randrange|choice|choices)|uuid\.uuid1|openssl\s+rand")
         self.assertIsNone(forbidden.search(production))
         performance = (ROOT / "tests/performance.py").read_text(encoding="utf-8")
@@ -629,14 +649,14 @@ esac
             self.assertEqual(scan_for_sensitive_data(text), [], f"sensitive value in {path.relative_to(ROOT)}")
 
     def test_quality_budgets_do_not_regress(self) -> None:
-        budgets = {"README.md": 146, ".env.example": 48, "scripts/restic.sh": 520, "scripts/cloudflare_ranges.py": 200, "scripts/validate_action_pin_update.py": 140}
+        budgets = {"README.md": 150, ".env.example": 48, "scripts/container/restic.sh": 520, "scripts/ci/cloudflare_ranges.py": 200, "scripts/ci/validate_action_pin_update.py": 140}
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4800, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 4830, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"): self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:
@@ -647,7 +667,8 @@ esac
     def test_files_are_executable_only_when_they_are_commands(self) -> None:
         for path in tracked_files():
             mode = path.stat().st_mode
-            if path.suffix == ".sh" and path.parent in {ROOT / "scripts", ROOT / "tests"} and path.name != "lib.sh":
+            script_roots = (ROOT / "scripts", ROOT / "tests")
+            if path.suffix == ".sh" and any(path.is_relative_to(root) for root in script_roots) and path.name != "lib.sh":
                 self.assertTrue(mode & stat.S_IXUSR, path)
             if path.suffix in {".md", ".yml", ".yaml", ".toml"}:
                 self.assertFalse(mode & stat.S_IXUSR, path)

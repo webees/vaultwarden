@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime filesystem setup.
 
 replace_unsafe_path() {
     local path="$1" kind="$2"

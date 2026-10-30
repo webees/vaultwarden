@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime entrypoint.
 # shellcheck disable=SC1091
 set -euo pipefail
 

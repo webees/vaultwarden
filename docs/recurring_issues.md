@@ -6,7 +6,7 @@ The fixed baseline audit covers all 253 commits reachable through `cbcb78f` on 2
 
 ## Target-Mode Prompt
 
-Every new, resumed, review, optimization, scoring, release, and post-merge round starts with this gate. Build a nine-row evidence matrix containing the class, history classification, authoritative guard, positive/boundary/negative evidence, named mutation control, and observed result. Run the named mutation control and prove that removing the guard changes the outcome. If a row is failing, unverified, or shows a guard weakened by simplification, repair the invariant in the same round before other work. Do not optimize, score, merge, deploy, or claim completion while any row lacks evidence or has an unclassified residual. Record the matrix in the PR or final report without creating per-round files. The matrix is a review artifact, not a score: a passing row requires observed command or test output.
+Every new, resumed, review, optimization, scoring, release, and post-merge round starts with this gate. Build a ten-row evidence matrix containing the class, history classification, authoritative guard, positive/boundary/negative evidence, named mutation control, and observed result. Run the named mutation control and prove that removing the guard changes the outcome. If a row is failing, unverified, or shows a guard weakened by simplification, repair the invariant in the same round before other work. Do not optimize, score, merge, deploy, or claim completion while any row lacks evidence or has an unclassified residual. Record the matrix in the PR or final report without creating per-round files. The matrix is a review artifact, not a score: a passing row requires observed command or test output.
 
 ## Every-Round Goal Gate
 
@@ -27,19 +27,19 @@ History: `33ccfc2`, `b9187d4`, `f34550e`, `8154030`, `3874f9d`, and `9c06b0b` re
 
 Final decision: bound output at capture time and again before persistence. Command output flows through `tail -c` before shell memory or a temporary file can grow without limit; the persistent log is replaced atomically within its byte cap and temporary files are removed on success and failure. Capture, redaction, or normal write failures abort the operation instead of producing a false success. Log maintenance is enforced on every path that can create or append data: before a new run log is created and again after backend work. Failure at either point aborts, records a failed operation, alerts, and never continues with only a warning or `state=ok`. Per-file and directory limits remain independent safeguards.
 
-Authority: `scripts/restic.sh:trim_logs`, `write_log_entry`, `log`, and the post-backup fail-closed guard.
+Authority: `scripts/container/restic.sh:trim_logs`, `write_log_entry`, `log`, and the post-backup fail-closed guard.
 
 Mutation control: `tests/runtime_smoke.py:check_post_backup_trim_failure`.
 
-Regression gate: oversized command output, failed `tail`, leftover log temporaries, unsafe limits, an uncappable existing log, an unmaintainable directory before work, an unmaintainable directory after backend work, and write failures must all fail closed in `tests/runtime_smoke.py`. The before-work case must prove that the backend is never called; the after-work case must prove that no new success time is recorded and that removing the post-backend guard creates a false-success mutation. `scripts/restic.sh` must never return to the unbounded `body="$("$@" 2>&1)"` capture removed in `5cd1219`.
+Regression gate: oversized command output, failed `tail`, leftover log temporaries, unsafe limits, an uncappable existing log, an unmaintainable directory before work, an unmaintainable directory after backend work, and write failures must all fail closed in `tests/runtime_smoke.py`. The before-work case must prove that the backend is never called; the after-work case must prove that no new success time is recorded and that removing the post-backend guard creates a false-success mutation. `scripts/container/restic.sh` must never return to the unbounded `body="$("$@" 2>&1)"` capture removed in `5cd1219`.
 
 ## Outbound Network Bounds
 
 History: `bb51cdb` bounded `curl` calls, `12d9215` added a `gh api` timeout wrapper with an unbounded fallback, `5256c7a` bounded workflow API calls independently, and `376f55f` preserved the partial script fallback during simplification. The recurring defect is a partially fixed boundary: the timeout exists on CI but silently disappears on hosts without the expected command.
 
-Final decision: every outbound operation has a positive numeric time limit. `scripts/deps.sh` rejects zero, negative, fractional, and non-numeric timeout configuration before starting a request. `gh api` runs through `timeout` or `gtimeout` with a mandatory SIGKILL grace period, so a process that ignores SIGTERM still cannot hang the job. Absence of a supported timeout command fails closed, and a raw unbounded fallback is forbidden.
+Final decision: every outbound operation has a positive numeric time limit. `scripts/ci/deps.sh` rejects zero, negative, fractional, and non-numeric timeout configuration before starting a request. `gh api` runs through `timeout` or `gtimeout` with a mandatory SIGKILL grace period, so a process that ignores SIGTERM still cannot hang the job. Absence of a supported timeout command fails closed, and a raw unbounded fallback is forbidden.
 
-Authority: `scripts/deps.sh:gh_api`.
+Authority: `scripts/ci/deps.sh:gh_api`.
 
 Mutation control: `tests/test_repository_contracts.py:test_missing_timeout_fails_closed_and_mutation_control_catches_fallback`.
 
@@ -49,9 +49,9 @@ Regression gate: success must prove the timeout wrapper is called; missing wrapp
 
 History: host matching was reworked in `760d87e`, `b947f5a`, `1763a2e`, and `9a034cf`; address validation was centralized in `0b62eb3` and hardened in `f425dd2`. No earlier commit rejected numeric IPv4 forms and later removed that exact guard, but the pre-`0b62eb3` design had no syntax validator and the new central validator still admitted dotted, decimal, and hexadecimal numeric forms. The recurrence is incomplete centralization and simplification, not a deleted numeric-IP patch.
 
-Final decision: `scripts/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Hosts are DNS-only: IPv4 literals and numeric IPv4-compatible forms are rejected alongside bracketed IPv6, while names such as `version.127.example` remain valid. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
+Final decision: `scripts/container/entrypoint/config.sh` owns one host/port rule and one HTTPS URL rule for `DOMAIN` and `HEALTHCHECK_URL`. Restic repositories accept only absolute local paths or unambiguous S3 URIs. Hosts are DNS-only: IPv4 literals and numeric IPv4-compatible forms are rejected alongside bracketed IPv6, while names such as `version.127.example` remain valid. Userinfo, encoding, traversal, ambiguous separators, invalid ports, oversized values, and raw Unicode hosts fail closed. IDNA hosts must be supplied in canonical ASCII punycode form.
 
-Authority: `scripts/entrypoint/config.sh:valid_dns_name` and the shared HTTPS URL validator.
+Authority: `scripts/container/entrypoint/config.sh:valid_dns_name` and the shared HTTPS URL validator.
 
 Mutation control: `tests/test_address_audit.py:test_negative_control_detects_a_disabled_numeric_host_guard`.
 
@@ -63,7 +63,7 @@ History: restore safety required repeated fixes in `35f6371`, `d33b662`, `9097c1
 
 Final decision: restore drills use a size-checked scratch directory and a Vaultwarden process bound only to loopback; they never modify production `/data`. In-place restore requires explicit confirmation, rejects non-regular paths and symlinks, validates database output exactly, and copies into a reserved staging path before the atomic replacement.
 
-Authority: `scripts/restic.sh:restore_test` and its isolated restore target.
+Authority: `scripts/container/restic.sh:restore_test` and its isolated restore target.
 
 Mutation control: `tests/runtime_smoke.py:check_snapshot_argument_boundaries` retargets the drill to live data and observes the changed restic argument.
 
@@ -77,7 +77,7 @@ Final decision: missing, unreadable, oversized, non-regular, stale, and in-fligh
 
 Publication history: manual run `40985898001` was canceled after the timestamp image had been pushed. It exposed that `latest` was published by the build step before runtime verification, leaving the mutable tag on an unverified image. Final decision: push only the timestamp manifest first; after package, manifest, and runtime checks pass, promote that exact index to `latest` and verify both the index and amd64 digests. A canceled or failed build must leave `latest` unchanged.
 
-Authority: `scripts/restic.sh:write_status`, `scripts/services.sh:supervise`, and `.github/workflows/build_and_deploy.yml:Promote the verified image to latest`.
+Authority: `scripts/container/restic.sh:write_status`, `scripts/container/services.sh:supervise`, and `.github/workflows/build_and_deploy.yml:Promote the verified image to latest`.
 
 Mutation control: `tests/test_recurring_gate.py:test_state_write_mutation_allows_previous_marker_loss` and `tests/test_repository_contracts.py:test_latest_is_promoted_only_after_runtime_verification`.
 
@@ -101,7 +101,7 @@ History: ranges were hard-coded in `59ca5a6`, automated in `a911a74`, hardened i
 
 Final decision: keep a checked-in fallback and update it through validated official lists. Response size, family, prefix width, overlap, duplicate count, CIDR validity, and atomic replacement are checked before commit. Manual-only updates are not an acceptable replacement for synchronization.
 
-Authority: `scripts/cloudflare_ranges.py:sync_ranges` and `_parse_range_list`.
+Authority: `scripts/ci/cloudflare_ranges.py:sync_ranges` and `_parse_range_list`.
 
 Mutation control: `tests/test_recurring_gate.py:test_cloudflare_truncation_mutation_allows_unsafe_update`.
 
@@ -118,6 +118,18 @@ Authority: `tests/test_recurring_gate.py:scan_for_sensitive_data` plus tracked-f
 Mutation control: `tests/test_recurring_gate.py:test_privacy_mutation_detects_planted_identifier`.
 
 Regression gate: current tracked files are scanned automatically. Reachable history is scanned separately; public provider metadata, Cloudflare's public CIDRs, reserved documentation addresses, and explicit placeholders are classified rather than counted as secrets.
+
+## Script Boundary
+
+History: runtime entrypoints, runtime helpers, dependency resolution, and range synchronization previously shared one `scripts/` directory, allowing repository-only tools to drift into the image boundary.
+
+Final decision: only `scripts/container/` may be copied into the image and executed in production. Only `scripts/ci/` may execute on repository runners and may use `gh`, `jq`, Docker orchestration, or GitHub outputs. No executable file may remain directly under `scripts/`.
+
+Authority: `tests/test_repository_contracts.py:script_boundary_errors`, backed by `Dockerfile` and `.dockerignore`.
+
+Mutation control: `tests/test_repository_contracts.py:test_script_boundary_mutation_detects_ci_copy`.
+
+Regression gate: Dockerfile sources, `.dockerignore`, directory contents, final-image absence of CI scripts, and a mutation that copies a CI script into the image must all be enforced by `tests/test_repository_contracts.py`.
 
 ## Simplification Rule
 
@@ -137,7 +149,7 @@ History: `f64c7ef` made a failed published-image package probe fail closed; `785
 
 Final decision: a required published-image probe whose outcome is not `success` must fail the dependency job, notify, and must not dispatch a rebuild. A clean probe remains a no-op; a probe with pending upgrades dispatches exactly one rebuild. `workflow_run` remains exempt to prevent a build-to-check loop.
 
-Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/deps.sh:rebuild-needed`.
+Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/ci/deps.sh:rebuild-needed`.
 
 Mutation control: `tests/test_repository_contracts.py:test_published_package_probe_script_fails_closed`.
 
@@ -149,7 +161,7 @@ History: `7bc1c48` introduced write-capable Dependabot auto-merge with path chec
 
 Final decision: a Dependabot PR may auto-merge only when every changed line is a complete remote Action `uses: owner/action@40-sha # version` replacement for the same Action and indentation. Workflow logic, local Actions, file additions, deletions, short refs, missing version comments, and cross-hunk moves must fail closed.
 
-Authority: `.github/workflows/dependency_updates.yml:dependabot_automerge` and `scripts/validate_action_pin_update.py:validate`.
+Authority: `.github/workflows/dependency_updates.yml:dependabot_automerge` and `scripts/ci/validate_action_pin_update.py:validate`.
 
 Regression gate: `tests/test_action_pin_update.py:ActionPinUpdateTest` must accept a valid same-Action pin update and reject non-pin edits, path expansion, identity changes, incomplete pairs, and cross-hunk moves before auto-merge is armed.
 
@@ -169,13 +181,13 @@ Regression gate: zero and nonzero package counts, probe failure, both bot identi
 
 History: PR #201 changed a recurring-issues document and production code together, then a manual workflow dispatch created a second successful production build for the same commit.
 
-Final decision: documentation-only commits must not build or deploy. The production trigger ignores README, license, repository automation, tests, and documentation paths, while keeping Dockerfile, fly.toml, config, and scripts as production inputs.
+Final decision: documentation-only and repository-CI-only commits must not build or deploy. The production trigger ignores README, license, GitHub automation, CI scripts, tests, and documentation paths, while keeping Dockerfile, fly.toml, config, and container scripts as production inputs.
 
 Authority: `.github/workflows/build_and_deploy.yml:push.paths-ignore`.
 
 Mutation control: `tests/test_repository_contracts.py:test_documentation_changes_do_not_trigger_production_builds` removes `docs/**` and requires the contract to fail.
 
-Regression gate: every non-production allowlist entry must remain ignored, and no production input may appear in the ignore list.
+Regression gate: every non-production allowlist entry, including `scripts/ci/**`, must remain ignored, and no production input may appear in the ignore list.
 
 ### Failure Notification JSON Validation
 

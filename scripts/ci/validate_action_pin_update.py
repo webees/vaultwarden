@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Dependabot PR contains only remote action pin updates."""
+"""Validate a Dependabot PR contains only remote action pin updates on CI."""
 
 from __future__ import annotations
 

@@ -5,14 +5,16 @@
 Open an issue for behavior changes or security-sensitive work. Keep deployment-specific identifiers, generated files, and temporary output out of the repository.
 
 Use a `codex/` feature branch. Commit messages and pull requests must be in English and should explain the defect, the minimal fix, and the verification performed.
+Runtime code belongs in `scripts/container/` and repository automation belongs in `scripts/ci/`; do not place executable files directly under `scripts/`.
 
 ## Required Checks
 
 Run the relevant checks before opening a pull request:
 
 ```bash
-shellcheck scripts/*.sh scripts/entrypoint/*.sh
-PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/vaultwarden-pycache" python3 -m py_compile scripts/*.py tests/*.py
+shellcheck scripts/container/*.sh scripts/container/entrypoint/*.sh
+shellcheck scripts/ci/*.sh
+PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/vaultwarden-pycache" python3 -m py_compile scripts/ci/*.py tests/*.py
 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 -m unittest discover -s tests -p 'test_*.py'
 docker build --tag vaultwarden:local .
 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 tests/runtime_smoke.py vaultwarden:local

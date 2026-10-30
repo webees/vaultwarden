@@ -7,6 +7,7 @@ backups to any S3-compatible store such as Cloudflare R2.
 
 The entrypoint repairs `/data` ownership and modes, drops privileges, and starts one process table. Caddy and Supercronic restart after a crash;
 a Vaultwarden exit stops the container so Fly can replace it. The app name comes only from the `FLY_APP` repository secret.
+Only `scripts/container/` is copied into the image. `scripts/ci/` is repository automation and is excluded from the Docker build context.
 
 ## Setup
 
@@ -36,7 +37,7 @@ Enforce Cloudflare Access for `/admin` and `/admin/*`, and keep the long, random
 ## Deploy
 
 Image and production-input changes build a multi-architecture GHCR image with an `Asia/Shanghai` timestamp tag such as
-`202610180615`. Documentation-only commits do not trigger production builds. After runtime verification, that exact index is promoted to `latest`; failures leave it unchanged. Fly deploys the exact amd64 digest, not a tag.
+`202610180615`. Documentation-only and repository-CI-only commits do not trigger production builds. After runtime verification, that exact index is promoted to `latest`; failures leave it unchanged. Fly deploys the exact amd64 digest, not a tag.
 
 ```bash
 fly releases --app "$FLY_APP"
@@ -129,8 +130,9 @@ Settings in `/data/config.json` override matching environment variables. The ent
 ## Verification
 
 ```bash
-shellcheck scripts/*.sh scripts/entrypoint/*.sh
-PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/vaultwarden-pycache" python3 -m py_compile scripts/*.py tests/*.py
+shellcheck scripts/container/*.sh scripts/container/entrypoint/*.sh
+shellcheck scripts/ci/*.sh
+PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/vaultwarden-pycache" python3 -m py_compile scripts/ci/*.py tests/*.py
 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 -m unittest discover -s tests -p 'test_*.py'
 docker build --tag vaultwarden:local .
 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 tests/runtime_smoke.py vaultwarden:local

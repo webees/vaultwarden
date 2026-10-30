@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize Caddy trusted proxy ranges with Cloudflare's official lists."""
+"""Synchronize Caddy trusted proxy ranges from CI with Cloudflare's official lists."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Optional, Sequence, TextIO, Union
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RANGES_FILE = REPO_ROOT / "config/cloudflare_ips.caddy"
 DEFAULT_IPV4_URL = "https://www.cloudflare.com/ips-v4"
 DEFAULT_IPV6_URL = "https://www.cloudflare.com/ips-v6"

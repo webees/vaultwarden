@@ -1079,7 +1079,11 @@ def check_required_tools(image: str) -> None:
     if present:
         suite.bad(f"obsolete process-manager tools remain in the image: {' '.join(present)}")
         suite.report()
-    suite.ok("the image omits the obsolete Overmind and tmux process manager")
+    leaked = docker("run", "--rm", "--entrypoint", "sh", image, "-c", 'test -e /scripts/ci && echo scripts/ci', check=False).stdout.strip()
+    if leaked:
+        suite.bad("CI-only scripts remain in the image")
+        suite.report()
+    suite.ok("the image omits obsolete process managers and CI-only scripts")
 
 
 def check_apk_stub(work: Path, image: str) -> None:
@@ -1098,7 +1102,7 @@ def check_apk_stub(work: Path, image: str) -> None:
     docker("rm", "--force", stub_container)
     containers.remove(stub_container)
 
-    result = run(str(REPO_ROOT / "scripts" / "deps.sh"), "apk", stub_image, check=False)
+    result = run(str(REPO_ROOT / "scripts" / "ci" / "deps.sh"), "apk", stub_image, check=False)
     if result.returncode == 0:
         suite.bad("deps.sh apk reported success although apk update failed")
         print(combined(result), file=sys.stderr)

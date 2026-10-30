@@ -1,8 +1,8 @@
 #!/bin/bash
-# Dependency resolver: deps.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]
+# CI dependency resolver: deps.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 readonly DOCKERFILE=Dockerfile
 readonly REGISTRY=https://registry-1.docker.io/v2/vaultwarden/server
 readonly GH_API=https://api.github.com/repos
