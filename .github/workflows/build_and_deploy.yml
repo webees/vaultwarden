@@ -123,7 +123,6 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.timestamp.outputs.value }},enable=true
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Verify timestamp tag
         env:
@@ -229,7 +228,37 @@ jobs:
           fi
           echo "needed=${needed}" >> "$GITHUB_OUTPUT"
 
-      # Housekeeping must not block a security deployment.
+      # Never publish `latest` before the exact index has passed every build gate.
+      - name: Promote the verified image to latest
+        if: github.ref == 'refs/heads/main'
+        env:
+          TIMESTAMP_TAG: ${{ steps.timestamp.outputs.value }}
+          AMD64_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$AMD64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::published amd64 digest is missing or malformed" >&2
+            exit 1
+          }
+          image="${REGISTRY}/${IMAGE_NAME}"
+          index_digest="$(timeout 120 docker buildx imagetools inspect "${image}:${TIMESTAMP_TAG}" \
+            --format '{{.Manifest.Digest}}')"
+          [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::verified image index digest is missing or malformed" >&2
+            exit 1
+          }
+          timeout 120 docker buildx imagetools create \
+            --tag "${image}:latest" "${image}@${index_digest}"
+          latest_index="$(timeout 120 docker buildx imagetools inspect "${image}:latest" \
+            --format '{{.Manifest.Digest}}')"
+          latest_amd64="$(timeout 120 docker buildx imagetools inspect "${image}:latest" \
+            --format '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "amd64"}}{{.Digest}}{{end}}{{end}}')"
+          if [ "$latest_index" != "$index_digest" ] || [ "$latest_amd64" != "$AMD64_DIGEST" ]; then
+            echo "::error::latest does not reference the verified image" >&2
+            exit 1
+          fi
+          echo "Promoted verified image to ${image}:latest"
+
       - name: Expire timestamp tags
         id: expiry
         if: steps.cleanup-check.outputs.needed == 'true'

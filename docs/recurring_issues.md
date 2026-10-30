@@ -75,11 +75,13 @@ History: stale locks, marker ambiguity, and service recovery were repeatedly rep
 
 Final decision: missing, unreadable, oversized, non-regular, stale, and in-flight backup states are distinct. Status writes are atomic or fail without truncating the previous marker. Only the process holding the backup lock may publish `running`. Caddy and Supercronic restart after failure; Vaultwarden exit stops the container so Fly owns machine recovery.
 
-Authority: `scripts/restic.sh:write_status` and `scripts/services.sh:supervise`.
+Publication history: manual run `40985898001` was canceled after the timestamp image had been pushed. It exposed that `latest` was published by the build step before runtime verification, leaving the mutable tag on an unverified image. Final decision: push only the timestamp manifest first; after package, manifest, and runtime checks pass, promote that exact index to `latest` and verify both the index and amd64 digests. A canceled or failed build must leave `latest` unchanged.
 
-Mutation control: `tests/test_recurring_gate.py:test_state_write_mutation_allows_previous_marker_loss`.
+Authority: `scripts/restic.sh:write_status`, `scripts/services.sh:supervise`, and `.github/workflows/build_and_deploy.yml:Promote the verified image to latest`.
 
-Regression gate: lock creation failure, unknown state, stale running marker, status write failure without marker corruption, forced Caddy restart, forced scheduler restart, and Vaultwarden exit are executable runtime cases. A mutation that restores the in-place status-write fallback must fail the repository contract.
+Mutation control: `tests/test_recurring_gate.py:test_state_write_mutation_allows_previous_marker_loss` and `tests/test_repository_contracts.py:test_latest_is_promoted_only_after_runtime_verification`.
+
+Regression gate: lock creation failure, unknown state, stale running marker, status write failure without marker corruption, forced Caddy restart, forced scheduler restart, and Vaultwarden exit are executable runtime cases. A mutation that restores the in-place status-write fallback must fail the repository contract. The build metadata may not tag `latest`; promotion must run only after runtime smoke and must reject a mismatched index or amd64 digest.
 
 ## Runtime Harness Lifecycle
 
