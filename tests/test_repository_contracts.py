@@ -503,6 +503,25 @@ esac
                     self.assertEqual(result.returncode == 0, passed, result.stderr)
                     self.assertEqual(output.read_text(encoding="utf-8"), f"{wanted}\n" if wanted else "")
 
+    def test_latest_is_promoted_only_after_runtime_verification(self) -> None:
+        workflow = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
+        metadata = workflow.split("- name: Extract Docker metadata", 1)[1].split("- name: Verify timestamp tag", 1)[0]
+        self.assertNotIn("type=raw,value=latest", metadata)
+        steps = ("Build and push multi-arch image", "Runtime smoke test the published image", "Promote the verified image to latest")
+        self.assertEqual([workflow.index(f"- name: {name}") for name in steps], sorted(workflow.index(f"- name: {name}") for name in steps))
+        promote = workflow_step_script(workflow, "Promote the verified image to latest")
+        self.assertIn('--tag "${image}:latest" "${image}@${index_digest}"', promote)
+        guard = 'if [ "$latest_index" != "$index_digest" ] || [ "$latest_amd64" != "$AMD64_DIGEST" ]; then'
+        block = promote[promote.index(guard):promote.index("\nfi\n", promote.index(guard)) + 4]
+        source = "sha256:" + "b" * 64
+        env = os.environ | {"LATEST_INDEX": source, "LATEST_AMD64": DIGEST}
+        script = f'index_digest={source}; AMD64_DIGEST={DIGEST}; latest_index=$LATEST_INDEX; latest_amd64=$LATEST_AMD64\n' + block
+        self.assertEqual(run("/bin/bash", "-c", script, env=env).returncode, 0)
+        for key, value in (("LATEST_INDEX", "sha256:" + "c" * 64), ("LATEST_AMD64", "sha256:" + "d" * 64)):
+            self.assertNotEqual(run("/bin/bash", "-c", script, env=env | {key: value}).returncode, 0)
+        mutated = script.replace(guard, "if false; then", 1)
+        self.assertEqual(run("/bin/bash", "-c", mutated, env=env | {"LATEST_INDEX": "sha256:" + "c" * 64}).returncode, 0)
+
     def test_runtime_shell_retries_only_interrupted_attempts(self) -> None:
         started, ended, passed = "__runtime_smoke_started__", "__runtime_smoke_ended__=", "__runtime_smoke_passed__"
         failed_assertion = subprocess.CompletedProcess([], 1, f"{started}\n{ended}2\nassertion failed\n", "")
@@ -530,17 +549,14 @@ esac
 
     def test_runtime_files_have_one_process_model_and_static_ranges(self) -> None:
         service = (ROOT / "scripts/services.sh").read_text(encoding="utf-8")
-        for command in ("/vaultwarden", "caddy run --config /Caddyfile", "supercronic /crontab"):
-            self.assertIn(command, service)
+        for command in ("/vaultwarden", "caddy run --config /Caddyfile", "supercronic /crontab"): self.assertIn(command, service)
         entrypoint = (ROOT / "scripts/entrypoint.sh").read_text(encoding="utf-8")
-        for module in ("filesystem", "config", "restore", "smtp"):
-            self.assertIn(f"/entrypoint/{module}.sh", entrypoint)
+        for module in ("filesystem", "config", "restore", "smtp"): self.assertIn(f"/entrypoint/{module}.sh", entrypoint)
         runtime = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
             for path in ("Dockerfile", "scripts/services.sh", "scripts/entrypoint.sh")
         )
-        for forbidden in ("overmind", "tmux", "Procfile", "supervise.sh"):
-            self.assertNotIn(forbidden, runtime)
+        for forbidden in ("overmind", "tmux", "Procfile", "supervise.sh"): self.assertNotIn(forbidden, runtime)
 
     def test_scripts_wrap_network_calls_and_avoid_nonportable_find(self) -> None:
         scripts = list((ROOT / "scripts").rglob("*.sh"))
@@ -557,8 +573,7 @@ esac
                 bounded += any(flag in block for flag in ("--max-time", " -m "))
         self.assertGreater(calls, 0); self.assertEqual(calls, bounded)
         deps = (ROOT / "scripts/deps.sh").read_text(encoding="utf-8")
-        for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'):
-            self.assertIn(expected, deps)
+        for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'): self.assertIn(expected, deps)
         self.assertNotIn('\n        gh api "$@"', deps)
 
     def test_recurring_regressions_stay_documented(self) -> None:
@@ -582,17 +597,13 @@ esac
             self.assertEqual(restic.replace(post_trim_guard, "    trim_logs || :", 1).count(post_trim_guard), 1)
         decisions = (ROOT / "docs/recurring_issues.md").read_text(encoding="utf-8")
         assert_recurrence_contract(self, decisions)
-        for section in ("Bounded Diagnostics", "Outbound Network Bounds", "Status writes are atomic or fail without truncating", "Runtime Harness Lifecycle", "Absence of a supported timeout command fails closed", "Simplification Rule"):
-            self.assertIn(section, decisions)
+        for section in ("Bounded Diagnostics", "Outbound Network Bounds", "Status writes are atomic or fail without truncating", "Runtime Harness Lifecycle", "Absence of a supported timeout command fails closed", "Simplification Rule"): self.assertIn(section, decisions)
         self.assertNotIn('printf \'%s\' "$body" > "$STATUS_FILE"', restic)
         self.assertIn("refusing to create a new log", restic)
         self.assertIn("docs/recurring_issues.md", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_security_randomness_uses_operating_system_entropy(self) -> None:
-        production = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/cloudflare_ranges.py")
-        )
+        production = "\n".join(path.read_text(encoding="utf-8") for path in (*sorted((ROOT / "scripts").rglob("*.sh")), ROOT / "scripts/cloudflare_ranges.py"))
         forbidden = re.compile(r"\$RANDOM|random\.(?:random|randint|randrange|choice|choices)|uuid\.uuid1|openssl\s+rand")
         self.assertIsNone(forbidden.search(production))
         performance = (ROOT / "tests/performance.py").read_text(encoding="utf-8")
@@ -602,17 +613,9 @@ esac
     def test_env_docs_and_secret_placeholders_stay_aligned(self) -> None:
         example = (ROOT / ".env.example").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        tuning = {
-            "BACKUP_MAX_AGE", "BACKUP_MAX_USAGE_PERCENT", "RESTIC_LOG_DIR",
-            "RESTIC_LOG_MAX_BYTES", "RESTIC_LOG_DIR_MAX_BYTES", "RESTIC_QUICK_TIMEOUT",
-            "RESTIC_LONG_TIMEOUT", "VERIFY_SUBSET", "VERIFY_RETRY_LOCK",
-            "SUPERVISE_RESTART_DELAY",
-        }
-        for name in tuning:
-            self.assertIn(f"{name}=", example)
-            self.assertIn(name, readme)
-        for required in ("RESTORE_CONFIRM=yes", "restore-pending", "config.json", "runtime_smoke.py"):
-            self.assertIn(required, readme)
+        tuning = {"BACKUP_MAX_AGE", "BACKUP_MAX_USAGE_PERCENT", "RESTIC_LOG_DIR", "RESTIC_LOG_MAX_BYTES", "RESTIC_LOG_DIR_MAX_BYTES", "RESTIC_QUICK_TIMEOUT", "RESTIC_LONG_TIMEOUT", "VERIFY_SUBSET", "VERIFY_RETRY_LOCK", "SUPERVISE_RESTART_DELAY"}
+        for name in tuning: self.assertIn(f"{name}=", example); self.assertIn(name, readme)
+        for required in ("RESTORE_CONFIRM=yes", "restore-pending", "config.json", "runtime_smoke.py"): self.assertIn(required, readme)
         for path in tracked_files():
             if not path.is_file() or path.suffix in {".png", ".jpg", ".gif"}:
                 continue
@@ -620,10 +623,7 @@ esac
             self.assertEqual(scan_for_sensitive_data(text), [], f"sensitive value in {path.relative_to(ROOT)}")
 
     def test_quality_budgets_do_not_regress(self) -> None:
-        budgets = {
-            "README.md": 146, ".env.example": 48, "scripts/restic.sh": 520,
-            "scripts/cloudflare_ranges.py": 200, "scripts/validate_action_pin_update.py": 140,
-        }
+        budgets = {"README.md": 146, ".env.example": 48, "scripts/restic.sh": 520, "scripts/cloudflare_ranges.py": 200, "scripts/validate_action_pin_update.py": 140}
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
@@ -631,8 +631,7 @@ esac
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
         self.assertLessEqual(test_lines, 4800, f"tests grew to {test_lines} lines")
-        for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"):
-            self.assertFalse((ROOT / "tests" / removed).exists())
+        for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"): self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:
         caddy = (ROOT / "config/Caddyfile").read_text(encoding="utf-8")
