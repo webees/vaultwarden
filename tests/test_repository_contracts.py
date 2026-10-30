@@ -324,7 +324,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         weakened = workflow.replace("PYTHONPYCACHEPREFIX: /tmp/vaultwarden-pycache", "PYTHONPYCACHEPREFIX: .", 1)
         self.assertTrue(python_cache_errors(weakened))
 
-    def test_production_audit_executes_fail_closed_contract(self) -> None:
+    def test_production_and_notification_contracts_fail_closed(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         script = workflow_step_script(workflow, "Verify production release and runtime health")
         digest, image = "sha256:" + "d" * 64, f"ghcr.io/owner/repository@sha256:{'d' * 64}"
@@ -349,6 +349,16 @@ class RepositoryHygieneTest(unittest.TestCase):
             env["EXPECTED_IMAGE"] = image
             mutated = script.replace('(($latest.Status // "" | ascii_downcase) == "complete")', "true", 1)
             self.assertEqual(audit([{**release[0], "Status": "failed"}], status, mutated).returncode, 0)
+            notify = workflow_step_script(workflow, "Send the failure through Telegram")
+            token, chat = "123456789:token", "54321"
+            write_executable(binary / "flyctl", '#!/bin/sh\ncase "$*" in *TELEGRAM_BOT_TOKEN*) printf "%s\\n" "$TELEGRAM_BOT_TOKEN" ;; *TELEGRAM_CHAT_ID*) printf "%s\\n" "$TELEGRAM_CHAT_ID" ;; *) exit 2 ;; esac\n')
+            write_executable(binary / "curl", '#!/bin/sh\nprintf \'%s\\nHTTP_STATUS=200\' "$CURL_BODY"\n')
+            notify_env = os.environ | {"FLY_API_TOKEN": "synthetic", "FLY_APP": "test-app", "PATH": f"{binary}:{os.environ['PATH']}", "TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": chat, "CURL_BODY": json.dumps({"ok": True, "result": {"chat": {"id": int(chat)}}}), "WORKFLOW": "Dependency Updates", "EVENT": "workflow_run", "SHA": "a" * 40, "RUN_URL": "https://github.com/owner/repository/actions/runs/1", "BUILD_RESULT": "failure", "CHECK_RESULT": "failure", "DEPENDABOT_RESULT": "skipped", "OPERATION_RESULT": "skipped", "AUDIT_RESULT": "skipped"}
+            result = run("/bin/bash", "-c", notify, cwd=ROOT, env=notify_env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = result.stderr + result.stdout; self.assertEqual((output.count(token), output.count(chat)), (1, 1))
+            weakened = notify.replace('safe_body="${safe_body//"$chat_id"/<redacted>}"', 'body="${body//"$chat_id"/<redacted>}"', 1)
+            self.assertNotEqual(run("/bin/bash", "-c", weakened, cwd=ROOT, env=notify_env).returncode, 0)
 
     def test_cleanup_automation_health_fails_closed(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
@@ -455,7 +465,7 @@ class RepositoryHygieneTest(unittest.TestCase):
             caches.write_text(json.dumps({"actions_caches": [{"id": i, "last_accessed_at": at, "key": key} for i, at, key in rows]}), encoding="utf-8")
             write_executable(binary / "date", "#!/bin/sh\nprintf '2026-10-24T00:00:00Z\\n'\n")
             write_executable(binary / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
-            write_executable(binary / "gh", """#!/bin/sh
+            write_executable(binary / "gh", r"""#!/bin/sh
 case "$*" in
   *actions/artifacts?per_page=100*) cat "$ARTIFACTS_FIXTURE" ;;
   *actions/caches?per_page=100*) cat "$CACHES_FIXTURE" ;;
