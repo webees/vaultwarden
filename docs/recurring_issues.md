@@ -150,3 +150,15 @@ Final decision: a Dependabot PR may auto-merge only when every changed line is a
 Authority: `.github/workflows/dependency_updates.yml:dependabot_automerge` and `scripts/validate_action_pin_update.py:validate`.
 
 Regression gate: `tests/test_action_pin_update.py:ActionPinUpdateTest` must accept a valid same-Action pin update and reject non-pin edits, path expansion, identity changes, incomplete pairs, and cross-hunk moves before auto-merge is armed.
+
+### Scheduled Automation Convergence
+
+History: weekly rebuilds could deploy an unchanged image after build-cache reuse, and automated dependency branches had no age bound.
+
+Final decision: a scheduled rebuild may continue only when the published image reports pending package upgrades. Automated pull requests from Dependabot or GitHub Actions are closed after 30 days, but only on their dedicated branches and with an audit comment. Probe failures, malformed counts, unrelated authors, unrelated branches, and fresh pull requests fail closed without mutation.
+
+Authority: `.github/workflows/build_and_deploy.yml:rebuild_check` and `.github/workflows/dependency_updates.yml:Close stale automated pull requests`.
+
+Mutation control: `tests/test_repository_contracts.py:test_scheduled_automation_skips_idle_rebuilds_and_closes_stale_bots`.
+
+Regression gate: zero and nonzero package counts, probe failure, both bot identities, human authors, unrelated branches, fresh pull requests, and removal of the branch filter must all produce the expected allow or deny result.
