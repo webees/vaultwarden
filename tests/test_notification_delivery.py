@@ -106,7 +106,7 @@ exit "$CURL_EXIT"
             }
         )
         result = subprocess.run(
-            ["bash", "scripts/restic.sh", "notify-test"],
+            ["bash", "scripts/container/restic.sh", "notify-test"],
             cwd=REPO_ROOT,
             env=environment,
             capture_output=True,

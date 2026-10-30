@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime pending-restore handling.
 
 # A pending restore never removes the live database or crash-loops startup.
 apply_pending_restore() {

@@ -11,7 +11,7 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/validate_action_pin_update.py"
+SCRIPT = ROOT / "scripts/ci/validate_action_pin_update.py"
 
 
 def load_module():
@@ -51,7 +51,7 @@ class ActionPinUpdateTest(unittest.TestCase):
         )
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
-        self.assertIn("scripts/validate_action_pin_update.py", workflow)
+        self.assertIn("scripts/ci/validate_action_pin_update.py", workflow)
 
     def test_rejects_any_non_pin_change(self) -> None:
         patch = (

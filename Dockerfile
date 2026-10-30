@@ -53,11 +53,11 @@ RUN set -eu; \
 COPY config/crontab \
     config/Caddyfile \
     config/cloudflare_ips.caddy \
-    scripts/entrypoint.sh \
-    scripts/services.sh \
-    scripts/restic.sh \
+    scripts/container/entrypoint.sh \
+    scripts/container/services.sh \
+    scripts/container/restic.sh \
     /
-COPY scripts/entrypoint/ /entrypoint/
+COPY scripts/container/entrypoint/ /entrypoint/
 RUN chmod +x /entrypoint.sh /services.sh /restic.sh
 
 ENTRYPOINT []

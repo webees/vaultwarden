@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime service supervisor.
 set -euo pipefail
 
 if [ "$(id -u)" = "0" ]; then

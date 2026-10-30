@@ -12,8 +12,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CADDY_CONFIG = ROOT / "scripts/entrypoint/config.sh"
-RESTIC_SCRIPT = ROOT / "scripts/restic.sh"
+CADDY_CONFIG = ROOT / "scripts/container/entrypoint/config.sh"
+RESTIC_SCRIPT = ROOT / "scripts/container/restic.sh"
 
 
 def validate_caddy_script(
@@ -174,7 +174,7 @@ class CaddyAddressAuditTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_negative_control_detects_a_disabled_cidr_family_guard(self) -> None:
-        source = (ROOT / "scripts/cloudflare_ranges.py").read_text(encoding="utf-8")
+        source = (ROOT / "scripts/ci/cloudflare_ranges.py").read_text(encoding="utf-8")
         marker = "if network.version != version:"
         self.assertIn(marker, source)
         with tempfile.TemporaryDirectory(

@@ -18,12 +18,12 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs/recurring_issues.md"
 RUNTIME = ROOT / "tests/runtime_smoke.py"
-RESTIC = ROOT / "scripts/restic.sh"
-CLOUDFLARE = ROOT / "scripts/cloudflare_ranges.py"
+RESTIC = ROOT / "scripts/container/restic.sh"
+CLOUDFLARE = ROOT / "scripts/ci/cloudflare_ranges.py"
 
 RECURRING_GOAL_GATE_CLAUSES = (
     "Every new, resumed, review, optimization, scoring, release, and post-merge round",
-    "nine-row evidence matrix",
+    "ten-row evidence matrix",
     "positive, boundary, negative, and mutation-control tests",
     "Run the named mutation control",
     "repair the invariant in the same round",
@@ -33,23 +33,23 @@ RECURRING_GOAL_GATE_CLAUSES = (
 
 CLASS_EVIDENCE = {
     "Bounded Diagnostics": (
-        "scripts/restic.sh:trim_logs",
+        "scripts/container/restic.sh:trim_logs",
         "tests/runtime_smoke.py:check_post_backup_trim_failure",
     ),
     "Outbound Network Bounds": (
-        "scripts/deps.sh:gh_api",
+        "scripts/ci/deps.sh:gh_api",
         "tests/test_repository_contracts.py:test_missing_timeout_fails_closed_and_mutation_control_catches_fallback",
     ),
     "One Address Policy": (
-        "scripts/entrypoint/config.sh:valid_dns_name",
+        "scripts/container/entrypoint/config.sh:valid_dns_name",
         "tests/test_address_audit.py:test_negative_control_detects_a_disabled_numeric_host_guard",
     ),
     "Restore Isolation": (
-        "scripts/restic.sh:restore_test",
+        "scripts/container/restic.sh:restore_test",
         "tests/runtime_smoke.py:check_snapshot_argument_boundaries",
     ),
     "State And Process Supervision": (
-        "scripts/restic.sh:write_status",
+        "scripts/container/restic.sh:write_status",
         "tests/test_recurring_gate.py:test_state_write_mutation_allows_previous_marker_loss",
     ),
     "Runtime Harness Lifecycle": (
@@ -57,12 +57,16 @@ CLASS_EVIDENCE = {
         "tests/test_recurring_gate.py:test_runtime_lifecycle_mutation_accepts_missing_pass_marker",
     ),
     "Cloudflare Ranges": (
-        "scripts/cloudflare_ranges.py:sync_ranges",
+        "scripts/ci/cloudflare_ranges.py:sync_ranges",
         "tests/test_recurring_gate.py:test_cloudflare_truncation_mutation_allows_unsafe_update",
     ),
     "Privacy And Public History": (
         "tests/test_recurring_gate.py:scan_for_sensitive_data",
         "tests/test_recurring_gate.py:test_privacy_mutation_detects_planted_identifier",
+    ),
+    "Script Boundary": (
+        "tests/test_repository_contracts.py:script_boundary_errors",
+        "tests/test_repository_contracts.py:test_script_boundary_mutation_detects_ci_copy",
     ),
     "Simplification Rule": (
         "tests/test_recurring_gate.py:assert_recurrence_contract",
@@ -216,7 +220,7 @@ class RecurringMutationTest(unittest.TestCase):
                 encoding="utf-8",
             )
             before = path.read_bytes()
-            sys.path.insert(0, str(ROOT / "scripts"))
+            sys.path.insert(0, str(ROOT / "scripts" / "ci"))
             import cloudflare_ranges  # noqa: PLC0415
 
             with self.assertRaisesRegex(ValueError, "below minimum 10"):

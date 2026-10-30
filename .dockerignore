@@ -13,3 +13,4 @@ README.md
 LICENSE
 fly.toml
 tests
+scripts/ci

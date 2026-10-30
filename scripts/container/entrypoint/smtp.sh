@@ -1,4 +1,5 @@
 #!/bin/bash
+# Container runtime SMTP configuration.
 
 configure_smtp() {
     umask 077
