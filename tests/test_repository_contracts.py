@@ -74,6 +74,10 @@ def python_cache_errors(workflow: str) -> list[str]:
     return errors
 
 
+def dependency_watchdog_errors(workflow: str) -> list[str]:
+    preamble, jobs = workflow.split("\njobs:\n", 1); cleanup, watchdog = jobs.split("\n  dependency_watchdog:\n", 1)
+    required = ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    - cron: '17 3 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "MAX_AGE_SECONDS: 9000")
+    return [f"missing {value}" for value in required if value not in workflow] + ([] if not re.search(r"(?m)^concurrency:", preamble) and "      group: ghcr-registry" in cleanup and "      group: dependency-watchdog" in watchdog else ["concurrency must be job-scoped"])
 def script_boundary_errors(dockerfile: str, dockerignore: str) -> list[str]:
     sources = set(re.findall(r"scripts/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", dockerfile))
     errors = ["Dockerfile copies CI-only scripts into the image"] if any(path.startswith("scripts/ci/") for path in sources) else []
@@ -83,7 +87,7 @@ def workflow_step_script(workflow: str, name: str) -> str:
     marker = f"      - name: {name}\n"
     block = workflow.split(marker, 1)[1]
     body = block.split("        run: |\n", 1)[1]
-    return textwrap.dedent(re.split(r"\n\n(?=  [A-Za-z0-9_-]+:|      - name:)", body, maxsplit=1)[0])
+    return textwrap.dedent(re.split(r"\n\n(?=  [A-Za-z0-9_-]+:|      #|      - name:)", body, maxsplit=1)[0])
 
 class DependencyResolverTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -384,18 +388,14 @@ class RepositoryHygieneTest(unittest.TestCase):
             write_executable(binary / "gh", "#!/bin/sh\ncat \"$CLEANUP_RUNS_FIXTURE\"\n")
             write_executable(binary / "date", "#!/bin/sh\ncase \"$*\" in '-u +%s') printf '2000\\n' ;; '-u -d 2026-10-29T00:00:00Z +%s') printf '1900\\n' ;; '-u -d 2026-10-29T01:00:00Z +%s') printf '2000\\n' ;; *) exit 2 ;; esac\n")
             env = os.environ | {"GITHUB_REPOSITORY": "owner/repository", "PATH": f"{binary}:{os.environ['PATH']}", "CLEANUP_RUNS_FIXTURE": str(runs)}
-            failure = {"conclusion": "failure", "created_at": "2026-10-29T01:00:00Z"}
-            success = {"conclusion": "success", "created_at": "2026-10-29T00:00:00Z"}
+            success = {"id": 2, "conclusion": "success", "display_title": "Nightly cleanup", "created_at": "2026-10-29T00:00:00Z"}
             def assert_runs(items: list[dict[str, str]], max_age: str, code: int) -> None:
-                env["MAX_CLEANUP_AGE_SECONDS"] = max_age
-                runs.write_text(json.dumps({"workflow_runs": items}), encoding="utf-8")
-                self.assertEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, code)
-            assert_runs([failure, success], "150", 0)
-            assert_runs([failure, success], "50", 1)
-            mutated = script.replace('select(.conclusion == "success")', 'select(true)', 1)
-            runs.write_text(json.dumps({"workflow_runs": [failure, success]}), encoding="utf-8")
+                env["MAX_CLEANUP_AGE_SECONDS"] = max_age; runs.write_text(json.dumps({"workflow_runs": items}), encoding="utf-8"); self.assertEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, code)
+            assert_runs([success], "150", 0); assert_runs([success], "50", 1)
+            assert_runs([{"id": 3, "conclusion": "success", "display_title": "Dependency watchdog", "created_at": "2026-10-29T00:00:00Z"}], "150", 1)
+            mutated = script.replace(' and .display_title == "Nightly cleanup"', "", 1)
             self.assertEqual(run("/bin/bash", "-c", mutated, cwd=ROOT, env=env).returncode, 0)
-            runs.write_text(json.dumps({"workflow_runs": [failure]}), encoding="utf-8")
+            runs.write_text(json.dumps({"workflow_runs": []}), encoding="utf-8")
             self.assertNotEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, 0)
 
     def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
@@ -412,7 +412,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn("for platform in linux/amd64 linux/arm64", build)
         self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
         self.assertIn("DOCKER_BUILD_RECORD_UPLOAD: false", build)
-        self.assertIn('[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty', build)
+        self.assertIn('select(.conclusion == "success" and .display_title == "Nightly cleanup")', build)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
         self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
@@ -422,12 +422,13 @@ class RepositoryHygieneTest(unittest.TestCase):
             "dependency_watchdog:",
             "actions: write",
             'select(.status == "queued" or .status == "in_progress")',
-            "MAX_AGE_SECONDS: 21600",
+            "MAX_AGE_SECONDS: 9000",
             "gh workflow run dependency_updates.yml",
             "Remove stale Actions artifacts and build caches",
             "actions/caches/",
         ):
             self.assertIn(expected, maintenance)
+        self.assertTrue(not dependency_watchdog_errors(maintenance) and all(dependency_watchdog_errors(maintenance.replace(value, "", 1)) for value in ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "MAX_AGE_SECONDS: 9000")))
 
     def test_scheduled_automation_skips_idle_rebuilds_and_closes_stale_bots(self) -> None:
         build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")

@@ -457,14 +457,20 @@ jobs:
             exit 1
           }
           runs="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&per_page=50")"
-          last="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty' <<< "$runs")"
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&status=success&per_page=50")" || {
+            echo "::error::could not read scheduled cleanup runs" >&2
+            exit 1
+          }
+          last="$(jq -r '[.workflow_runs[] | select(.conclusion == "success" and .display_title == "Nightly cleanup")][0].created_at // empty' <<< "$runs")" || {
+            echo "::error::could not parse scheduled cleanup runs" >&2
+            exit 1
+          }
           [[ "$last" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
-            echo "::error::no successful scheduled cleanup run was found" >&2
+            echo "::error::no verified scheduled cleanup run was found" >&2
             exit 1
           }
           age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
-          echo "last successful scheduled cleanup: ${last} (${age}s ago)"
+          echo "last verified scheduled cleanup: ${last} (${age}s ago)"
           [ "$age" -le "$MAX_CLEANUP_AGE_SECONDS" ] || {
             echo "::error::scheduled cleanup has not succeeded within ${MAX_CLEANUP_AGE_SECONDS}s" >&2
             exit 1
