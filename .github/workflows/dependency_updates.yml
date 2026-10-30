@@ -66,6 +66,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Close stale automated pull requests
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_AGE_SECONDS: 2592000
+        run: |
+          set -euo pipefail
+          [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid bot PR age limit" >&2; exit 1; }
+          pulls="$(timeout 60 gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100")"
+          numbers="$(jq -r --argjson max_age "$MAX_AGE_SECONDS" '
+            [ .[][]?
+              | select(.user.login == "dependabot[bot]" or .user.login == "github-actions[bot]")
+              | select((.head.ref | startswith("dependabot/")) or .head.ref == "deps/upstream")
+              | select((now - (.updated_at | fromdateiso8601)) >= $max_age)
+              | .number
+            ] | unique | .[0:20][]
+          ' <<< "$pulls")"
+          for number in $numbers; do
+            [[ "$number" =~ ^[1-9][0-9]*$ ]] || { echo "invalid bot PR number" >&2; exit 1; }
+            timeout 30 gh pr comment "$number" --repo "$GITHUB_REPOSITORY" \
+              --body "Closing this stale automated pull request. The update will be regenerated if it is still applicable."
+            timeout 60 gh pr close "$number" --repo "$GITHUB_REPOSITORY" --delete-branch
+            echo "closed stale automated pull request #${number}"
+          done
+
       - name: Resolve the Vaultwarden base image
         id: base
         env:

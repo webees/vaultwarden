@@ -35,7 +35,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  rebuild_check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      needed: ${{ steps.decision.outputs.needed }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether a scheduled rebuild is needed
+        id: decision
+        run: |
+          set -euo pipefail
+          needed=true
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            needed=false
+            out="$(scripts/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest")"
+            printf '%s\n' "$out"
+            count="$(printf '%s\n' "$out" | sed -n 's/^upgradable packages: //p' | tail -n 1)"
+            [[ "$count" =~ ^[0-9]+$ ]] || { echo "::error::published package count is missing or malformed" >&2; exit 1; }
+            if [ "$count" -ne 0 ]; then
+              needed=true
+            fi
+            echo "published package upgrades: ${count}"
+          fi
+          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: rebuild_check
+    if: needs.rebuild_check.outputs.needed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
