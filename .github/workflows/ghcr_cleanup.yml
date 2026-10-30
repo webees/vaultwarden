@@ -1,9 +1,12 @@
 name: GHCR Cleanup
+run-name: ${{ github.event_name == 'workflow_dispatch' && 'Manual maintenance' || github.event.schedule == '17 3 * * *' && 'Nightly cleanup' || 'Dependency watchdog' }}
 
 on:
   workflow_dispatch:
   schedule:
-    # Minute 17 avoids the hourly scheduler spike.
+    # Offset from dependency checks so a delayed run still becomes a bounded override.
+    - cron: '55 */2 * * *'
+    # Keep the heavier registry cleanup nightly; off-hour minute avoids scheduler spikes.
     - cron: '17 3 * * *'
 
 permissions:
@@ -11,15 +14,15 @@ permissions:
   contents: read
   packages: write
 
-concurrency:
-  # Serialize with image builds.
-  group: ghcr-registry
-  cancel-in-progress: false
-
 jobs:
   cleanup:
+    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      # Serialize only the registry mutation with image builds.
+      group: ghcr-registry
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -85,7 +88,7 @@ jobs:
       - name: Restart a stale dependency check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAX_AGE_SECONDS: 21600
+          MAX_AGE_SECONDS: 9000
         run: |
           set -euo pipefail
           [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid dependency age limit" >&2; exit 1; }

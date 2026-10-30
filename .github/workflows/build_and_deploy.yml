@@ -205,7 +205,7 @@ jobs:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: python3 tests/runtime_smoke.py "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
-      # GitHub can silently stop schedules; sweep here when nightly cleanup is stale.
+      # GitHub can silently stop schedules; sweep here when verified cleanup is stale.
       - name: Check the nightly cleanup schedule
         id: cleanup-check
         env:
@@ -214,16 +214,16 @@ jobs:
           set -euo pipefail
           needed=false
           if ! last="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&per_page=50" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty')"; then
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&status=success&per_page=50" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" and .display_title == "Nightly cleanup")][0].created_at // empty')"; then
             echo "::warning::could not read the cleanup schedule; running the sweep"
             needed=true
           elif [ -z "$last" ]; then
-            echo "no scheduled cleanup run found"
+            echo "no verified scheduled cleanup run found"
             needed=true
           else
             age_days=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
-            echo "last scheduled cleanup: ${last} (${age_days} days ago)"
+            echo "last verified scheduled cleanup: ${last} (${age_days} days ago)"
             if [ "$age_days" -ge 7 ]; then
               needed=true
             fi

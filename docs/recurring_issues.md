@@ -167,15 +167,15 @@ Regression gate: `tests/test_action_pin_update.py:ActionPinUpdateTest` must acce
 
 ### Scheduled Automation Convergence
 
-History: weekly rebuilds could deploy an unchanged image after build-cache reuse, and automated dependency branches had no age bound.
+History: weekly rebuilds could deploy an unchanged image after build-cache reuse, and automated dependency branches had no age bound. The dependency watchdog was later coupled to the nightly cleanup cron: across 44 successful dependency schedules, all 43 observed intervals exceeded 2.5 hours (minimum 2.75h, median 5.88h, maximum 15.23h). A later simplification could also treat a watchdog-only workflow success as proof that cleanup ran.
 
-Final decision: a scheduled rebuild may continue only when the published image reports pending package upgrades. Automated pull requests from Dependabot or GitHub Actions are closed after 30 days, but only on their dedicated branches and with an audit comment. Probe failures, malformed counts, unrelated authors, unrelated branches, and fresh pull requests fail closed without mutation.
+Final decision: a scheduled rebuild may continue only when the published image reports pending package upgrades. Automated pull requests from Dependabot or GitHub Actions are closed after 30 days, but only on their dedicated branches and with an audit comment. Probe failures, malformed counts, unrelated authors, unrelated branches, and fresh pull requests fail closed without mutation. The dependency watchdog has its own two-hour cron and uses a 9,000-second staleness bound. Cleanup remains nightly through an explicit schedule guard, and registry concurrency is job-scoped so cleanup cannot block the watchdog. Cleanup health means a recent successful run named `Nightly cleanup`, never merely a successful watchdog-only workflow run.
 
-Authority: `.github/workflows/build_and_deploy.yml:rebuild_check` and `.github/workflows/dependency_updates.yml:Close stale automated pull requests`.
+Authority: `.github/workflows/ghcr_cleanup.yml:run-name`, `.github/workflows/build_and_deploy.yml:rebuild_check`, and the two cleanup-freshness checks.
 
 Mutation control: `tests/test_repository_contracts.py:test_scheduled_automation_skips_idle_rebuilds_and_closes_stale_bots`.
 
-Regression gate: zero and nonzero package counts, probe failure, both bot identities, human authors, unrelated branches, fresh pull requests, and removal of the branch filter must all produce the expected allow or deny result.
+Regression gate: zero and nonzero package counts, probe failure, both bot identities, human authors, unrelated branches, fresh pull requests, removal of the branch filter, removal of either cron, removal of the cleanup guard, and a watchdog-only successful run must all produce the expected allow or deny result. Post-merge schedule evidence is required before claiming the two-hour cadence works in production.
 
 ### Documentation-only commits stay outside production builds
 
