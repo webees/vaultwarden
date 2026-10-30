@@ -12,6 +12,7 @@ on:
       - README.md
       - LICENSE
       - .github/**
+      - docs/**
       - tests/**
   schedule:
     # Rebuild weekly so Alpine security fixes reach production. Avoid minute zero.
