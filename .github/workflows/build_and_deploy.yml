@@ -9,6 +9,7 @@ on:
     # fly.toml is a production input. Paths ignored here cannot affect the image.
     paths-ignore:
       - .gitignore
+      - GOAL.md
       - README.md
       - LICENSE
       - .github/**
