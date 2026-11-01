@@ -10,6 +10,7 @@
 .env*
 .github
 README.md
+GOAL.md
 LICENSE
 fly.toml
 tests

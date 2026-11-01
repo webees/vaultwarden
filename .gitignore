@@ -10,3 +10,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Agent-local execution prompt; intentionally never committed.
+GOAL.md
