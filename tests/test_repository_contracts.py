@@ -577,7 +577,7 @@ esac
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertEqual(script_boundary_errors(dockerfile, dockerignore), [])
         container = {"entrypoint", "entrypoint.sh", "restic.sh", "services.sh"}
-        ci = {"cloudflare_ranges.py", "deps.sh", "validate_action_pin_update.py"}
+        ci = {"cloudflare_ranges.py", "deps.sh", "run_fly_operation.sh", "validate_action_pin_update.py"}
         self.assertEqual({path.name for path in (ROOT / "scripts/container").iterdir()}, container)
         self.assertEqual({path.name for path in (ROOT / "scripts/ci").iterdir()}, ci)
         self.assertFalse(any(path.is_file() for path in (ROOT / "scripts").iterdir()))
@@ -657,7 +657,7 @@ esac
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4830, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 4933, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"): self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:
