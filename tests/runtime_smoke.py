@@ -1102,12 +1102,12 @@ def check_apk_stub(work: Path, image: str) -> None:
     docker("rm", "--force", stub_container)
     containers.remove(stub_container)
 
-    result = run(str(REPO_ROOT / "scripts" / "ci" / "deps.sh"), "apk", stub_image, check=False)
+    result = run(str(REPO_ROOT / "scripts" / "ci" / "dependencies.sh"), "apk", stub_image, check=False)
     if result.returncode == 0:
-        suite.bad("deps.sh apk reported success although apk update failed")
+        suite.bad("dependencies.sh apk reported success although apk update failed")
         print(combined(result), file=sys.stderr)
         suite.report()
-    suite.ok("deps.sh apk fails loudly when the index refresh fails")
+    suite.ok("dependencies.sh apk fails loudly when the index refresh fails")
 
 
 def check_smtp_delivery(work: Path, image: str) -> None:

@@ -37,7 +37,7 @@ CLASS_EVIDENCE = {
         "tests/runtime_smoke.py:check_post_backup_trim_failure",
     ),
     "Outbound Network Bounds": (
-        "scripts/ci/deps.sh:gh_api",
+        "scripts/ci/dependencies.sh:gh_api",
         "tests/test_repository_contracts.py:test_missing_timeout_fails_closed_and_mutation_control_catches_fallback",
     ),
     "One Address Policy": (

@@ -94,7 +94,7 @@ class DependencyResolverTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
         (self.repo / "scripts" / "ci").mkdir(parents=True)
-        shutil.copy2(ROOT / "scripts/ci/deps.sh", self.repo / "scripts/ci/deps.sh")
+        shutil.copy2(ROOT / "scripts/ci/dependencies.sh", self.repo / "scripts/ci/dependencies.sh")
         (self.repo / "Dockerfile").write_text(
             "ARG VAULTWARDEN_VERSION=1.0.0\n"
             f"ARG VAULTWARDEN_DIGEST={DIGEST}\n"
@@ -122,7 +122,7 @@ class DependencyResolverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def _deps(self, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
-        result = run("scripts/ci/deps.sh", *args, cwd=self.repo, env=self.env)
+        result = run("scripts/ci/dependencies.sh", *args, cwd=self.repo, env=self.env)
         if check:
             self.assertEqual(result.returncode, 0, result.stderr)
         return result
@@ -239,7 +239,7 @@ else:
         self.assertIn("requires timeout or gtimeout", result.stderr)
         self.assertFalse(marker.exists())
 
-        source = (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8")
+        source = (ROOT / "scripts/ci/dependencies.sh").read_text(encoding="utf-8")
         expected_guard = '        fail "gh api requires timeout or gtimeout to enforce DEPS_GH_TIMEOUT"'
         self.assertEqual(source.count(expected_guard), 1)
         mutated = self.repo / "scripts" / "ci" / "deps-mutated.sh"
@@ -312,6 +312,16 @@ else:
 
 
 class RepositoryHygieneTest(unittest.TestCase):
+    def test_tracked_names_follow_the_repository_convention(self) -> None:
+        special_files, rejected = {".dockerignore", ".env.example", ".gitignore", "Caddyfile", "CONTRIBUTING.md", "Dockerfile", "LICENSE", "README.md", "SECURITY.md"}, {"cfg", "deps", "helper", "helpers", "mgr", "misc", "tmp", "util", "utils"}
+        pattern = re.compile(r"^(?:\.[a-z0-9_]+|[a-z0-9]+(?:_[a-z0-9]+)*)(?:\.[a-z0-9]+)*$")
+        for path in tracked_files():
+            relative = path.relative_to(ROOT)
+            for directory in relative.parts[:-1]: self.assertRegex(directory, pattern, relative)
+            if path.name in special_files: continue
+            self.assertRegex(path.name, pattern, relative)
+            self.assertFalse(set(re.split(r"[._]", path.stem)) & rejected, relative)
+
     def test_dependency_auto_merge_is_bound_to_the_reviewed_head(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
         self.assertEqual(merge_binding_errors(workflow), [])
@@ -407,7 +417,7 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn(".github/workflows/validate.yml", workflow)
         self.assertIn("reported a change but no tracked file changed", workflow)
         for expected in ("refusing unexpected dependency path", "production_audit:", "verify-production"): self.assertIn(expected, workflow)
-        self.assertIn("verify_vaultwarden_release()", (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8"))
+        self.assertIn("verify_vaultwarden_release()", (ROOT / "scripts/ci/dependencies.sh").read_text(encoding="utf-8"))
         build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
         self.assertIn("for platform in linux/amd64 linux/arm64", build)
         self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
@@ -577,11 +587,11 @@ esac
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertEqual(script_boundary_errors(dockerfile, dockerignore), [])
         container = {"entrypoint", "entrypoint.sh", "restic.sh", "services.sh"}
-        ci = {"cloudflare_ranges.py", "deps.sh", "run_fly_operation.sh", "validate_action_pin_update.py"}
+        ci = {"cloudflare_ranges.py", "dependencies.sh", "run_fly_operation.sh", "validate_action_pin_update.py"}
         self.assertEqual({path.name for path in (ROOT / "scripts/container").iterdir()}, container)
         self.assertEqual({path.name for path in (ROOT / "scripts/ci").iterdir()}, ci)
         self.assertFalse(any(path.is_file() for path in (ROOT / "scripts").iterdir()))
-        mutated = dockerfile.replace("scripts/container/restic.sh", "scripts/ci/deps.sh", 1)
+        mutated = dockerfile.replace("scripts/container/restic.sh", "scripts/ci/dependencies.sh", 1)
         self.assertIn("CI-only scripts", "; ".join(script_boundary_errors(mutated, dockerignore)))
         self.assertIn("does not exclude", "; ".join(script_boundary_errors(dockerfile, dockerignore.replace("scripts/ci\n", "", 1))))
 
@@ -599,7 +609,7 @@ esac
                 block = "\n".join(lines[index:index + 5])
                 bounded += any(flag in block for flag in ("--max-time", " -m "))
         self.assertGreater(calls, 0); self.assertEqual(calls, bounded)
-        deps = (ROOT / "scripts/ci/deps.sh").read_text(encoding="utf-8")
+        deps = (ROOT / "scripts/ci/dependencies.sh").read_text(encoding="utf-8")
         for expected in ('timeout -k 2 "$GH_TIMEOUT" gh api', 'gtimeout -k 2 "$GH_TIMEOUT" gh api', 'timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'gtimeout -k 5 "$DOCKER_TIMEOUT" docker "$@"', 'rows="$(docker_bounded run --rm'): self.assertIn(expected, deps)
         self.assertNotIn('\n        gh api "$@"', deps)
 
@@ -657,7 +667,7 @@ esac
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4933, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 4943, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"): self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:

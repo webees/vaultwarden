@@ -1,5 +1,5 @@
 #!/bin/bash
-# CI dependency resolver: deps.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]
+# CI dependency resolver: dependencies.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -198,7 +198,7 @@ apply() {
 }
 
 apk() {
-    [ "$#" -ge 1 ] || usage_error "usage: deps.sh apk <image>"
+    [ "$#" -ge 1 ] || usage_error "usage: dependencies.sh apk <image>"
     local image="$1" rows count
     rows="$(docker_bounded run --rm "$image" sh -c \
         'apk update >/dev/null 2>&1 || { echo "apk update failed" >&2; exit 1; }; apk version -v -l "<" || { echo "apk version failed" >&2; exit 1; }' \
@@ -213,7 +213,7 @@ apk() {
 rebuild_needed() {
     local base_count="${1:-}" published_count="${2:-}"
     [[ "$base_count" =~ ^[0-9]+$ && "$published_count" =~ ^[0-9]+$ ]] \
-        || usage_error "usage: deps.sh rebuild-needed <base-count> <published-count>"
+        || usage_error "usage: dependencies.sh rebuild-needed <base-count> <published-count>"
     [ "$published_count" -ne 0 ] \
         || { echo "no rebuild needed: the published image has no package upgrades"; return 1; }
     echo "rebuild needed: ${published_count} package upgrade(s) remain in the published image (pinned base reports ${base_count})"
@@ -226,5 +226,5 @@ case "${1:-}" in
     apply)          shift; apply "$@" ;;
     apk)            shift; apk "$@" ;;
     rebuild-needed) shift; rebuild_needed "$@" ;;
-    *)              usage_error "usage: deps.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]" ;;
+    *)              usage_error "usage: dependencies.sh <base|tools|compare|apply|apk|rebuild-needed> [args...]" ;;
 esac
