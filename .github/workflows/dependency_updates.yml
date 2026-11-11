@@ -96,18 +96,18 @@ jobs:
         id: base
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci/deps.sh base
+        run: scripts/ci/dependencies.sh base
 
       - name: Resolve supercronic
         id: tools
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci/deps.sh tools
+        run: scripts/ci/dependencies.sh tools
 
       - name: Compare the Dockerfile pins
         id: compare
         run: |
-          scripts/ci/deps.sh compare \
+          scripts/ci/dependencies.sh compare \
             VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
             VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
             SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
@@ -132,7 +132,7 @@ jobs:
 
       - name: Compare the pinned base packages
         id: apk
-        run: scripts/ci/deps.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
+        run: scripts/ci/dependencies.sh apk "vaultwarden/server@${{ steps.base.outputs.digest }}"
 
       - name: Compare packages in the published image
         id: published-apk
@@ -140,7 +140,7 @@ jobs:
           success() &&
           github.event_name != 'workflow_run'
         continue-on-error: true
-        run: scripts/ci/deps.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
+        run: scripts/ci/dependencies.sh apk "${REGISTRY}/${IMAGE_NAME}:latest"
 
       - name: Validate the published package probe
         if: success() && github.event_name != 'workflow_run'
@@ -157,7 +157,7 @@ jobs:
         if: steps.changed.outputs.changed == 'true'
         run: |
           if [ '${{ steps.compare.outputs.changed }}' = true ]; then
-            scripts/ci/deps.sh apply \
+            scripts/ci/dependencies.sh apply \
               VAULTWARDEN_VERSION="${{ steps.base.outputs.version }}" \
               VAULTWARDEN_DIGEST="${{ steps.base.outputs.digest }}" \
               SUPERCRONIC_VERSION="${{ steps.tools.outputs.supercronic_version }}" \
@@ -335,7 +335,7 @@ jobs:
           PUBLISHED_APK_COUNT: ${{ steps.published-apk.outputs.count }}
         run: |
           set -euo pipefail
-          if scripts/ci/deps.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
+          if scripts/ci/dependencies.sh rebuild-needed "$APK_COUNT" "$PUBLISHED_APK_COUNT"; then
             timeout 60 gh workflow run build_and_deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
 

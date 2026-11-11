@@ -37,9 +37,9 @@ Regression gate: oversized command output, failed `tail`, leftover log temporari
 
 History: `bb51cdb` bounded `curl` calls, `12d9215` added a `gh api` timeout wrapper with an unbounded fallback, `5256c7a` bounded workflow API calls independently, and `376f55f` preserved the partial script fallback during simplification. The recurring defect is a partially fixed boundary: the timeout exists on CI but silently disappears on hosts without the expected command.
 
-Final decision: every outbound operation has a positive numeric time limit. `scripts/ci/deps.sh` rejects zero, negative, fractional, and non-numeric timeout configuration before starting a request. `gh api` runs through `timeout` or `gtimeout` with a mandatory SIGKILL grace period, so a process that ignores SIGTERM still cannot hang the job. Absence of a supported timeout command fails closed, and a raw unbounded fallback is forbidden.
+Final decision: every outbound operation has a positive numeric time limit. `scripts/ci/dependencies.sh` rejects zero, negative, fractional, and non-numeric timeout configuration before starting a request. `gh api` runs through `timeout` or `gtimeout` with a mandatory SIGKILL grace period, so a process that ignores SIGTERM still cannot hang the job. Absence of a supported timeout command fails closed, and a raw unbounded fallback is forbidden.
 
-Authority: `scripts/ci/deps.sh:gh_api`.
+Authority: `scripts/ci/dependencies.sh:gh_api`.
 
 Mutation control: `tests/test_repository_contracts.py:test_missing_timeout_fails_closed_and_mutation_control_catches_fallback`.
 
@@ -149,7 +149,7 @@ History: `f64c7ef` made a failed published-image package probe fail closed; `785
 
 Final decision: a required published-image probe whose outcome is not `success` must fail the dependency job, notify, and must not dispatch a rebuild. A clean probe remains a no-op; a probe with pending upgrades dispatches exactly one rebuild. `workflow_run` remains exempt to prevent a build-to-check loop.
 
-Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/ci/deps.sh:rebuild-needed`.
+Authority: `.github/workflows/dependency_updates.yml:PUBLISHED_APK_OUTCOME` and `scripts/ci/dependencies.sh:rebuild-needed`.
 
 Mutation control: `tests/test_repository_contracts.py:test_published_package_probe_script_fails_closed`.
 
