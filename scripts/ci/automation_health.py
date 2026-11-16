@@ -145,13 +145,13 @@ def check_workflow(
         raise HealthError("latest scheduled run has an invalid conclusion")
     if latest_status in ACTIVE_STATUSES and completed_age > max_age_seconds:
         return UNHEALTHY, f"{workflow} has no recent completed scheduled run"
+    if schedule_age > max_age_seconds:
+        return STALE, f"{workflow} latest scheduled run is stale"
     if conclusion != "success":
         return UNHEALTHY, f"{workflow} latest completed scheduled run did not succeed"
     jobs = api(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100")
     if not job_succeeded(jobs, job):
         return UNHEALTHY, f"{workflow} did not complete its {job} job"
-    if schedule_age > max_age_seconds:
-        return STALE, f"{workflow} latest scheduled success is stale"
     return HEALTHY, f"{workflow} has a fresh successful {job} run"
 
 def parser() -> argparse.ArgumentParser:

@@ -72,7 +72,7 @@ class AutomationHealthTest(unittest.TestCase):
                 )
 
     def test_old_schedule_is_stale(self) -> None:
-        self.assert_status(HEALTH.STALE, [run()], max_age=60)
+        self.assert_status(HEALTH.STALE, [run(conclusion="failure")], max_age=60)
 
     def test_old_active_schedule_fails_without_replay(self) -> None:
         for status in HEALTH.ACTIVE_STATUSES:
