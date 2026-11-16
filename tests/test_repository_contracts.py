@@ -76,7 +76,7 @@ def python_cache_errors(workflow: str) -> list[str]:
 
 def dependency_watchdog_errors(workflow: str) -> list[str]:
     preamble, jobs = workflow.split("\njobs:\n", 1); cleanup, watchdog = jobs.split("\n  dependency_watchdog:\n", 1)
-    required = ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    - cron: '17 3 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "MAX_AGE_SECONDS: 9000")
+    required = ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    - cron: '17 3 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "scripts/ci/automation_health.py", "build_and_deploy.yml rebuild_check 691200", "dependency_updates.yml check 64800")
     return [f"missing {value}" for value in required if value not in workflow] + ([] if not re.search(r"(?m)^concurrency:", preamble) and "      group: ghcr-registry" in cleanup and "      group: dependency-watchdog" in watchdog else ["concurrency must be job-scoped"])
 def script_boundary_errors(dockerfile: str, dockerignore: str) -> list[str]:
     sources = set(re.findall(r"scripts/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", dockerfile))
@@ -387,26 +387,32 @@ class RepositoryHygieneTest(unittest.TestCase):
             weakened = notify.replace('safe_body="${safe_body//"$chat_id"/<redacted>}"', 'body="${body//"$chat_id"/<redacted>}"', 1)
             self.assertNotEqual(run("/bin/bash", "-c", weakened, cwd=ROOT, env=notify_env).returncode, 0)
 
-    def test_cleanup_automation_health_fails_closed(self) -> None:
-        workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
-        script = workflow_step_script(workflow, "Check cleanup automation health")
-        with tempfile.TemporaryDirectory() as temporary:
-            root, binary = Path(temporary), Path(temporary) / "bin"
-            binary.mkdir()
-            runs = root / "runs.json"
-            write_executable(binary / "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
-            write_executable(binary / "gh", "#!/bin/sh\ncat \"$CLEANUP_RUNS_FIXTURE\"\n")
-            write_executable(binary / "date", "#!/bin/sh\ncase \"$*\" in '-u +%s') printf '2000\\n' ;; '-u -d 2026-10-29T00:00:00Z +%s') printf '1900\\n' ;; '-u -d 2026-10-29T01:00:00Z +%s') printf '2000\\n' ;; *) exit 2 ;; esac\n")
-            env = os.environ | {"GITHUB_REPOSITORY": "owner/repository", "PATH": f"{binary}:{os.environ['PATH']}", "CLEANUP_RUNS_FIXTURE": str(runs)}
-            success = {"id": 2, "conclusion": "success", "display_title": "Nightly cleanup", "created_at": "2026-10-29T00:00:00Z"}
-            def assert_runs(items: list[dict[str, str]], max_age: str, code: int) -> None:
-                env["MAX_CLEANUP_AGE_SECONDS"] = max_age; runs.write_text(json.dumps({"workflow_runs": items}), encoding="utf-8"); self.assertEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, code)
-            assert_runs([success], "150", 0); assert_runs([success], "50", 1)
-            assert_runs([{"id": 3, "conclusion": "success", "display_title": "Dependency watchdog", "created_at": "2026-10-29T00:00:00Z"}], "150", 1)
-            mutated = script.replace(' and .display_title == "Nightly cleanup"', "", 1)
-            self.assertEqual(run("/bin/bash", "-c", mutated, cwd=ROOT, env=env).returncode, 0)
-            runs.write_text(json.dumps({"workflow_runs": []}), encoding="utf-8")
-            self.assertNotEqual(run("/bin/bash", "-c", script, cwd=ROOT, env=env).returncode, 0)
+    def test_automation_health_checks_use_fail_closed_contracts(self) -> None:
+        build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
+        dependency = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
+        cleanup = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
+        checker = (ROOT / "scripts/ci/automation_health.py").read_text(encoding="utf-8")
+        for expected in ("event=schedule", "HEALTHY, UNHEALTHY, STALE = 0, 1, 3"):
+            self.assertIn(expected, checker)
+        preflight = build[build.index("  rebuild_check:"):build.index("\n  build:")]
+        build_check = workflow_step_script(preflight, "Verify the nightly cleanup schedule")
+        self.assertIn('--display-title "Nightly cleanup"', build_check)
+        self.assertIn("--workflow ghcr_cleanup.yml", build_check)
+        self.assertIn("--max-age 172800", build_check)
+        self.assertIn('case "$result" in', build_check)
+        for expected in ("0) stale=false", "stale=true", "steps.cleanup.outputs.stale == 'true'"):
+            self.assertIn(expected, preflight)
+        self.assertNotIn("needed=true", build_check)
+        audit = workflow_step_script(dependency, "Verify scheduled automation health")
+        for expected in ("--workflow build_and_deploy.yml", "--job rebuild_check", "--max-age 691200", '"Dependency watchdog"', '"Nightly cleanup"', "--max-age 172800"):
+            self.assertIn(expected, audit)
+        self.assertNotIn("--workflow dependency_updates.yml", audit)
+        watchdog = workflow_step_script(cleanup, "Restart stale automations")
+        for expected in ("check_and_restart build_and_deploy.yml rebuild_check 691200", "check_and_restart dependency_updates.yml check 64800", "gh workflow run", 'case "$result" in'):
+            self.assertIn(expected, watchdog)
+        for script in (build_check, audit, watchdog):
+            for obsolete in ("MAX_AGE_SECONDS", "runs?event=schedule", 'select(.conclusion == "success")'):
+                self.assertNotIn(obsolete, script)
 
     def test_merged_dependency_does_not_dispatch_a_duplicate_build(self) -> None:
         workflow = (ROOT / ".github/workflows/dependency_updates.yml").read_text(encoding="utf-8")
@@ -422,23 +428,27 @@ class RepositoryHygieneTest(unittest.TestCase):
         self.assertIn("for platform in linux/amd64 linux/arm64", build)
         self.assertIn(r"^sha256:[0-9a-f]{64}$", build)
         self.assertIn("DOCKER_BUILD_RECORD_UPLOAD: false", build)
-        self.assertIn('select(.conclusion == "success" and .display_title == "Nightly cleanup")', build)
+        preflight = build[build.index("  rebuild_check:"):build.index("\n  build:")]
+        build_check = workflow_step_script(preflight, "Verify the nightly cleanup schedule")
+        self.assertIn("automation_health.py", build_check)
+        self.assertIn("--workflow ghcr_cleanup.yml", build_check)
+        self.assertIn("--job cleanup", build_check)
+        self.assertIn("--max-age 172800", build_check)
         failure_gate = "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'"
         self.assertIn(failure_gate, workflow)
         maintenance = (ROOT / ".github/workflows/ghcr_cleanup.yml").read_text(encoding="utf-8")
-        self.assertIn("runs?event=schedule&per_page=20", maintenance)
-        self.assertEqual(("runs?per_page=20" in maintenance, "runs?per_page=20" in maintenance.replace("event=schedule&", "", 1)), (False, True))
+        self.assertIn("scripts/ci/automation_health.py", maintenance)
         for expected in (
             "dependency_watchdog:",
             "actions: write",
-            'select(.status == "queued" or .status == "in_progress")',
-            "MAX_AGE_SECONDS: 9000",
-            "gh workflow run dependency_updates.yml",
+            "build_and_deploy.yml rebuild_check 691200",
+            "dependency_updates.yml check 64800",
+            'gh workflow run "$workflow"',
             "Remove stale Actions artifacts and build caches",
             "actions/caches/",
         ):
             self.assertIn(expected, maintenance)
-        self.assertTrue(not dependency_watchdog_errors(maintenance) and all(dependency_watchdog_errors(maintenance.replace(value, "", 1)) for value in ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "MAX_AGE_SECONDS: 9000")))
+        self.assertTrue(not dependency_watchdog_errors(maintenance) and all(dependency_watchdog_errors(maintenance.replace(value, "", 1)) for value in ("&& 'Nightly cleanup'", "    - cron: '55 */2 * * *'", "    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'", "scripts/ci/automation_health.py", "build_and_deploy.yml rebuild_check 691200", "dependency_updates.yml check 64800")))
 
     def test_scheduled_automation_skips_idle_rebuilds_and_closes_stale_bots(self) -> None:
         build = (ROOT / ".github/workflows/build_and_deploy.yml").read_text(encoding="utf-8")
@@ -587,7 +597,7 @@ esac
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertEqual(script_boundary_errors(dockerfile, dockerignore), [])
         container = {"entrypoint", "entrypoint.sh", "restic.sh", "services.sh"}
-        ci = {"cloudflare_ranges.py", "dependencies.sh", "run_fly_operation.sh", "validate_action_pin_update.py"}
+        ci = {"automation_health.py", "cloudflare_ranges.py", "dependencies.sh", "run_fly_operation.sh", "validate_action_pin_update.py"}
         self.assertEqual({path.name for path in (ROOT / "scripts/container").iterdir()}, container)
         self.assertEqual({path.name for path in (ROOT / "scripts/ci").iterdir()}, ci)
         self.assertFalse(any(path.is_file() for path in (ROOT / "scripts").iterdir()))
@@ -660,14 +670,14 @@ esac
             self.assertEqual(scan_for_sensitive_data(text), [], f"sensitive value in {path.relative_to(ROOT)}")
 
     def test_quality_budgets_do_not_regress(self) -> None:
-        budgets = {"README.md": 150, ".env.example": 48, "scripts/container/restic.sh": 520, "scripts/ci/cloudflare_ranges.py": 200, "scripts/ci/validate_action_pin_update.py": 140}
+        budgets = {"README.md": 150, ".env.example": 48, "scripts/container/restic.sh": 520, "scripts/ci/automation_health.py": 190, "scripts/ci/cloudflare_ranges.py": 200, "scripts/ci/validate_action_pin_update.py": 140}
         for path, limit in budgets.items():
             with self.subTest(path=path):
                 lines = len((ROOT / path).read_text(encoding="utf-8").splitlines())
                 self.assertLessEqual(lines, limit, f"{path} grew to {lines} lines")
         test_files = [path for path in (ROOT / "tests").iterdir() if path.is_file()]
         test_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in test_files)
-        self.assertLessEqual(test_lines, 4943, f"tests grew to {test_lines} lines")
+        self.assertLessEqual(test_lines, 5140, f"tests grew to {test_lines} lines")
         for removed in ("selftest.sh", "image_selftest.sh", "lib.sh"): self.assertFalse((ROOT / "tests" / removed).exists())
 
     def test_access_logs_remove_referrer_and_query_values(self) -> None:

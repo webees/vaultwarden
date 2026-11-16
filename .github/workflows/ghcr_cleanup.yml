@@ -76,6 +76,7 @@ jobs:
           delete-broken: true
 
   dependency_watchdog:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '55 */2 * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -85,30 +86,34 @@ jobs:
       group: dependency-watchdog
       cancel-in-progress: false
     steps:
-      - name: Restart a stale dependency check
+      - name: Check out automation checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restart stale automations
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAX_AGE_SECONDS: 9000
         run: |
           set -euo pipefail
-          [[ "$MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid dependency age limit" >&2; exit 1; }
-          runs="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/dependency_updates.yml/runs?event=schedule&per_page=20")"
-          active="$(jq -r '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length' <<< "$runs")"
-          if [ "$active" -gt 0 ]; then
-            echo "dependency check already active: ${active} run(s)"
-            exit 0
-          fi
-          latest="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")][0].created_at // empty' <<< "$runs")"
-          stale=false
-          if [ -z "$latest" ]; then
-            stale=true
-          else
-            age=$(( $(date -u +%s) - $(date -u -d "$latest" +%s) ))
-            echo "last successful dependency check: ${latest} (${age}s ago)"
-            [ "$age" -lt "$MAX_AGE_SECONDS" ] || stale=true
-          fi
-          if [ "$stale" = true ]; then
-            timeout 60 gh workflow run dependency_updates.yml --repo "$GITHUB_REPOSITORY" --ref main
-            echo "dispatched a stale dependency check"
-          fi
+          check_and_restart() {
+            local workflow="$1" job="$2" max_age="$3" result
+            set +e
+            timeout 45 python3 scripts/ci/automation_health.py \
+              --workflow "$workflow" --job "$job" --max-age "$max_age"
+            result=$?
+            set -e
+            case "$result" in
+              0) ;;
+              3)
+                timeout 60 gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main
+                echo "dispatched stale ${workflow}"
+                ;;
+              *)
+                echo "::error::${workflow} schedule is failing or unavailable" >&2
+                return 1
+                ;;
+            esac
+          }
+          check_and_restart build_and_deploy.yml rebuild_check 691200
+          check_and_restart dependency_updates.yml check 64800
