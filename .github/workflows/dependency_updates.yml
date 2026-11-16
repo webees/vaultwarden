@@ -430,6 +430,11 @@ jobs:
       actions: read
       contents: read
     steps:
+      - name: Check out automation checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Set up Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
 
@@ -445,35 +450,21 @@ jobs:
           }
           echo "image=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: Check cleanup automation health
+      - name: Verify scheduled automation health
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAX_CLEANUP_AGE_SECONDS: 172800
         run: |
           set -euo pipefail
-          [[ "$MAX_CLEANUP_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::MAX_CLEANUP_AGE_SECONDS must be a positive integer" >&2
-            exit 1
-          }
-          runs="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&status=success&per_page=50")" || {
-            echo "::error::could not read scheduled cleanup runs" >&2
-            exit 1
-          }
-          last="$(jq -r '[.workflow_runs[] | select(.conclusion == "success" and .display_title == "Nightly cleanup")][0].created_at // empty' <<< "$runs")" || {
-            echo "::error::could not parse scheduled cleanup runs" >&2
-            exit 1
-          }
-          [[ "$last" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
-            echo "::error::no verified scheduled cleanup run was found" >&2
-            exit 1
-          }
-          age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
-          echo "last verified scheduled cleanup: ${last} (${age}s ago)"
-          [ "$age" -le "$MAX_CLEANUP_AGE_SECONDS" ] || {
-            echo "::error::scheduled cleanup has not succeeded within ${MAX_CLEANUP_AGE_SECONDS}s" >&2
-            exit 1
-          }
+          python3 scripts/ci/automation_health.py \
+            --workflow build_and_deploy.yml --job rebuild_check --max-age 691200
+          python3 scripts/ci/automation_health.py \
+            --workflow ghcr_cleanup.yml --job dependency_watchdog \
+            --display-title "Dependency watchdog" \
+            --max-age 64800
+          python3 scripts/ci/automation_health.py \
+            --workflow ghcr_cleanup.yml --job cleanup \
+            --display-title "Nightly cleanup" \
+            --max-age 172800
 
       - name: Verify production release and runtime health
         env:

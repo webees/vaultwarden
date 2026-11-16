@@ -44,6 +44,7 @@ jobs:
     outputs:
       needed: ${{ steps.decision.outputs.needed }}
     permissions:
+      actions: write
       contents: read
       packages: read
     steps:
@@ -58,6 +59,44 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A weekly build may be skipped, so recover cleanup from this preflight.
+      - name: Verify the nightly cleanup schedule
+        id: cleanup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 45 python3 scripts/ci/automation_health.py \
+            --workflow ghcr_cleanup.yml \
+            --job cleanup \
+            --display-title "Nightly cleanup" \
+            --max-age 172800
+          result=$?
+          set -e
+          case "$result" in
+            0) stale=false ;;
+            3)
+              echo "::warning::verified scheduled cleanup is stale; dispatching recovery"
+              stale=true
+              ;;
+            *)
+              echo "::error::could not verify the nightly cleanup schedule" >&2
+              exit "$result"
+              ;;
+          esac
+          printf 'stale=%s\n' "$stale" >> "$GITHUB_OUTPUT"
+
+      - name: Recover stale nightly cleanup
+        if: steps.cleanup.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          timeout 60 gh workflow run ghcr_cleanup.yml \
+            --repo "$GITHUB_REPOSITORY" --ref main
+          echo "dispatched nightly cleanup"
 
       - name: Decide whether a scheduled rebuild is needed
         id: decision
@@ -85,7 +124,6 @@ jobs:
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
     permissions:
-      actions: read
       contents: read
       packages: write
 
@@ -206,31 +244,6 @@ jobs:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: python3 tests/runtime_smoke.py "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
-      # GitHub can silently stop schedules; sweep here when verified cleanup is stale.
-      - name: Check the nightly cleanup schedule
-        id: cleanup-check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          needed=false
-          if ! last="$(timeout 30 gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ghcr_cleanup.yml/runs?event=schedule&status=success&per_page=50" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success" and .display_title == "Nightly cleanup")][0].created_at // empty')"; then
-            echo "::warning::could not read the cleanup schedule; running the sweep"
-            needed=true
-          elif [ -z "$last" ]; then
-            echo "no verified scheduled cleanup run found"
-            needed=true
-          else
-            age_days=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
-            echo "last verified scheduled cleanup: ${last} (${age_days} days ago)"
-            if [ "$age_days" -ge 7 ]; then
-              needed=true
-            fi
-          fi
-          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
-
       # Never publish `latest` before the exact index has passed every build gate.
       - name: Promote the verified image to latest
         if: github.ref == 'refs/heads/main'
@@ -261,15 +274,6 @@ jobs:
             exit 1
           fi
           echo "Promoted verified image to ${image}:latest"
-
-      - name: Expire timestamp tags
-        id: expiry
-        if: steps.cleanup-check.outputs.needed == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/expire_tags
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          package: ${{ github.event.repository.name }}
 
   deploy:
     needs: build
