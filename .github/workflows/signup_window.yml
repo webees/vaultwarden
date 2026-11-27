@@ -29,6 +29,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Validate inputs
         run: |
@@ -46,8 +49,23 @@ jobs:
         run: |
           set -euo pipefail
           timeout 120 flyctl ssh console --quiet --app "$FLY_APP" \
-            --command '/bin/sh -c '"'"'if [ -e /data/config.json ]; then grep -Eq "\"signups_allowed\"[[:space:]]*:" /data/config.json && exit 42; fi'"'"
+            --command '/bin/sh -c '"'"'! grep -Eq "\"signups_allowed\"[[:space:]]*:" /data/config.json 2>/dev/null || exit 42'"'"
           timeout 120 flyctl secrets set --app "$FLY_APP" "SIGNUPS_ALLOWED=$ALLOWED"
+          if [ "$ALLOWED" = false ] || [ "$OPERATION" = disable ]; then
+            expected=true
+          else
+            expected=false
+          fi
+          for _ in {1..30}; do
+            actual="$(curl -fsS --retry 2 --max-time 10 https://pass.bxx.cc/api/config | jq -r '.settings.disableUserRegistration')"
+            if [ "$actual" = "$expected" ]; then
+              printf 'registration disabled=%s\n' "$actual"
+              exit 0
+            fi
+            sleep 5
+          done
+          printf 'registration did not reach expected state\n' >&2
+          exit 1
 
   restore:
     needs: configure
@@ -57,6 +75,9 @@ jobs:
       inputs.operation == 'enable_60m'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
@@ -71,4 +92,22 @@ jobs:
         run: |
           set -euo pipefail
           timeout 120 flyctl secrets set --app "$FLY_APP" "SIGNUPS_ALLOWED=$ALLOWED"
+          for _ in {1..30}; do
+            actual="$(curl -fsS --retry 2 --max-time 10 https://pass.bxx.cc/api/config | jq -r '.settings.disableUserRegistration')"
+            if [ "$actual" = true ]; then
+              printf 'registration disabled=%s\n' "$actual"
+              exit 0
+            fi
+            sleep 5
+          done
+          timeout 120 flyctl apps restart "$FLY_APP" --force
+          for _ in {1..30}; do
+            actual="$(curl -fsS --retry 2 --max-time 10 https://pass.bxx.cc/api/config | jq -r '.settings.disableUserRegistration')"
+            if [ "$actual" = true ]; then
+              printf 'registration disabled=%s\n' "$actual"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
 
