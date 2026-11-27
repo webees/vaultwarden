@@ -1,0 +1,74 @@
+name: Signup Window
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Temporary registration window
+        required: true
+        type: choice
+        options:
+          - enable_60m
+          - disable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signup-window
+  cancel-in-progress: false
+
+env:
+  OPERATION: ${{ inputs.operation }}
+  FLY_APP: ${{ secrets.FLY_APP }}
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  configure:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in enable_60m|disable) ;; *) exit 1 ;; esac
+          test -n "$FLY_APP"
+          test -n "$FLY_API_TOKEN"
+
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Apply registration setting
+        env:
+          ALLOWED: ${{ inputs.operation == 'enable_60m' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          timeout 120 flyctl ssh console --quiet --app "$FLY_APP" \
+            --command 'if [ -e /data/config.json ]; then grep -Eq "\"signups_allowed\"[[:space:]]*:" /data/config.json && exit 42; fi'
+          timeout 120 flyctl secrets set --app "$FLY_APP" "SIGNUPS_ALLOWED=$ALLOWED"
+
+  restore:
+    needs: configure
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      inputs.operation == 'enable_60m'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+
+      - name: Hold registration window
+        if: needs.configure.result == 'success'
+        run: sleep 3600
+
+      - name: Close registration
+        env:
+          ALLOWED: "false"
+        run: |
+          set -euo pipefail
+          timeout 120 flyctl secrets set --app "$FLY_APP" "SIGNUPS_ALLOWED=$ALLOWED"
+
