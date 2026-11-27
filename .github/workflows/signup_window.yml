@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout 120 flyctl ssh console --quiet --app "$FLY_APP" \
-            --command 'if [ -e /data/config.json ]; then grep -Eq "\"signups_allowed\"[[:space:]]*:" /data/config.json && exit 42; fi'
+            --command '/bin/sh -c '"'"'if [ -e /data/config.json ]; then grep -Eq "\"signups_allowed\"[[:space:]]*:" /data/config.json && exit 42; fi'"'"
           timeout 120 flyctl secrets set --app "$FLY_APP" "SIGNUPS_ALLOWED=$ALLOWED"
 
   restore:
